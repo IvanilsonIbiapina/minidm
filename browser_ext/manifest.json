@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "minidm bridge",
+  "version": "1.0",
+  "description": "Envia links para o minidm (API local em 127.0.0.1:9742).",
+  "permissions": ["contextMenus", "notifications"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
