@@ -34,8 +34,11 @@ def cmd_add(args) -> int:
     store = TaskStore(cfg.data_dir)
     created = []
     for url in args.urls:
+        kind = "hls" if url.lower().split("?")[0].endswith(".m3u8") else (
+            "dash" if url.lower().split("?")[0].endswith(".mpd") else "file")
         task = Task(url=url, dest_dir=args.dir or cfg.data_dir,
                     filename=filename_from(url), state=TaskState.QUEUED,
+                    kind=kind, referer=args.referer or "",
                     mirrors=list(args.mirror or []),
                     proxy=args.proxy or "",
                     cookie=args.cookie or "",
@@ -233,6 +236,48 @@ def cmd_gui(args) -> int:
     return gui.main()
 
 
+def cmd_media(args) -> int:
+    """Analisa uma URL de vídeo e mostra as qualidades (HLS/DASH/direto)."""
+    from minidm.media import analyze
+
+    cfg = _cfg(args)
+    print(f"analisando {args.url} …")
+    r = analyze(args.url, referer=args.referer or "",
+                user_agent=args.user_agent or cfg.user_agent,
+                cookie=args.cookie or cfg.cookie,
+                proxy=args.proxy or cfg.proxy)
+    if not r.get("ok"):
+        print(f"falha: {r.get('error')}", file=sys.stderr)
+        return 1
+    dur = r.get("duration")
+    print(f"tipo: {r['kind']}" + (f"  duração: {dur:.1f}s" if dur else "")
+          + ("  (criptografado)" if r.get("encrypted") else ""))
+    for i, q in enumerate(r["qualities"]):
+        size = f"  ~{human(q['estimated_size'])}" if q.get("estimated_size") else ""
+        bw = f"  {q['bandwidth']/1e6:.1f} Mbps" if q.get("bandwidth") else ""
+        print(f"  [{i}] {q['label']}{bw}{size}")
+    if args.download is not None:
+        idx = args.download
+        if not (0 <= idx < len(r["qualities"])):
+            print("índice inválido.", file=sys.stderr)
+            return 2
+        q = r["qualities"][idx]
+        store = TaskStore(cfg.data_dir)
+        task = Task(url=q["url"], dest_dir=args.dir or cfg.data_dir,
+                    filename=args.filename or r.get("filename") or "video",
+                    state=TaskState.QUEUED,
+                    kind="hls" if "hls" in (r["kind"], q["kind"]) else
+                         ("dash" if "dash" in (r["kind"], q["kind"]) else "file"),
+                    referer=args.referer or "",
+                    cookie=args.cookie or cfg.cookie,
+                    user_agent=args.user_agent or cfg.user_agent)
+        store.add(task)
+        print(f"[{task.id}] {q['label']} na fila — use `start {task.id}`")
+        if args.start:
+            return _run_inline(store, cfg, [task.id])
+    return 0
+
+
 def cmd_daemon(args) -> int:
     cfg = _cfg(args)
     from minidm.daemon import run_daemon
@@ -274,6 +319,7 @@ def _add_net_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--proxy", help="proxy http://host:port ou socks5://host:port")
     p.add_argument("--cookie", help="header Cookie completo")
     p.add_argument("--user-agent", dest="user_agent", help="User-Agent")
+    p.add_argument("--referer", help="URL da página de origem (muitos CDNs exigem)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -356,6 +402,18 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("gui", help="interface gráfica (tkinter)",
                        parents=[common])
     a.set_defaults(func=cmd_gui)
+
+    a = sub.add_parser("media", help="analisa vídeo (HLS/DASH) e lista qualidades",
+                       parents=[common])
+    a.add_argument("url", help="URL do .m3u8/.mpd ou do vídeo")
+    a.add_argument("--download", type=int, metavar="ÍNDICE",
+                   help="baixa a qualidade de índice N (listada acima)")
+    a.add_argument("--filename", help="nome do arquivo final")
+    a.add_argument("--dir", help="diretório de destino")
+    a.add_argument("--start", action="store_true",
+                   help="começa já baixar (com --download)")
+    _add_net_flags(a)
+    a.set_defaults(func=cmd_media)
 
     a = sub.add_parser("config", help="mostra/edita configuração",
                        parents=[common])

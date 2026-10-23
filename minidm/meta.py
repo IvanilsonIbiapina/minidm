@@ -63,6 +63,10 @@ class Task:
     signature_status: Optional[str] = None
     signature_signer: Optional[str] = None
     attempts: int = 0
+    # ---- v3 (captura de vídeo estilo IDM)
+    kind: str = "file"               # "file" | "hls" | "dash"
+    referer: str = ""                # página de origem (muitos CDNs exigem)
+    stream: Optional[dict] = None    # plano de segmentos do stream (resume)
 
     # ---------------------------------------------------------------- paths
     @property
@@ -79,10 +83,18 @@ class Task:
 
     @property
     def received(self) -> int:
+        if self.stream and isinstance(self.stream, dict):
+            # stream: bytes contados no plano de segmentos
+            return int(self.stream.get("bytes_done", 0))
         return sum(s.received for s in self.segments)
 
     @property
     def progress(self) -> float:
+        if self.stream and isinstance(self.stream, dict):
+            done = self.stream.get("segments_done") or 0
+            total = self.stream.get("segments_total") or 0
+            if total:
+                return min(1.0, done / total)
         if not self.total_size:
             return 0.0
         return min(1.0, self.received / self.total_size)

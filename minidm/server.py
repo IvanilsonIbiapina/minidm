@@ -3,11 +3,12 @@
 Endpoints:
 
     GET  /status                  -> tarefas + config resumida
-    POST /add      {url, ...}     -> adiciona (aceita mirrors/checksum)
+    POST /add      {url, ...}     -> adiciona (aceita mirrors/checksum/kind)
     POST /start    {id|all}       -> inicia/pausadas
     POST /pause    {id}           -> pausa uma tarefa ativa
     POST /remove   {id, delete}   -> remove da fila
     GET  /config                  -> configuração efetiva
+    POST /media/analyze {url,...} -> lista qualidades de vídeo (HLS/DASH/dir.)
 """
 
 from __future__ import annotations
@@ -92,6 +93,8 @@ def make_handler(app: App):
 
             if path == "/add":
                 self._add(payload)
+            elif path == "/media/analyze":
+                self._media_analyze(payload)
             elif path == "/start":
                 ids = None if payload.get("all") else _ids(payload)
                 n = app.scheduler.submit(ids)
@@ -113,21 +116,44 @@ def make_handler(app: App):
                 self._json({"error": "url http(s) obrigatória"}, 400)
                 return
             filename = payload.get("filename") or filename_from(url)
+            kind = payload.get("kind") or _kind_from_payload(url)
             task = Task(
                 url=url,
                 dest_dir=payload.get("dir") or app.store.data_dir,
                 filename=filename,
                 state=TaskState.QUEUED,
+                kind=kind,
+                referer=payload.get("referer", ""),
                 mirrors=[m for m in payload.get("mirrors", [])
                          if isinstance(m, str)],
                 proxy=payload.get("proxy", ""),
                 cookie=payload.get("cookie", ""),
+                user_agent=payload.get("user_agent", ""),
                 expected_sha256=payload.get("sha256"),
             )
             app.store.add(task)
             if payload.get("start", True):
                 app.scheduler.submit([task.id])
-            self._json({"ok": True, "id": task.id}, 201)
+            self._json({"ok": True, "id": task.id, "kind": kind}, 201)
+
+        # -------------------------------------------------- /media/analyze
+        def _media_analyze(self, payload):
+            url = payload.get("url")
+            if not url or urlparse(url).scheme not in ("http", "https"):
+                self._json({"ok": False, "error": "url http(s) obrigatória"},
+                           400)
+                return
+            from minidm.media import analyze
+
+            result = analyze(
+                url,
+                referer=payload.get("referer", ""),
+                user_agent=payload.get("user_agent", "")
+                or app.config.user_agent,
+                cookie=payload.get("cookie", "") or app.config.cookie,
+                proxy=payload.get("proxy", "") or app.config.proxy,
+            )
+            self._json(result, 200 if result.get("ok") else 400)
 
     return Handler
 
@@ -137,6 +163,18 @@ def _ids(payload) -> list[str]:
     if isinstance(ids, str):
         ids = [ids]
     return ids
+
+
+def _kind_from_payload(url: str) -> str:
+    """Detecta o tipo pela extensão quando o cliente não informa `kind`."""
+    from urllib.parse import urlparse as _up
+
+    path = _up(url).path.lower()
+    if path.endswith(".m3u8"):
+        return "hls"
+    if path.endswith(".mpd"):
+        return "dash"
+    return "file"
 
 
 def serve(app: App, port: int | None = None) -> None:

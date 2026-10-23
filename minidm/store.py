@@ -67,6 +67,11 @@ class TaskStore:
                     os.remove(p)
                 except OSError:
                     pass
+            # segmentos avulsos de streams (HLS/DASH)
+            segs = os.path.join(t.dest_dir, f".{t.filename}.segs")
+            if os.path.isdir(segs):
+                import shutil
+                shutil.rmtree(segs, ignore_errors=True)
         del self.tasks[t.id]
         self.save()
         return True

@@ -19,9 +19,10 @@ import time
 from typing import Callable, Optional
 
 from minidm.config import AppConfig
-from minidm.downloader import DownloadError, Downloader
+from minidm.downloader import DownloadError
 from minidm.meta import Task, TaskState
 from minidm.store import TaskStore
+from minidm.stream import StreamError, make_downloader
 from minidm.throttle import TokenBucket
 
 
@@ -34,7 +35,7 @@ class Scheduler:
         self._cv = threading.Condition()
         self._stop = threading.Event()
         self._workers: list[threading.Thread] = []
-        self._active: dict[str, Downloader] = {}
+        self._active: dict[str, object] = {}
         self.sem = threading.BoundedSemaphore(max(1, config.max_connections))
         self.bucket = (TokenBucket(config.throttle_bps)
                        if config.throttle_bps > 0 else None)
@@ -125,6 +126,7 @@ class Scheduler:
                 "id": t.id,
                 "url": t.url,
                 "filename": t.filename,
+                "kind": t.kind,
                 "state": t.state,
                 "progress": t.progress,
                 "received": t.received,
@@ -185,15 +187,15 @@ class Scheduler:
                     self._cv.wait(0.5)
                 continue
 
-            dl = Downloader(task, config=self.config, semaphore=self.sem,
-                            bucket=self.bucket)
+            dl = make_downloader(task, config=self.config, semaphore=self.sem,
+                                 bucket=self.bucket)
             with self._cv:
                 self._active[task.id] = dl
             self._emit("start", task)
             try:
                 dl.run()
                 self._emit("done", task)
-            except DownloadError as e:
+            except (DownloadError, StreamError):
                 self._emit("paused" if task.state == TaskState.PAUSED
                            else "error", task)
             finally:

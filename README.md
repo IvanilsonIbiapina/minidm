@@ -5,7 +5,7 @@ inspirado nos conceitos observados em gerenciadores comerciais (fila de
 downloads, retomada, segmentação multi-thread, integração com navegador),
 porém com código próprio e sem qualquer mecanismo de licenciamento.
 
-## Recursos (v2)
+## Recursos (v2 + captura de vídeo)
 
 | Recurso | Como usar |
 |---|---|
@@ -23,15 +23,63 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | Fila persistente | `add`, `list`, `start`, `pause`, `remove` |
 | Área de transferência | `python -m minidm watch` (ou no daemon) |
 | API p/ extensão do navegador | `python -m minidm serve` + `browser_ext/` |
+| **Captura de vídeo (HLS/DASH/direto)** | extensão detecta vídeos e lista qualidades (abaixo) |
+| **Download de stream HLS/DASH** | `media <url>` — segmentos `.ts`/`.m4s` em paralelo, concatena e decifra AES-128 |
 
 ## Instalação
 
 Requer Python 3.11+ e `requests` + `rich` (a interface usa `tkinter`, que já
-vem com o Python):
+vem com o Python). Para streams **criptografados (HLS AES-128)**, instale
+também `cryptography`:
 
 ```bat
-python -m pip install requests rich
+python -m pip install requests rich cryptography
 ```
+
+## Captura de vídeos no navegador (estilo IDM)
+
+O IDM detecta vídeos enquanto você navega e oferece download com as
+qualidades disponíveis. O `minidm` faz o mesmo com a extensão `browser_ext/`:
+
+1. **Ligue a API** — rode `python -m minidm serve` (ou `daemon`, ou marque
+   **API do navegador** na GUI). A API fica em `http://127.0.0.1:9742`.
+2. **Instale a extensão** — no Chrome/Edge: `chrome://extensions` →
+   **Modo programador** → **Carregar expandida** → escolha a pasta
+   `browser_ext/`. (No Firefox, use a versão MV2 — não testada aqui.)
+3. **Navegue** — a extensão observa as requisições da aba (`webRequest`) e as
+   tags `<video>/<source>`, guardando tudo que parece mídia (`.mp4`, `.m3u8`,
+   `.mpd`, `.webm`, áudio…). O ícone mostra um badge com o nº de mídias.
+4. **Clique no ícone** — o painel lista o que foi capturado. Para HLS/DASH,
+   o botão **Qualidades…** chama `POST /media/analyze` e mostra as opções
+   (resolução + bitrate). **Baixar** envia a escolhida para a fila, com
+   `Referer` da página e cookies do domínio (como o IDM faz).
+
+Também há botão de contexto **Enviar para o minidm** (link/página) e
+**Baixar vídeo desta página**.
+
+### Análise via terminal
+
+```bat
+python -m minidm media "https://…/master.m3u8"
+python -m minidm media "https://…/master.m3u8" --download 2 --start
+```
+
+O `media` detecta o tipo (master HLS, media HLS, DASH ou arquivo direto),
+lista as qualidades com bitrate/tamanho estimado, e `--download N` baixa a
+escolhida. Streams HLS viram `.ts`; DASH e fMP4 viram `.mp4`.
+
+### O que a engine de stream faz
+
+* resolve master → variante (maior bitrate, ou a escolhida);
+* baixa os segmentos em paralelo (semáforo de conexões + token bucket
+  globais, retry com backoff);
+* decifra **AES-128/CBC** (HLS `#EXT-X-KEY`), com IV do playlist ou número
+  de sequência;
+* entende `#EXT-X-MAP` (fMP4), `#EXT-X-BYTERANGE`, DASH `SegmentTemplate`
+  (+ `SegmentTimeline`) e `SegmentList`;
+* concatena tudo num arquivo final e calcula o SHA-256;
+* **retoma** de onde parou (segmentos já baixados ficam em
+  `.<arquivo>.segs/` e são pulados).
 
 ## interface gráfica (sem terminal)
 
@@ -84,20 +132,25 @@ python -m minidm verify C:\Downloads\app.exe --url https://exemplo.com/app.exe
 
 ### Extensão do navegador
 
-`browser_ext/` tem uma extensão MV3 de exemplo. Em `chrome://extensions`,
-ative "Modo de desenvolvedor" → "Carregar descompactada" → aponte para a
-pasta `browser_ext`. Com o `minidm daemon`/`serve` rodando, botão direito no
-link → **Enviar para o minidm**.
+`browser_ext/` é uma extensão MV3. Em `chrome://extensions`, ative **Modo de
+desenvolvedor** → **Carregar descompactada** → aponte para a pasta
+`browser_ext`. Com o `minidm daemon`/`serve` rodando (ou **API do navegador**
+marcado na GUI), a extensão captura vídeos da navegação e o painel (ícone)
+mostra as qualidades. Botão direito → **Enviar para o minidm**.
 
 ## API local (127.0.0.1:9742)
 
 ```
 GET  /status                  -> tarefas + config resumida
 GET  /config                  -> configuração efetiva
-POST /add      {url, filename?, dir?, mirrors?, sha256?, proxy?, cookie?, start?}
+POST /add      {url, filename?, dir?, kind?, referer?, mirrors?, sha256?,
+                proxy?, cookie?, user_agent?, start?}
 POST /start    {id|ids|all}
 POST /pause    {id}
 POST /remove   {id, delete?}
+POST /media/analyze {url, referer?, cookie?, user_agent?, proxy?}
+                   -> {ok, kind, qualities:[{label,url,bandwidth,
+                       resolution,estimated_size}], duration, encrypted}
 ```
 
 ## Como funciona
@@ -127,20 +180,22 @@ minidm-gui-debug.bat   idem, com terminal (depuração)
 docs/analise-idm.md    análise reversa do IDM que embasa este projeto
 minidm/
   gui.py         interface gráfica (tkinter, roda o scheduler em processo)
-  cli.py         argparse + comandos (gui, add, daemon, tui, verify, …)
+  cli.py         argparse + comandos (gui, add, media, daemon, tui, verify, …)
   config.py      AppConfig (arquivo + flags)
-  meta.py        Task/Segment + persistência
+  meta.py        Task/Segment + persistência (kind/referer/stream)
   remote.py      sondagem do servidor
-  downloader.py  engine: segmentos, retry, mirrors, throttle, verificação
+  downloader.py  engine de arquivo: segmentos, retry, mirrors, throttle
+  stream.py      engine de stream: HLS/DASH, AES-128, retomada
+  media.py       parsing/análise de mídia (m3u8, MPD, qualidades)
   scheduler.py   pool global: N tarefas, semáforo de conexões, bucket
   throttle.py    token bucket
   verify.py      SHA-256, checksums remotos, Authenticode
   clipboard.py   observador Win32 (ctypes)
-  server.py      API HTTP local
+  server.py      API HTTP local (+ /media/analyze)
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
-  browser_ext/   extensão MV3 de exemplo
-tests/           18 testes (engine, retry, mirrors, scheduler, throttle)
+  browser_ext/   extensão MV3 (captura de vídeo + envio p/ API)
+tests/           47 testes (engine, stream, mídia, API, integração)
 ```
 
 ## Testes
@@ -149,9 +204,16 @@ tests/           18 testes (engine, retry, mirrors, scheduler, throttle)
 python -m unittest discover -s tests -v
 ```
 
+Cobrem: engine de arquivo (segmentação/retomada/retry/mirrors/throttle),
+engine de stream (master/media/AES/DASH/retomada), parsing de m3u8+MPD,
+`analyze`, e a API (`/media/analyze`+`/add`) de ponta a ponta.
+
 ## Limitações conhecidas
 
 - Sem suporte a `sftp`/`ftp`, sem segmentação por `multipart/form-data`.
 - Fila em JSON único (bom para uso local; sem trava entre processos).
 - A extensão do navegador é um exemplo mínimo — não há auto-instalação.
 - `verify` usa `Get-AuthenticodeSignature` (só Windows).
+- HLS ao vivo (sem `#EXT-X-ENDLIST`) e DRM (Widevine/FairPlay) não são
+  suportados — só streams descartáveis/sem DRM.
+- DASH `SegmentTemplate` assume período único e timeline contínua.
