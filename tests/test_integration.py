@@ -51,6 +51,13 @@ high1.ts
 LOW_SEGS = [b"L" * 1000, b"L" * 1100]
 HIGH_SEGS = [b"H" * 2000, b"H" * 2100]
 
+# master com Widevine (SESSION-KEY) — o servidor tem que recusar
+MASTER_DRM = """#EXTM3U
+#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,URI="data:text/plain;base64,AAAA",KEYFORMAT="com.widevine.alpha"
+#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=1280x720
+high.m3u8
+"""
+
 
 class HlsHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -72,6 +79,8 @@ class HlsHandler(BaseHTTPRequestHandler):
         p = self.path
         if p.endswith("master.m3u8"):
             self._send(MASTER.encode(), "application/vnd.apple.mpegurl")
+        elif p.endswith("master-drm.m3u8"):
+            self._send(MASTER_DRM.encode(), "application/vnd.apple.mpegurl")
         elif p.endswith("low.m3u8"):
             self._send(LOW.encode(), "application/vnd.apple.mpegurl")
         elif p.endswith("high.m3u8"):
@@ -184,6 +193,58 @@ class TestApiIntegration(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(req, timeout=10)
         self.assertEqual(ctx.exception.code, 400)
+
+    def test_06_add_auto_escolhe_melhor_qualidade_e_titulo(self):
+        # fluxo do popup: kind=auto + page_title -> servidor analisa,
+        # escolhe 720p e nomeia pelo título da página
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": f"{self.hls_base}/master.m3u8", "kind": "auto",
+             "referer": "http://p/", "page_title": "Aula 03 — Cinemática",
+             "start": False})
+        self.assertEqual(status, 201, data)
+        task = self.store.get(data["id"])
+        self.assertEqual(task.kind, "hls")
+        self.assertEqual(task.url, f"{self.hls_base}/high.m3u8")
+        self.assertEqual(task.filename, "Aula 03 — Cinemática")
+        self.assertEqual(task.referer, "http://p/")
+        self.assertEqual(task.page_title, "Aula 03 — Cinemática")
+
+    def test_07_add_auto_com_dir_e_nome_escolhidos(self):
+        dest = os.path.join(self.tmp, "meus videos")
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": f"{self.hls_base}/master.m3u8", "kind": "auto",
+             "quality": "360p (640x360)",
+             "filename": "aula-cinema", "dir": dest, "start": False})
+        self.assertEqual(status, 201, data)
+        task = self.store.get(data["id"])
+        self.assertEqual(task.dest_dir, dest)
+        self.assertEqual(task.filename, "aula-cinema")
+        self.assertEqual(task.url, f"{self.hls_base}/low.m3u8")
+
+    def test_08_add_auto_por_indice_de_qualidade(self):
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": f"{self.hls_base}/master.m3u8", "kind": "auto",
+             "quality": 0, "start": False})
+        self.assertEqual(status, 201, data)
+        task = self.store.get(data["id"])
+        # índice 0 = primeira variante (360p no nosso master de teste)
+        self.assertEqual(task.url, f"{self.hls_base}/low.m3u8")
+
+    def test_09_add_auto_drm_e_recusado(self):
+        req = urllib.request.Request(
+            f"{self.api_base}/add",
+            data=json.dumps({"url": f"{self.hls_base}/master-drm.m3u8",
+                             "kind": "auto"}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=30)
+        self.assertEqual(ctx.exception.code, 400)
+        body = json.loads(ctx.exception.read().decode())
+        self.assertEqual(body["drm"], "widevine")
+        self.assertIn("DRM", body["error"])
 
 
 if __name__ == "__main__":

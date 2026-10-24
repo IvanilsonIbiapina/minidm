@@ -1,16 +1,21 @@
 // popup.js — lista mídia capturada na aba e envia para o minidm.
 //
-// Para cada item, o popup pode chamar POST /media/analyze (que o minidm
-// resolve HLS/DASH e devolve as qualidades) — é o equivalente ao menu de
-// qualidades do IDM ao capturar um vídeo.
+// Fluxo (igual ao IDM ao capturar um vídeo):
+//   1. lista o que a aba tem, com OS QUE TÊM QUALIDADE PRIMEIRO (HLS/DASH);
+//   2. "Baixar" abre a caixa "Salvar como": qualidade, nome do arquivo e
+//      pasta (a última usada fica guardada);
+//   3. envia para o minidm com Referer + cookies + título da página.
+// DRM: quando o analyze recusa, mostramos o aviso em vermelho (não baixamos).
 
 const $ = (sel) => document.querySelector(sel);
 
 let currentTab = null;
+let pageTitle = "";
 
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab || null;
+  pageTitle = (tab && tab.title) || "";
 
   const { up } = await chrome.runtime.sendMessage({ type: "ping" });
   const dot = $("#apiDot");
@@ -54,6 +59,16 @@ function kindOf(url, contentType) {
   return "mídia";
 }
 
+// prioridade: quem tem QUALIDADE primeiro (HLS/DASH), depois vídeo, áudio,
+// o resto — dentro do grupo, os mais recentes primeiro.
+function priorityOf(item) {
+  const k = kindOf(item.url, item.contentType);
+  if (k === "HLS" || k === "DASH") return 0;
+  if (k === "vídeo") return 1;
+  if (k === "áudio") return 2;
+  return 3;
+}
+
 function render(items) {
   const list = $("#list");
   if (!items.length) {
@@ -61,8 +76,8 @@ function render(items) {
       Toque um vídeo ou abra uma página com player.</div>`;
     return;
   }
-  // mais recentes primeiro; HLS/DASH primeiro (são os que têm qualidades)
-  items.sort((a, b) => (b.time || 0) - (a.time || 0));
+  items = items.slice().sort((a, b) =>
+    priorityOf(a) - priorityOf(b) || (b.time || 0) - (a.time || 0));
   list.innerHTML = "";
   for (const item of items) {
     list.appendChild(renderItem(item));
@@ -76,15 +91,25 @@ function renderItem(item) {
   const kind = kindOf(item.url, item.contentType);
   const isStream = kind === "HLS" || kind === "DASH";
 
+  const head = document.createElement("div");
+  head.className = "head";
+
+  const badge = document.createElement("span");
+  badge.className = `badge ${isStream ? "stream" : ""} ` +
+    (kind === "áudio" ? "audio" : "");
+  badge.textContent = isStream ? `${kind} · qualidades` : kind;
+  head.appendChild(badge);
+
   const urlEl = document.createElement("div");
   urlEl.className = "url";
   urlEl.textContent = shortUrl(item.url);
   urlEl.title = item.url;
-  el.appendChild(urlEl);
+  head.appendChild(urlEl);
+  el.appendChild(head);
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  const bits = [kind];
+  const bits = [];
   if (item.contentType) bits.push(item.contentType.split(";")[0]);
   if (item.size) bits.push(humanSize(item.size));
   if (item.filename) bits.push(item.filename);
@@ -96,90 +121,157 @@ function renderItem(item) {
   actions.className = "actions";
 
   const dl = document.createElement("button");
-  dl.textContent = "Baixar";
-  dl.addEventListener("click", () => download(el, item, null));
+  dl.textContent = isStream ? "Escolher qualidade…" : "Baixar…";
+  dl.addEventListener("click", () => openSaveDialog(el, item));
   actions.appendChild(dl);
-
-  if (isStream) {
-    const qbtn = document.createElement("button");
-    qbtn.className = "secondary";
-    qbtn.textContent = "Qualidades…";
-    qbtn.addEventListener("click", () => showQualities(el, item));
-    actions.appendChild(qbtn);
-  }
 
   el.appendChild(actions);
   return el;
 }
 
-async function showQualities(el, item) {
-  const container = el.querySelector(".qualities");
-  if (container) { container.remove(); return; }
+// --------------------------------------------------------- caixa Salvar como
+// Estilo IDM: qualidade (quando há), nome editável e pasta de destino.
+async function openSaveDialog(el, item, preselectedQuality) {
+  const existing = el.querySelector(".save");
+  if (existing) { existing.remove(); return; }
 
   const box = document.createElement("div");
-  box.className = "qualities";
+  box.className = "save";
   box.innerHTML = `<div class="q">analisando…</div>`;
   el.appendChild(box);
 
   const res = await chrome.runtime.sendMessage({
     type: "analyze",
-    payload: { url: item.url, referer: item.referer || (currentTab && currentTab.url) || "" },
+    payload: {
+      url: item.url,
+      referer: item.referer || (currentTab && currentTab.url) || "",
+      page_title: pageTitle,
+    },
   });
 
   if (!res || !res.ok) {
-    box.innerHTML = `<div class="q">falha: ${(res && res.error) || "sem resposta"}</div>`;
+    const err = (res && res.error) || "sem resposta";
+    const drm = res && res.drm;
+    box.innerHTML = "";
+    const msg = document.createElement("div");
+    msg.className = drm ? "q drm" : "q error";
+    msg.textContent = drm
+      ? `DRM (${drm}) — conteúdo protegido, não é possível baixar`
+      : `falha: ${err}`;
+    box.appendChild(msg);
     return;
   }
+
+  const qualities = res.qualities || [];
   box.innerHTML = "";
-  if (!res.qualities || !res.qualities.length) {
-    box.innerHTML = `<div class="q">nenhuma qualidade encontrada</div>`;
-    return;
-  }
-  for (const q of res.qualities) {
+
+  // --- qualidade (só quando o servidor listou mais de uma opção)
+  let qualitySelect = null;
+  if (qualities.length > 1) {
     const row = document.createElement("div");
-    row.className = "q";
-
-    const label = document.createElement("span");
-    label.className = "label";
-    label.textContent = q.label;
-
-    const size = document.createElement("span");
-    size.className = "size";
-    size.textContent = q.estimated_size ? humanSize(q.estimated_size) : "";
-
-    const btn = document.createElement("button");
-    btn.textContent = "Baixar";
-    btn.addEventListener("click", () =>
-      download(el, { ...item, url: q.url }, q.label));
-
-    row.append(label, size, btn);
+    row.className = "row";
+    const lab = document.createElement("label");
+    lab.textContent = "Qualidade:";
+    qualitySelect = document.createElement("select");
+    qualities.forEach((q, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = q.label +
+        (q.estimated_size ? ` — ${humanSize(q.estimated_size)}` : "");
+      qualitySelect.appendChild(opt);
+    });
+    // padrão: a melhor qualidade (servidor já ordenou por conveniência,
+    // mas garantimos a maior resolução/banda aqui)
+    let best = 0;
+    qualities.forEach((q, i) => {
+      const c = qualities[best];
+      const better = (q.height || 0) > (c.height || 0) ||
+        ((q.height || 0) === (c.height || 0) &&
+         (q.bandwidth || 0) > (c.bandwidth || 0) && !c.audio_only);
+      if (better && !q.audio_only) best = i;
+    });
+    if (preselectedQuality != null) {
+      const idx = qualities.findIndex((q) => q.label === preselectedQuality);
+      if (idx >= 0) best = idx;
+    }
+    qualitySelect.value = String(best);
+    row.append(lab, qualitySelect);
     box.appendChild(row);
   }
-}
+  const qualityAt = () =>
+    qualitySelect ? qualities[parseInt(qualitySelect.value, 10)] : qualities[0];
 
-async function download(el, item, qualityLabel) {
-  const btns = el.querySelectorAll("button");
-  btns.forEach((b) => (b.disabled = true));
+  // --- nome do arquivo (editável, como o "Salvar como" do IDM)
+  const nameRow = document.createElement("div");
+  nameRow.className = "row";
+  const nameLab = document.createElement("label");
+  nameLab.textContent = "Nome:";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = res.filename || item.filename || "video";
+  nameRow.append(nameLab, nameInput);
+  box.appendChild(nameRow);
 
-  const isStream = /\.m3u8|\.mpd/i.test(item.url);
-  const payload = {
-    url: item.url,
-    referer: (currentTab && currentTab.url) || "",
-    filename: item.filename || undefined,
-    kind: isStream ? (/\.mpd/i.test(item.url) ? "dash" : "hls") : undefined,
-  };
-  if (qualityLabel) payload.filename = undefined; // deixa o minidm nomear
+  // --- pasta de destino (lembra a última usada)
+  const dirRow = document.createElement("div");
+  dirRow.className = "row";
+  const dirLab = document.createElement("label");
+  dirLab.textContent = "Pasta:";
+  const dirInput = document.createElement("input");
+  dirInput.type = "text";
+  dirInput.placeholder = "padrão do minidm (Downloads)";
+  dirRow.append(dirLab, dirInput);
+  box.appendChild(dirRow);
+  chrome.storage.local.get("lastDir").then(({ lastDir }) => {
+    if (lastDir) dirInput.value = lastDir;
+  });
 
-  const res = await chrome.runtime.sendMessage({ type: "download", payload });
-  btns.forEach((b) => (b.disabled = false));
+  // --- botão confirmar
+  const btnRow = document.createElement("div");
+  btnRow.className = "row";
+  const go = document.createElement("button");
+  go.textContent = "Iniciar download";
+  const cancel = document.createElement("button");
+  cancel.className = "secondary";
+  cancel.textContent = "Cancelar";
+  cancel.addEventListener("click", () => box.remove());
+  btnRow.append(go, cancel);
+  box.appendChild(btnRow);
 
-  if (res && res.ok) {
-    const msg = document.createElement("div");
-    msg.className = "meta";
-    msg.textContent = `✓ na fila${res.id ? ` [${res.id}]` : ""}` +
-      (qualityLabel ? ` — ${qualityLabel}` : "");
-    el.appendChild(msg);
-  }
+  go.addEventListener("click", async () => {
+    const q = qualityAt() || {};
+    const payload = {
+      url: q.url || item.url,
+      quality_url: q.url || item.url,
+      kind: q.kind || undefined,
+      referer: item.referer || (currentTab && currentTab.url) || "",
+      page_title: pageTitle,
+      filename: nameInput.value.trim() || undefined,
+      dir: dirInput.value.trim() || undefined,
+      quality_label: q.label || undefined,
+    };
+    btnRow.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    const sent = await chrome.runtime.sendMessage({ type: "download", payload });
+    btnRow.querySelectorAll("button").forEach((b) => (b.disabled = false));
+
+    if (sent && sent.ok) {
+      if (dirInput.value.trim()) {
+        chrome.storage.local.set({ lastDir: dirInput.value.trim() });
+      }
+      box.innerHTML = "";
+      const ok = document.createElement("div");
+      ok.className = "q ok";
+      ok.textContent = `✓ na fila${sent.id ? ` [${sent.id}]` : ""}` +
+        (sent.filename ? ` — ${sent.filename}` : "") +
+        (q.label && qualities.length > 1 ? ` (${q.label})` : "");
+      box.appendChild(ok);
+    } else {
+      const err = document.createElement("div");
+      err.className = "q error";
+      err.textContent = `falha: ${(sent && sent.error) || "sem resposta"}`;
+      box.appendChild(err);
+    }
+  });
 }
 
 init();

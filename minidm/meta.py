@@ -67,6 +67,10 @@ class Task:
     kind: str = "file"               # "file" | "hls" | "dash"
     referer: str = ""                # página de origem (muitos CDNs exigem)
     stream: Optional[dict] = None    # plano de segmentos do stream (resume)
+    # ---- v4 (nome/origem como o IDM)
+    page_title: str = ""             # título da página (melhora o nome)
+    quality_label: str = ""          # "1080p", "áudio — pt-BR"…
+    origin_url: str = ""             # URL da página (quando difere da mídia)
 
     # ---------------------------------------------------------------- paths
     @property

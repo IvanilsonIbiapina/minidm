@@ -258,6 +258,10 @@ class StreamDownloader:
     def _resolve_hls(self, url: str) -> dict:
         text = self._get_text(url)
         playlist = parse_m3u8(text, url)
+        if playlist.get("drm"):
+            raise StreamError(
+                f"conteúdo protegido por DRM ({playlist['drm']}) — "
+                f"não é possível baixar")
         resolved = url
         if playlist["type"] == "master":
             variants = playlist["variants"]
@@ -269,6 +273,10 @@ class StreamDownloader:
             playlist = parse_m3u8(text, resolved)
             if playlist["type"] != "media":
                 raise StreamError("variante não é playlist de mídia")
+            if playlist.get("drm"):
+                raise StreamError(
+                    f"variante protegida por DRM ({playlist['drm']}) — "
+                    f"não é possível baixar")
         if not playlist["segments"]:
             raise StreamError("playlist sem segmentos")
 
@@ -304,6 +312,10 @@ class StreamDownloader:
 
     def _resolve_dash(self, url: str) -> dict:
         dash = parse_mpd(self._get_text(url), url)
+        if dash.get("drm"):
+            raise StreamError(
+                f"conteúdo protegido por DRM ({dash['drm']}) — "
+                f"não é possível baixar")
         reps = dash.get("representations") or []
         video = [r for r in reps if r["mimeType"].startswith("video")]
         pool = video or [r for r in reps if r["mimeType"].startswith("audio")]

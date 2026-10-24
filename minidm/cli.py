@@ -241,13 +241,19 @@ def cmd_media(args) -> int:
     from minidm.media import analyze
 
     cfg = _cfg(args)
-    print(f"analisando {args.url} …")
+    print(f"analisando {args.url} …" +
+          (" (via yt-dlp)" if getattr(args, "ytdlp", False) else ""))
     r = analyze(args.url, referer=args.referer or "",
                 user_agent=args.user_agent or cfg.user_agent,
                 cookie=args.cookie or cfg.cookie,
-                proxy=args.proxy or cfg.proxy)
+                proxy=args.proxy or cfg.proxy,
+                use_ytdlp=bool(getattr(args, "ytdlp", False)))
     if not r.get("ok"):
-        print(f"falha: {r.get('error')}", file=sys.stderr)
+        if r.get("drm"):
+            print(f"DRM ({r['drm']}): conteúdo protegido — "
+                  f"não é possível baixar.", file=sys.stderr)
+        else:
+            print(f"falha: {r.get('error')}", file=sys.stderr)
         return 1
     dur = r.get("duration")
     print(f"tipo: {r['kind']}" + (f"  duração: {dur:.1f}s" if dur else "")
@@ -412,6 +418,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--dir", help="diretório de destino")
     a.add_argument("--start", action="store_true",
                    help="começa já baixar (com --download)")
+    a.add_argument("--ytdlp", action="store_true",
+                   help="analisa com o yt-dlp instalado (sites complexos)")
     _add_net_flags(a)
     a.set_defaults(func=cmd_media)
 

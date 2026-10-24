@@ -24,6 +24,13 @@
   #status { font-size: 11px; opacity: .9; }
   main { max-height: 420px; overflow-y: auto; }
   .item { border-bottom: 1px solid rgba(128,128,128,.25); padding: 8px 12px; }
+  .item .head { display: flex; align-items: center; gap: 6px; }
+  .badge {
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    background: rgba(128,128,128,.25); color: inherit; white-space: nowrap;
+  }
+  .badge.stream { background: #0a7bd8; color: #fff; }
+  .badge.audio { background: #8a2be2; color: #fff; }
   .item .url {
     font-size: 12px; word-break: break-all; color: #0a7bd8;
     cursor: pointer; text-decoration: underline;
@@ -37,15 +44,22 @@
   button:hover { background: #0866b5; }
   button.secondary { background: rgba(128,128,128,.25); color: inherit; }
   button:disabled { opacity: .5; cursor: default; }
-  select { font: inherit; max-width: 190px; }
-  .empty { padding: 24px 16px; text-align: center; opacity: .7; }
-  .qualities { margin-top: 6px; }
-  .qualities .q {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 0; font-size: 12px;
+  select { font: inherit; max-width: 220px; }
+  input {
+    font: inherit; flex: 1; min-width: 0; padding: 3px 6px;
+    border: 1px solid rgba(128,128,128,.5); border-radius: 4px;
+    background: transparent; color: inherit;
   }
-  .qualities .q .label { flex: 1; }
-  .qualities .q .size { opacity: .7; font-size: 11px; }
+  .empty { padding: 24px 16px; text-align: center; opacity: .7; }
+  .save { margin-top: 8px; padding: 8px; border-radius: 6px;
+          background: rgba(128,128,128,.12); }
+  .save .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .save .row label { font-size: 11px; width: 58px; opacity: .8;
+                     white-space: nowrap; }
+  .save .q { font-size: 12px; padding: 2px 0; }
+  .save .q.ok { color: #35c759; }
+  .save .q.error { color: #ff5f57; }
+  .save .q.drm { color: #ff5f57; font-weight: 600; }
   footer { padding: 8px 12px; font-size: 11px; opacity: .7; text-align: center; }
 </style>
 </head>

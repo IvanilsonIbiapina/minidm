@@ -34,6 +34,28 @@ _ISO_DUR_RE = re.compile(
     r"^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$",
     re.IGNORECASE)
 
+# ------------------------------------------------------------ DRM (detecção)
+# Só DETECTAMOS e reportamos — decodificação de DRM não é suportada (nem o
+# IDM baixa conteúdo com Widevine/FairPlay; a chave vem de um CDM licenciado
+# e contornar a proteção viola DMCA §1201 / Lei 9.610).
+DRM_HLS_METHODS = {"SAMPLE-AES", "SAMPLE-AES-CTR", "SAMPLE-AES-CSM",
+                   "ISO-23001-7"}
+_UUID_TO_DRM = {
+    "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed": "widevine",
+    "9a04f079-9840-4286-ab92-e65be0885f95": "playready",
+    "94ce8646-4741-4c55-8c84-4a55f6b3f6c4": "fairplay",
+    "1077efec-c0b2-4d02-ace3-3c1e52e2fb4b": "marlin",
+}
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+# nomes genéricos de playlist não servem como nome de arquivo
+_GENERIC_BASENAMES = {
+    "master", "index", "playlist", "stream", "video", "media", "manifest",
+    "chunk", "seg", "segment", "get", "play", "output", "default", "content",
+    "file", "data", "hls", "dash", "player", "v", "a", "video_player",
+}
+
 
 def build_headers(referer: str = "", user_agent: str = "",
                   cookie: str = "") -> dict:
@@ -66,8 +88,61 @@ def _parse_byterange(value: str) -> Optional[tuple[int, int]]:
 def _key_from_attrs(attrs: dict, base_url: str) -> dict:
     key = {"method": attrs.get("METHOD", "NONE").upper(),
            "uri": urljoin(base_url, attrs["URI"]) if attrs.get("URI") else None,
-           "iv": attrs.get("IV", "").lower() if attrs.get("IV") else None}
+           "iv": attrs.get("IV", "").lower() if attrs.get("IV") else None,
+           "keyformat": attrs.get("KEYFORMAT", ""),
+           "drm": None}
+    key["drm"] = _drm_from_key(key)
     return key
+
+
+def _drm_from_key(key: dict) -> Optional[str]:
+    """Método/KEYFORMAT de uma EXT-X-KEY -> nome do DRM (ou None se descartável)."""
+    method = (key.get("method") or "").upper()
+    if method in ("NONE", "AES-128"):
+        # AES-128 comum é stream descartável (sem DRM) — suportamos
+        return None
+    kf = (key.get("keyformat") or "").lower()
+    if "widevine" in kf or "com.widevine" in kf:
+        return "widevine"
+    if "fairplay" in kf or "com.apple.streamingkeydelivery" in kf:
+        return "fairplay"
+    if "playready" in kf:
+        return "playready"
+    if method in DRM_HLS_METHODS:
+        # método de DRM sem keyformat reconhecido
+        return "drm ({} {})".format(method, key.get("keyformat") or "").strip()
+    return None
+
+
+def drm_from_content_protection(scheme_uri: str) -> Optional[str]:
+    """schemeIdUri de <ContentProtection> DASH -> nome do DRM (ou None)."""
+    s = (scheme_uri or "").lower()
+    if not s:
+        return None
+    if "urn:uuid" in s:
+        m = _UUID_RE.search(s)
+        if m:
+            return _UUID_TO_DRM.get(m.group(0).lower(), "drm")
+    if "widevine" in s:
+        return "widevine"
+    if "playready" in s:
+        return "playready"
+    if "fairplay" in s:
+        return "fairplay"
+    if "marlin" in s:
+        return "marlin"
+    if "ctr" in s or "cenc" in s or "mp4protection" in s:
+        return "cenc"        # pode ser só criptografia, mas sinaliza proteção
+    return None
+
+
+def _drm_from_content_protection_nodes(nodes) -> Optional[str]:
+    """Primeiro <ContentProtection> que sinaliza um DRM conhecido."""
+    for node in nodes:
+        d = drm_from_content_protection(node.attrib.get("schemeIdUri", ""))
+        if d:
+            return d
+    return None
 
 
 def parse_m3u8(text: str, base_url: str) -> dict:
@@ -90,12 +165,19 @@ def parse_m3u8(text: str, base_url: str) -> dict:
 
 def _parse_m3u8_master(lines: list[str], base_url: str) -> dict:
     variants, alternates = [], []
+    session_drm = []
     pending_attrs = None
     pending_type = None          # None | "media" (EXT-X-MEDIA)
     for ln in lines:
         if ln.startswith("#EXT-X-STREAM-INF:"):
             pending_attrs = parse_attrs(ln.split(":", 1)[1])
             pending_type = None
+        elif ln.startswith("#EXT-X-SESSION-KEY:"):
+            # sinal de DRM já no master (Widevine/FairPlay costumam avisar aqui)
+            attrs = parse_attrs(ln.split(":", 1)[1])
+            d = _drm_from_key(_key_from_attrs(attrs, base_url))
+            if d:
+                session_drm.append(d)
         elif ln.startswith("#EXT-X-MEDIA:"):
             attrs = parse_attrs(ln.split(":", 1)[1])
             if attrs.get("URI"):      # faixa legenda/áudio com URL própria
@@ -126,7 +208,13 @@ def _parse_m3u8_master(lines: list[str], base_url: str) -> dict:
             pending_attrs = None
         elif ln and pending_attrs is None:
             pass  # URI solta sem atributos — ignora
-    return {"type": "master", "variants": variants, "alternates": alternates}
+    # DRM do master vale para todas as variantes (a menos que a variante
+    # tenha playlist própria sem DRM — isso só dá pra ver baixando ela)
+    drm = session_drm[0] if session_drm else None
+    for v in variants:
+        v["drm"] = drm
+    return {"type": "master", "variants": variants, "alternates": alternates,
+            "drm": drm}
 
 
 def _parse_m3u8_media(lines: list[str], base_url: str) -> dict:
@@ -202,6 +290,13 @@ def _parse_m3u8_media(lines: list[str], base_url: str) -> dict:
             pending_range = None
 
     duration = sum(s["duration"] or 0 for s in segments)
+    # DRM: primeira chave que sinalizar Widevine/FairPlay/etc. vira o tipo
+    drm = None
+    for s in segments:
+        k = s.get("key")
+        if k and k.get("drm"):
+            drm = k["drm"]
+            break
     return {
         "type": "media",
         "target_duration": target_duration,
@@ -211,6 +306,7 @@ def _parse_m3u8_media(lines: list[str], base_url: str) -> dict:
         "init": init,
         "segments": segments,
         "encrypted": any(s["key"] for s in segments),
+        "drm": drm,
     }
 
 
@@ -321,9 +417,14 @@ def parse_mpd(text: str, base_url: str) -> dict:
                     or aset.attrib.get("contentType") or "").lower()
             a_base = urljoin(p_base, _child_text(aset, "BaseURL") or "")
             inherited_tpl = _parse_template(aset, a_base, None)
+            # DRM declarado no AdaptationSet vale para as representações
+            aset_drm = _drm_from_content_protection_nodes(
+                _children(aset, "ContentProtection"))
             for rep in _children(aset, "Representation"):
                 r_mime = (rep.attrib.get("mimeType") or mime).lower()
                 r_base = urljoin(a_base, _child_text(rep, "BaseURL") or "")
+                rep_drm = _drm_from_content_protection_nodes(
+                    _children(rep, "ContentProtection")) or aset_drm
                 entry = {
                     "id": rep.attrib.get("id", ""),
                     "bandwidth": int(rep.attrib["bandwidth"])
@@ -339,6 +440,7 @@ def parse_mpd(text: str, base_url: str) -> dict:
                     "init": None,
                     "template": None,
                     "list": None,
+                    "drm": rep_drm,
                 }
                 tpl = _parse_template(rep, r_base, inherited_tpl)
                 if tpl:
@@ -356,7 +458,14 @@ def parse_mpd(text: str, base_url: str) -> dict:
                             entry["init"] = parsed["init"]
                 representations.append(entry)
 
-    return {"type": "dash", "duration": duration, "representations": representations}
+    # DRM agregado: se QUALQUER representação tem DRM, o stream tem DRM
+    drm = None
+    for r in representations:
+        if r.get("drm"):
+            drm = r["drm"]
+            break
+    return {"type": "dash", "duration": duration,
+            "representations": representations, "drm": drm}
 
 
 def _child_text(el, name: str) -> Optional[str]:
@@ -476,12 +585,30 @@ def _dash_qualities(session, dash: dict, headers: dict, base_url: str,
 
 def analyze(url: str, referer: str = "", user_agent: str = "",
             cookie: str = "", proxy: str = "",
-            timeout: float = TIMEOUT) -> dict:
+            timeout: float = TIMEOUT, page_title: str = "",
+            use_ytdlp: bool = False) -> dict:
     """Analisa uma URL de mídia e lista as qualidades disponíveis.
 
     Retorna {"ok", "kind", "qualities": [...], "duration", "encrypted",
-    "filename"} ou {"ok": False, "error": ...}.
+    "drm", "filename"} ou {"ok": False, "error": ..., "drm": ...}.
+
+    `page_title`: título da página (o navegador pode passar) — melhora o
+    nome do arquivo quando o URL é genérico (master.m3u8, get.php…).
+    `use_ytdlp`: delega a análise para o yt-dlp (se instalado) — cobre
+    sites complexos; se falhar, cai no parser HLS/DASH próprio.
     """
+    if use_ytdlp:
+        try:
+            from minidm import ytdlp
+            res = ytdlp.analyze(url, referer=referer, user_agent=user_agent,
+                                cookie=cookie, timeout=timeout)
+            if res.get("ok") or res.get("drm"):
+                # DRM ou sucesso: não tenta o parser próprio por cima
+                return res
+            # falha comum (site não suportado): cai para o parser próprio
+        except (ImportError, RuntimeError):
+            # yt-dlp ausente ou falhou por completo — parser próprio
+            pass
     headers = build_headers(referer, user_agent, cookie)
     session = requests.Session()
     if proxy:
@@ -491,6 +618,7 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
         text = None
         direct_size = None
         direct_type = None
+        content_disposition = None
 
         if not kind:
             # precisa descobrir o que é: GET parcial + content-type
@@ -501,6 +629,7 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                     return {"ok": False,
                             "error": f"servidor respondeu HTTP {r.status_code}"}
                 direct_type = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                content_disposition = r.headers.get("Content-Disposition")
                 prefix = b""
                 for chunk in r.iter_content(2048):
                     prefix += chunk
@@ -531,10 +660,15 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
             if resp.status_code >= 400:
                 return {"ok": False,
                         "error": f"servidor respondeu HTTP {resp.status_code}"}
+            content_disposition = resp.headers.get("Content-Disposition")
             text = resp.text
 
         if kind == "hls":
             media = parse_m3u8(text, url)
+            if media.get("drm"):
+                return {"ok": False, "drm": media["drm"],
+                        "error": (f"conteúdo protegido por DRM "
+                                  f"({media['drm']}) — não é possível baixar")}
             if media["type"] == "master":
                 qualities = []
                 for v in media["variants"]:
@@ -548,10 +682,25 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                         "duration": None,
                         "estimated_size": None,
                     })
+                # faixas de áudio separadas (música) — só quando há faixa
+                # própria com URL; HLS áudio puro costuma vir assim
+                for alt in media["alternates"]:
+                    if alt.get("type") == "audio" and alt.get("url"):
+                        qualities.append({
+                            "label": f"áudio — {alt.get('name') or alt.get('language') or 'faixa'}",
+                            "url": alt["url"],
+                            "kind": "hls",
+                            "bandwidth": None,
+                            "resolution": None,
+                            "duration": None,
+                            "estimated_size": None,
+                            "audio_only": True,
+                        })
                 return {"ok": True, "kind": "hls-master", "qualities": qualities,
                         "alternates": media["alternates"],
                         "duration": None, "encrypted": False,
-                        "filename": _suggest_name(url)}
+                        "filename": _suggest_name(url, content_disposition,
+                                                  page_title)}
             # playlist de mídia direto: estima tamanho pelo 1º segmento
             size = _estimate_media_size(session, media, headers, timeout)
             return {"ok": True, "kind": "hls-media",
@@ -566,24 +715,29 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                     }],
                     "duration": media["duration"],
                     "encrypted": media["encrypted"],
-                    "filename": _suggest_name(url)}
+                    "filename": _suggest_name(url, content_disposition,
+                                              page_title)}
 
         if kind == "dash":
             dash = parse_mpd(text, url)
+            if dash.get("drm"):
+                return {"ok": False, "drm": dash["drm"],
+                        "error": (f"conteúdo protegido por DRM "
+                                  f"({dash['drm']}) — não é possível baixar")}
             qualities = _dash_qualities(session, dash, headers, url, timeout)
+            # se houver representação só de áudio, marca como tal
+            for q in qualities:
+                rep = q.get("dash") or {}
+                if rep.get("mimeType", "").startswith("audio"):
+                    q["audio_only"] = True
             return {"ok": True, "kind": "dash", "qualities": qualities,
                     "duration": dash.get("duration"),
                     "encrypted": False,
-                    "filename": _suggest_name(url)}
+                    "filename": _suggest_name(url, content_disposition,
+                                              page_title)}
 
         # arquivo direto (mp4/webm/etc.)
-        filename = None
-        try:
-            from minidm.remote import filename_from
-            # tenta pelo URL; Content-Disposition real aparece no download
-            filename = sanitize(filename_from(url))
-        except Exception:
-            pass
+        filename = _suggest_name(url, content_disposition, page_title)
         return {"ok": True, "kind": "file", "qualities": [{
             "label": "original",
             "url": url,
@@ -602,16 +756,69 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
         session.close()
 
 
-def _suggest_name(url: str) -> str:
+def _suggest_name(url: str, content_disposition: str = "",
+                  page_title: str = "") -> str:
+    """Nome de arquivo legível, na ordem de preferência:
+
+    1. `Content-Disposition` do servidor (mais confiável);
+    2. último segmento do URL, se não for genérico;
+    3. `page_title` (título da página, vindo do navegador);
+    4. "video".
+
+    Remove extensão de playlist (.m3u8/.mpd) e decodifica %XX.
+    """
     from minidm.remote import filename_from
 
-    name = filename_from(url)
-    # master.m3u8 -> master (o downloader acrescenta .ts/.mp4)
+    # 1) Content-Disposition
+    if content_disposition:
+        name = filename_from(url, content_disposition)
+        if name and name != "download.bin":
+            return sanitize(_strip_playlist_ext(name))
+
+    # 2) último segmento do URL, se não genérico
+    raw = filename_from(url)
+    stem = _strip_playlist_ext(raw)
+    if stem and _stem_is_useful(stem):
+        return sanitize(stem)
+
+    # 3) título da página (o navegador manda; corta em tamanho razoável)
+    if page_title:
+        title = sanitize(page_title.strip())[:80].strip(" .")
+        if title and _stem_is_useful(title):
+            return sanitize(_strip_playlist_ext(title))
+
+    # 4) fallback: usa o stem mesmo se genérico, senão "video"
+    return sanitize(stem or "video")
+
+
+def _strip_playlist_ext(name: str) -> str:
     for ext in (".m3u8", ".mpd"):
         if name.lower().endswith(ext):
-            name = name[: -len(ext)]
-            break
-    return sanitize(name or "video")
+            return name[: -len(ext)]
+    return name
+
+
+def _stem_is_useful(stem: str) -> bool:
+    """False se o nome é genérico/curto demais para servir de nome de arquivo."""
+    s = stem.strip().lower()
+    if len(s) < 3:
+        return False
+    # "get.php", "video.mp4", "play.aspx" -> checa também sem a extensão
+    candidates = {s}
+    if "." in s:
+        candidates.add(s.rsplit(".", 1)[0])
+    if any(c in _GENERIC_BASENAMES for c in candidates):
+        return False
+    # só dígitos, só hex longo, ou padrão de hash/id
+    if s.isdigit():
+        return False
+    if re.fullmatch(r"[0-9a-f]{16,}", s):
+        return False
+    # código de CDN: letras consoantes + dígitos sem nenhuma vogal
+    # ("x36xhzz", "0a3f9b") — não é um nome legível; melhor o título
+    if re.search(r"\d", s) and not re.search(r"[aeiouyáéíóúâêôãõ]", s):
+        return False
+    return True
 
 
 def suggest_extension(kind: str, init: dict | None = None) -> str:

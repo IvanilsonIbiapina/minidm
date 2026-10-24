@@ -115,15 +115,65 @@ def make_handler(app: App):
             if not url or urlparse(url).scheme not in ("http", "https"):
                 self._json({"error": "url http(s) obrigatória"}, 400)
                 return
-            filename = payload.get("filename") or filename_from(url)
-            kind = payload.get("kind") or _kind_from_payload(url)
+
+            referer = payload.get("referer", "")
+            page_title = payload.get("page_title", "")
+            filename = payload.get("filename", "")
+            dest_dir = payload.get("dir") or app.store.data_dir
+            quality_url = payload.get("quality_url", "")
+            kind = payload.get("kind", "")
+
+            # ------------------------------ modo automático (estilo IDM):
+            # o cliente manda a URL da página/mídia e o SERVIDOR analisa,
+            # escolhe a qualidade e recusa DRM — igual ao "Baixar vídeo"
+            # do IDM que abre a caixa de qualidades.
+            if not quality_url and (kind == "auto" or payload.get("analyze")):
+                from minidm.media import analyze
+
+                res = analyze(
+                    url,
+                    referer=referer,
+                    user_agent=payload.get("user_agent", "")
+                    or app.config.user_agent,
+                    cookie=payload.get("cookie", "") or app.config.cookie,
+                    proxy=payload.get("proxy", "") or app.config.proxy,
+                    page_title=page_title,
+                    use_ytdlp=bool(payload.get("ytdlp")),
+                )
+                if not res.get("ok"):
+                    # DRM e erros voltam claros para o cliente mostrar
+                    self._json({"ok": False, "error": res.get("error"),
+                                "drm": res.get("drm")}, 400)
+                    return
+                q = _pick_quality(res.get("qualities") or [],
+                                  payload.get("quality"))
+                if q is None:
+                    self._json({"ok": False, "error": "nenhuma qualidade"}, 400)
+                    return
+                quality_url = q.get("url", "")
+                kind = q.get("kind", "") or kind
+                if not filename:
+                    filename = res.get("filename", "")
+                payload.setdefault("quality_label", q.get("label", ""))
+
+            if not quality_url:
+                quality_url = url
+            if not kind or kind == "auto":
+                kind = _kind_from_payload(quality_url)
+            if not filename:
+                # usa o nome vindo do servidor/análise, senão o do URL
+                filename = payload.get("filename") or filename_from(quality_url)
+
             task = Task(
-                url=url,
-                dest_dir=payload.get("dir") or app.store.data_dir,
+                url=quality_url,
+                dest_dir=dest_dir,
                 filename=filename,
                 state=TaskState.QUEUED,
                 kind=kind,
-                referer=payload.get("referer", ""),
+                referer=referer,
+                page_title=page_title,
+                quality_label=payload.get("quality_label", ""),
+                origin_url=url if quality_url != url else "",
                 mirrors=[m for m in payload.get("mirrors", [])
                          if isinstance(m, str)],
                 proxy=payload.get("proxy", ""),
@@ -134,7 +184,8 @@ def make_handler(app: App):
             app.store.add(task)
             if payload.get("start", True):
                 app.scheduler.submit([task.id])
-            self._json({"ok": True, "id": task.id, "kind": kind}, 201)
+            self._json({"ok": True, "id": task.id, "kind": kind,
+                        "filename": filename, "dir": dest_dir}, 201)
 
         # -------------------------------------------------- /media/analyze
         def _media_analyze(self, payload):
@@ -152,6 +203,8 @@ def make_handler(app: App):
                 or app.config.user_agent,
                 cookie=payload.get("cookie", "") or app.config.cookie,
                 proxy=payload.get("proxy", "") or app.config.proxy,
+                page_title=payload.get("page_title", ""),
+                use_ytdlp=bool(payload.get("ytdlp")),
             )
             self._json(result, 200 if result.get("ok") else 400)
 
@@ -163,6 +216,29 @@ def _ids(payload) -> list[str]:
     if isinstance(ids, str):
         ids = [ids]
     return ids
+
+
+def _pick_quality(qualities: list, want):
+    """Escolhe uma qualidade: `want` = índice (int), rótulo (str) ou None
+    (= melhor: maior resolução/banda, depois o primeiro)."""
+    if not qualities:
+        return None
+    if isinstance(want, int) and 0 <= want < len(qualities):
+        return qualities[want]
+    if isinstance(want, str) and want:
+        for q in qualities:
+            if q.get("label", "").lower() == want.lower():
+                return q
+        if want.isdigit():
+            return _pick_quality(qualities, int(want))
+
+    def score(q):
+        h = q.get("height") or 0
+        b = q.get("bandwidth") or 0
+        # áudio puro (música) só se pedido explicitamente
+        penalty = -1 if q.get("audio_only") else 0
+        return (penalty, h, b)
+    return max(qualities, key=score)
 
 
 def _kind_from_payload(url: str) -> str:

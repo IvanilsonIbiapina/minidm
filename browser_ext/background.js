@@ -30,7 +30,11 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "send-to-minidm") {
     const url = info.linkUrl || (tab && tab.url);
-    if (url) send({ url, referer: tab ? tab.url : "" });
+    if (url) send({
+      url,
+      referer: tab ? tab.url : "",
+      page_title: tab ? tab.title || "" : "",
+    });
   } else if (info.menuItemId === "download-video") {
     // abre o popup mostrando o que foi capturado nesta aba
     if (tab) chrome.action.openPopup();
@@ -182,7 +186,7 @@ async function cookiesFor(url) {
   }
 }
 
-async function analyze({ url, referer }) {
+async function analyze({ url, referer, page_title }) {
   const cookie = await cookiesFor(url);
   try {
     const r = await fetch(`${API}/media/analyze`, {
@@ -191,6 +195,7 @@ async function analyze({ url, referer }) {
       body: JSON.stringify({
         url,
         referer: referer || "",
+        page_title: page_title || "",
         cookie,
         user_agent: navigator.userAgent,
       }),
