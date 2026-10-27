@@ -220,6 +220,18 @@ class TestYtdlpDownloader(YtdlpBase):
             d.run()
         self.assertEqual(task.state, TaskState.ERROR)
 
+    def test_generic_stem_detecta_id_repetido(self):
+        # "9CtAJ_nw640 [9CtAJ_nw640]" (title==id, sem título real) é
+        # genérico -> o yt-dlp deve nomear com o título verdadeiro.
+        use_dl_stub(self.tmp)
+        yt = "https://www.youtube.com/watch?v=9CtAJ_nw640"
+        d = YtdlpDownloader(self._task(url=yt,
+                                       filename="9CtAJ_nw640 [9CtAJ_nw640].mp4"),
+                            AppConfig(data_dir=self.tmp))
+        self.assertTrue(d._generic_stem("9CtAJ_nw640 [9CtAJ_nw640]"))
+        # nome com título real não é genérico
+        self.assertFalse(d._generic_stem("Aula de Física [9CtAJ_nw640]"))
+
     def test_factory_escolhe_ytdlp_quando_config_manda(self):
         use_dl_stub(self.tmp)
         cfg = AppConfig(data_dir=self.tmp, use_ytdlp_downloader=True)

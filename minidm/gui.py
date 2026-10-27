@@ -21,7 +21,7 @@ from minidm import __version__, clipboard as clipboard_mod
 from minidm.config import AppConfig
 from minidm.dashboard import eta, human
 from minidm.meta import Task, TaskState
-from minidm.remote import filename_from
+from minidm.remote import auto_delegate, filename_from
 from minidm.scheduler import Scheduler
 from minidm.store import TaskStore
 
@@ -313,6 +313,7 @@ class MinidmApp(tk.Tk):
             proxy=spec["proxy"],
             cookie=spec["cookie"],
         )
+        auto_delegate(task)     # link de página (YouTube…) -> yt-dlp
         self.store.add(task)
         self._last_dir = spec["dir"]
         self._status(f"[{task.id}] {task.filename} adicionado.")
@@ -360,6 +361,7 @@ class MinidmApp(tk.Tk):
                 def on_url(url: str):
                     task = Task(url=url, dest_dir=self._last_dir,
                                 filename=filename_from(url))
+                    auto_delegate(task)   # link de página -> yt-dlp
                     self.store.add(task)
                     self.sched.submit([task.id])
                     self.events.put(("info", None))

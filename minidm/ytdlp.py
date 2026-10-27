@@ -54,6 +54,12 @@ def describe(url: str, referer: str = "", user_agent: str = "",
     if not cmd:
         raise RuntimeError("yt-dlp não encontrado (instale: pip install yt-dlp)")
     args = cmd + ["-J", "--no-playlist", "--no-warnings", url]
+    # runtime JS: o YouTube exige para extrair todos os formatos
+    from minidm.deps import js_runtime
+
+    js = js_runtime()
+    if js:
+        args += ["--js-runtimes", js]
     if referer:
         args += ["--add-header", f"Referer:{referer}"]
     if user_agent:

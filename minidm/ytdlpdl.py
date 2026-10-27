@@ -19,6 +19,7 @@ import time
 from typing import Optional
 
 from minidm.config import AppConfig
+from minidm.deps import ffmpeg_dir, js_runtime
 from minidm.meta import Task, TaskState
 from minidm.ytdlp import find as find_ytdlp
 
@@ -27,6 +28,87 @@ _PROGRESS_RE = re.compile(
     r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+)([KMG]?i?B)")
 _SIZE_UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
                "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
+
+# flags do yt-dlp que exigem ffmpeg (pós-processamento: converter, embed, mux)
+_FFMPEG_FLAGS = {
+    "-x", "--extract-audio", "--audio-format", "--audio-quality",
+    "--embed-thumbnail", "--embed-metadata", "--embed-chapters",
+    "--embed-subs", "--sub-format", "--recode-video", "--remux-video",
+    "--merge-output-format", "--postprocessor-args", "--exec",
+}
+# formatos que o yt-dlp só entrega convertendo com ffmpeg
+_CONVERSION_EXTS = {"mp3", "m4a", "opus", "flac", "wav", "aac", "ogg"}
+
+
+def _filter_ffmpeg_args(args: list[str], ffmpeg: Optional[str]) -> list[str]:
+    """Remove argumentos que dependeriam de ffmpeg quando ele não existe.
+
+    Assim o perfil "Música" sem ffmpeg ainda baixa o melhor áudio (em
+    m4a/webm nativo) em vez de abortar com "ffprobe not found". O nome do
+    arquivo é ajustado para a extensão real no `_finalize`.
+    """
+    if ffmpeg:
+        return list(args)
+    out: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in _FFMPEG_FLAGS:
+            # flags com valor no próximo argumento
+            skip = a in ("--audio-format", "--audio-quality", "--sub-format",
+                         "--recode-video", "--remux-video",
+                         "--merge-output-format", "--postprocessor-args",
+                         "--exec")
+            continue
+        out.append(a)
+    return out
+
+
+def _explain_error(tail: list[str], rc: int) -> str:
+    """Mensagem de erro limpa e em português a partir da saída do yt-dlp.
+
+    Filtra os avisos (WARNING) e traduz os erros comuns do YouTube para
+    algo que o usuário entende, em vez de vomitar a saída bruta.
+    """
+    # só as linhas de ERROR (ignora WARNING/DEBUG)
+    errs = [l.strip() for l in tail
+            if "ERROR" in l.upper() and "WARNING" not in l.upper()]
+    if not errs:
+        errs = [l.strip() for l in tail if l.strip()][-2:] or ["erro desconhecido"]
+    msg = " | ".join(errs)
+    low = msg.lower()
+    # traduz os casos mais comuns do YouTube para algo claro
+    if "unavailable" in low:
+        msg += ("  → este vídeo está indisponível no YouTube "
+                "(removido, privado ou bloqueado por região/idade).")
+    elif "private video" in low:
+        msg += "  → vídeo privado — não é possível baixar."
+    elif "age" in low and ("confirm" in low or "restricted" in low):
+        msg += ("  → vídeo com restrição de idade — faça login no navegador "
+                "ou use --cookies.")
+    elif "sign in" in low or "login" in low:
+        msg += "  → o YouTube pediu login — tente com cookies do navegador."
+    elif "javascript runtime" in low:
+        msg += ("  → instale o Node.js (https://nodejs.org) para o yt-dlp "
+                "extrair todos os formatos.")
+    elif "ffmpeg" in low:
+        msg += "  → instale o ffmpeg para conversão/mesclagem."
+    return f"yt-dlp (código {rc}): {msg}"
+
+
+def _hidden_kwargs() -> dict:
+    """Argumentos p/ Popen que evitam abrir janela de console no Windows.
+
+    O yt-dlp é um app de console; quando roda a partir da GUI (tkinter) ou
+    da extensão, o Windows criaria uma janela CMD a cada download. Com
+    CREATE_NO_WINDOW ele roda silencioso em background — o progresso continua
+    chegando pelo pipe (stdout), que é como já lemos.
+    """
+    if os.name == "nt":
+        return {"creationflags": 0x08000000}   # CREATE_NO_WINDOW
+    return {}
 
 
 class YtdlpError(Exception):
@@ -45,6 +127,7 @@ class YtdlpDownloader:
         self._total: Optional[int] = None
         self._speed = 0.0
         self._lock = threading.Lock()
+        self._ytdlp_named = False   # yt-dlp escolheu o nome (título real)
 
     # ------------------------------------------------------------- interface
     def run(self) -> Task:
@@ -56,7 +139,8 @@ class YtdlpDownloader:
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
-                bufsize=1, cwd=t.dest_dir or None)
+                bufsize=1, cwd=t.dest_dir or None,
+                **_hidden_kwargs())
             assert self._proc.stdout is not None
             tail: list[str] = []
             for line in self._proc.stdout:
@@ -73,8 +157,7 @@ class YtdlpDownloader:
                 return t
             if rc != 0:
                 t.state = TaskState.ERROR
-                t.error = (f"yt-dlp saiu com código {rc}: "
-                           f"{' | '.join(tail[-3:])}")
+                t.error = _explain_error(tail, rc)
                 t.save_meta()
                 raise YtdlpError(t.error)
             self._finalize()
@@ -106,9 +189,27 @@ class YtdlpDownloader:
         t = self.task
         args = list(cmd)
         args += ["--newline", "--no-playlist", "--no-mtime"]
-        # saída: o yt-dlp escolhe a extensão; usamos nosso stem
+        # ffmpeg: se existe, aponta o yt-dlp para ele (conversão/embed/mux);
+        # se não, remove os argumentos que exigiriam pós-processamento —
+        # o download continua no melhor formato nativo em vez de falhar.
+        ff = ffmpeg_dir()
+        if ff:
+            args += ["--ffmpeg-location", ff]
+        # runtime JS (node/deno/bun): o YouTube embaralha o URL com
+        # JavaScript; sem runtime, o yt-dlp pode omitir formatos.
+        js = js_runtime()
+        if js:
+            args += ["--js-runtimes", js]
+        # saída: se o nome ainda é o id bruto do URL (sem título real),
+        # deixa o yt-dlp nomear com o título de verdade. Se o usuário/perfil
+        # definiu um nome, respeita (usa o stem como prefixo).
         stem = os.path.splitext(t.filename)[0] or "download"
-        args += ["-o", os.path.join(t.dest_dir or ".", stem + ".%(ext)s")]
+        if self._generic_stem(stem):
+            self._ytdlp_named = True
+            args += ["-o", os.path.join(t.dest_dir or ".",
+                                        "%(title)s [%(id)s].%(ext)s")]
+        else:
+            args += ["-o", os.path.join(t.dest_dir or ".", stem + ".%(ext)s")]
         if t.referer:
             args += ["--add-header", f"Referer:{t.referer}"]
         if t.user_agent or self.config.user_agent:
@@ -119,9 +220,28 @@ class YtdlpDownloader:
         if t.proxy or self.config.proxy:
             args += ["--proxy", t.proxy or self.config.proxy]
         args += self.extra_args
-        args += list(getattr(t, "ytdlp_args", []) or [])
+        args += _filter_ffmpeg_args(getattr(t, "ytdlp_args", []) or [], ff)
         args.append(t.url)
         return args
+
+    def _generic_stem(self, stem: str) -> bool:
+        """O nome é genérico (id do URL, 'download', 'watch')? Aí o título
+        real do yt-dlp é melhor."""
+        from minidm.profiles import _id_from_url, _is_generic
+
+        s = (stem or "").strip().lower()
+        if _is_generic(s):
+            return True
+        vid = _id_from_url(self.task.url)
+        if not vid:
+            return False
+        v = vid.lower()
+        if s == v:
+            return True
+        # template "{title} [{id}]" com title == id (sem título real):
+        # "9CtAJ_nw640 [9CtAJ_nw640]" -> genérico; o yt-dlp nomeia melhor.
+        base = s.rsplit(" [", 1)[0].strip()
+        return base == v or _is_generic(base)
 
     # -------------------------------------------------------------- parsing
     def _parse_line(self, line: str) -> None:
@@ -148,11 +268,31 @@ class YtdlpDownloader:
         base = os.path.splitext(t.filename)[0]
         found = None
         try:
-            for name in os.listdir(t.dest_dir or "."):
-                if name.startswith(base) and not name.endswith(
-                        (".part", ".ytdl", ".meta")):
-                    found = name
-                    break
+            if self._ytdlp_named:
+                # o yt-dlp nomeou com o título real; acha o arquivo de mídia
+                # mais recente que não seja de estado (meta/part/tasks…)
+                import time as _time
+
+                best = None
+                for name in os.listdir(t.dest_dir or "."):
+                    if name.endswith((".part", ".ytdl", ".meta.json")) or \
+                            name in ("tasks.json", "config.json",
+                                     "profiles.json", "archive.txt"):
+                        continue
+                    full = os.path.join(t.dest_dir or ".", name)
+                    if not os.path.isfile(full):
+                        continue
+                    mtime = os.path.getmtime(full)
+                    if best is None or mtime > best[0]:
+                        best = (mtime, name)
+                if best:
+                    found = best[1]
+            else:
+                for name in os.listdir(t.dest_dir or "."):
+                    if name.startswith(base) and not name.endswith(
+                            (".part", ".ytdl", ".meta")):
+                        found = name
+                        break
         except OSError:
             pass
         if found:

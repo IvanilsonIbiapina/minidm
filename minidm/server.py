@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from minidm.meta import Task, TaskState
-from minidm.remote import filename_from
+from minidm.remote import auto_delegate, filename_from
 from minidm.scheduler import Scheduler
 from minidm.store import TaskStore
 
@@ -204,9 +204,27 @@ def make_handler(app: App):
                 pstore = ProfileStore(app.store.data_dir)
                 apply_profile(task, pstore, profile,
                               filename_override=payload.get("filename", ""),
-                              dir_override=payload.get("dir", ""))
+                              dir_override=payload.get("dir", ""),
+                              height=payload.get("height"),
+                              ext=payload.get("ext", ""))
+            elif payload.get("height") or payload.get("ext"):
+                # qualidade/formato escolhidos SEM perfil explícito:
+                # monta o seletor de vídeo e delega ao yt-dlp.
+                from minidm.profiles import build_video_selector
+                from minidm.deps import ffmpeg_available
+
+                sel = build_video_selector(
+                    height=payload.get("height"),
+                    ext=payload.get("ext", ""),
+                    merge=ffmpeg_available())
+                task.ytdlp_args = (task.ytdlp_args or []) + ["-f", sel]
+                task.use_ytdlp_downloader = True
             if payload.get("ytdlp"):
                 task.use_ytdlp_downloader = True
+            elif not payload.get("quality_url"):
+                # link de PÁGINA sem mídia escolhida (ex.: "Baixar vídeo
+                # desta página" da extensão) -> delega ao yt-dlp sozinho.
+                auto_delegate(task)
             app.store.add(task)
             if payload.get("start", True):
                 app.scheduler.submit([task.id])

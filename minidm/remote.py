@@ -46,6 +46,65 @@ def sanitize(name: str) -> str:
     return name or "download.bin"
 
 
+# extensões que indicam arquivo de mídia direto (engine própria resolve)
+_MEDIA_URL_EXTS = {
+    # vídeo
+    "mp4", "m4v", "webm", "mkv", "mov", "flv", "avi", "wmv", "ts", "m2ts",
+    "mpg", "mpeg", "3gp", "ogv",
+    # áudio
+    "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "wma", "amr",
+    # streams
+    "m3u8", "mpd",
+    # outros que a engine própria baixa sem site-module
+    "zip", "rar", "7z", "gz", "tar", "iso", "exe", "msi", "pdf", "apk",
+    "jpg", "jpeg", "png", "gif", "webp", "srt", "vtt", "ass", "torrent",
+}
+
+
+def looks_direct_media(url: str) -> bool:
+    """O URL aponta direto para um arquivo (extensão conhecida no caminho)?
+
+    True  -> a engine própria do minidm resolve (segmentada, retomada…).
+    False -> é uma *página* (youtube.com/watch, instagram.com/…): a engine
+             não entende a "linguagem" do site; delegue ao yt-dlp se houver.
+
+    Heurística só do caminho — sem rede. Páginas com caminho limpo
+    (ex.: /video/123) caem em False, que é o lado seguro: aí o yt-dlp
+    assume, e sem yt-dlp o usuário recebe um erro explicando.
+    """
+    path = unquote(urlparse(url or "").path)
+    name = path.rstrip("/").split("/")[-1]
+    if not name or "." not in name:
+        return False
+    ext = name.rsplit(".", 1)[-1].lower()
+    return ext in _MEDIA_URL_EXTS
+
+
+def auto_delegate(task) -> bool:
+    """Decide se a tarefa deve ser baixada pelo yt-dlp, sem o usuário pedir.
+
+    Regra (usada por TODAS as entradas — CLI, GUI, clipboard, API):
+    já marcada -> mantém; mídia direta/HLS/DASH -> engine própria;
+    página (não-mídia) + yt-dlp instalado -> delega ao yt-dlp.
+
+    É o que faz "cola o link do YouTube e baixa" funcionar em qualquer
+    interface. Devolve True se marcou a tarefa para delegar.
+    """
+    if getattr(task, "use_ytdlp_downloader", False):
+        return True                       # pedido explícito já veio
+    if getattr(task, "kind", "file") in ("hls", "dash"):
+        return False                      # stream: engine própria
+    if looks_direct_media(task.url):
+        return False                      # arquivo direto: engine própria
+    # é uma página; delega se o yt-dlp existir
+    from minidm.ytdlp import available
+
+    if available():
+        task.use_ytdlp_downloader = True
+        return True
+    return False
+
+
 def probe(url: str, headers: dict | None = None) -> Probe:
     """Tenta HEAD; se o servidor não cooperar, faz GET Range mínimo."""
     base = {"User-Agent": USER_AGENT}

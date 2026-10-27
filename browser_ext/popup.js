@@ -43,11 +43,140 @@ async function init() {
   dot.classList.add(up ? "up" : "down");
   $("#status").textContent = up ? "conectado" : "minidm offline";
 
+  // card "baixar esta página" — para links de página (YouTube, Instagram…)
+  // que o minidm delega ao yt-dlp. Só aparece quando faz sentido.
+  renderPageDownload(tab, up);
+
   const { items } = await chrome.runtime.sendMessage({
     type: "get-media",
     tabId: currentTab ? currentTab.id : -1,
   });
   render(items || []);
+}
+
+// ------------------------------------------------ card "baixar esta página"
+// Espelha o `looks_direct_media` do minidm: extensão de mídia no caminho?
+function looksDirectMedia(url) {
+  try {
+    const u = new URL(url);
+    const name = u.pathname.split("/").filter(Boolean).pop() || "";
+    const m = name.match(/\.([a-z0-9]+)$/i);
+    if (!m) return false;                       // sem extensão -> é página
+    const ext = m[1].toLowerCase();
+    return /^(mp4|m4v|webm|mkv|mov|flv|avi|wmv|ts|m4s|m3u8|mpd|mp3|m4a|aac|ogg|opus|wav|zip|rar|7z|gz|tar|iso|exe|msi|pdf|apk|jpg|jpeg|png|gif|webp|srt|vtt)$/i
+      .test(ext);
+  } catch (e) {
+    return false;
+  }
+}
+
+function isPageUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  } catch (e) {
+    return false;
+  }
+  return !looksDirectMedia(url);
+}
+
+async function renderPageDownload(tab, up) {
+  const box = $("#pageDl");
+  if (!tab || !tab.url || !isPageUrl(tab.url)) {
+    box.classList.add("hidden");       // mídia direta: o fluxo normal basta
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "ptitle";
+  title.textContent = tab.title || "Baixar vídeo desta página";
+  title.title = tab.title || "";
+  box.appendChild(title);
+
+  const hint = document.createElement("div");
+  hint.className = "phint";
+  hint.textContent = up
+    ? "Página detectada — baixa com o yt-dlp (qualquer site)."
+    : "minidm offline — inicie com `python -m minidm serve`.";
+  box.appendChild(hint);
+
+  // perfil (Música/Vídeo/…) — o mesmo dropdown do fluxo de mídia
+  const row = document.createElement("div");
+  row.className = "row";
+  const profileSelect = document.createElement("select");
+  profileSelect.appendChild(_option("", "Qualidade padrão"));
+  for (const name of await _profiles()) {
+    profileSelect.appendChild(_option(name, name));
+  }
+  row.appendChild(profileSelect);
+  box.appendChild(row);
+
+  // qualidade (altura) e formato — sobrepõem o perfil escolhido
+  const qRow = document.createElement("div");
+  qRow.className = "row";
+  const qualitySelect = document.createElement("select");
+  qualitySelect.title = "Altura máxima do vídeo";
+  qualitySelect.appendChild(_option("", "Melhor"));
+  for (const h of [2160, 1440, 1080, 720, 480, 360]) {
+    qualitySelect.appendChild(_option(String(h), `${h}p`));
+  }
+  const fmtSelect = document.createElement("select");
+  fmtSelect.title = "Container do vídeo";
+  fmtSelect.appendChild(_option("", "mp4/webm"));
+  fmtSelect.appendChild(_option("mp4", "mp4"));
+  fmtSelect.appendChild(_option("webm", "webm"));
+  qRow.append(qualitySelect, fmtSelect);
+  box.appendChild(qRow);
+
+  // botões: vídeo (padrão) e áudio (música) — como o IDM oferece
+  const btnRow = document.createElement("div");
+  btnRow.className = "row";
+  const dlVideo = document.createElement("button");
+  dlVideo.textContent = "Baixar vídeo";
+  const dlAudio = document.createElement("button");
+  dlAudio.className = "secondary";
+  dlAudio.textContent = "Só áudio (música)";
+  btnRow.append(dlVideo, dlAudio);
+  box.appendChild(btnRow);
+
+  const status = document.createElement("div");
+  status.className = "row";
+  box.appendChild(status);
+
+  async function sendPage(asAudio) {
+    [dlVideo, dlAudio].forEach((b) => (b.disabled = true));
+    status.textContent = "enviando…";
+    // o perfil "Música" força áudio; senão, escolhe pelo botão
+    let profile = profileSelect.value;
+    if (asAudio && profile !== "Música") {
+      profile = "Música";               // atalho: botão áudio usa o perfil Música
+    }
+    const payload = {
+      url: tab.url,
+      page_title: tab.title || "",
+      referer: tab.url,
+      profile: profile || undefined,
+    };
+    // qualidade/formato só valem para vídeo (áudio ignora altura/container)
+    if (!asAudio) {
+      if (qualitySelect.value) payload.height = parseInt(qualitySelect.value, 10);
+      if (fmtSelect.value) payload.ext = fmtSelect.value;
+    }
+    const sent = await chrome.runtime.sendMessage({ type: "download", payload });
+    [dlVideo, dlAudio].forEach((b) => (b.disabled = false));
+    if (sent && sent.ok) {
+      status.textContent = `✓ na fila${sent.id ? ` [${sent.id}]` : ""}` +
+        (sent.filename ? ` — ${sent.filename}` : "");
+    } else {
+      status.textContent = `falha: ${(sent && sent.error) || "sem resposta"}`;
+    }
+  }
+
+  dlVideo.addEventListener("click", () => sendPage(false));
+  dlAudio.addEventListener("click", () => sendPage(true));
 }
 
 function humanSize(n) {

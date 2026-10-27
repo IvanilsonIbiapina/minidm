@@ -10,7 +10,7 @@ import threading
 
 from minidm.config import AppConfig
 from minidm.meta import Task, TaskState
-from minidm.remote import filename_from
+from minidm.remote import auto_delegate, filename_from
 from minidm.scheduler import Scheduler
 from minidm.server import App, serve
 from minidm.store import TaskStore
@@ -45,6 +45,7 @@ def run_daemon(config: AppConfig, watch_clipboard: bool = True,
         def on_url(url: str):
             task = Task(url=url, dest_dir=dest_dir or store.data_dir,
                         filename=filename_from(url), state=TaskState.QUEUED)
+            auto_delegate(task)     # link de página -> yt-dlp, se disponível
             store.add(task)
             scheduler.submit([task.id])
             print(f"[{task.id}] capturado da área de transferência: {url}",

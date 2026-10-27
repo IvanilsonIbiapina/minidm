@@ -219,24 +219,135 @@ class ProfileStore:
         return ResolvedProfile(profile=profile, templates=templates)
 
 
+# containers de vídeo que o perfil pode pedir como `format_target`
+_VIDEO_CONTAINERS = ("mp4", "webm", "mkv", "mov", "m4v")
+
+
+def build_video_selector(height: Optional[int] = None, ext: str = "",
+                          merge: bool = True) -> str:
+    """Cadeia de seleção de formato de vídeo, com fallbacks encadeados.
+
+    Por que uma *cadeia* e não um seletor único: um `-f best` **falha** em
+    vídeos "DASH-only" (YouTube e vários outros — todos os formatos vêm
+    separados em faixa de vídeo e faixa de áudio) com "Requested format is
+    not available". A cadeia tenta, em ordem:
+
+      1. vídeo+áudio no container pedido (`ext`), até `height`;
+      2. arquivo único (progressivo) no container pedido, até `height`;
+      3. vídeo+áudio em qualquer container, até `height`;
+      4. arquivo único em qualquer container, até `height`;
+      5. as mesmas quatro opções **sem** teto de altura — última tentativa,
+         para não abortar quando o vídeo não tem formato na altura pedida.
+
+    Regra: `height` é o eixo principal (respeitado antes de tudo) e `ext` é
+    o desempate dentro de cada altura.
+
+    `merge=False` (sem ffmpeg) descarta as opções que exigem mesclagem:
+    sem ffmpeg não dá para juntar vídeo+áudio, então sobra arquivo único.
+    """
+    cap = f"[height<={int(height)}]" if height else ""
+    ext = (ext or "").strip().lower()
+    extf = f"[ext={ext}]" if ext else ""
+    # áudio que casa com o container pedido (mp4 -> m4a; webm -> webm)
+    aext = "m4a" if ext == "mp4" else ext
+
+    def _tier(c: str) -> list[str]:
+        out: list[str] = []
+        if merge:
+            if ext and aext:
+                out.append(f"bv*{c}{extf}+ba[ext={aext}]")
+            out.append(f"bv*{c}+ba")
+        if ext:
+            out.append(f"b{c}{extf}")
+        out.append(f"b{c}")
+        return out
+
+    alts = _tier(cap)
+    if cap:                      # relaxa o teto só depois de esgotar a tier
+        alts += _tier("")
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for a in alts:               # dedupe preservando a ordem
+        if a not in seen:
+            seen.add(a)
+            uniq.append(a)
+    return "/".join(uniq)
+
+
+def _height_from_quality(quality: str) -> Optional[int]:
+    """Teto de altura implícito em `Profile.quality`
+
+    1080 de "best[height<=1080]", 720 de "720p".
+    """
+    q = (quality or "").strip()
+    m = re.search(r"height\s*<=\s*(\d+)", q, re.I)
+    if m:
+        return int(m.group(1))
+    m = re.fullmatch(r"(\d{3,4})p?", q, re.I)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _as_height(value) -> Optional[int]:
+    """Normaliza um valor vindo de CLI/API/UI ("720", "720p", 720) em int."""
+    if value is None or value == "":
+        return None
+    m = re.search(r"(\d{3,4})", str(value))
+    return int(m.group(1)) if m else None
+
+
+def _is_simple_quality(quality: str) -> bool:
+    """`quality` é um valor de fábrica (best/720p/best[height<=1080])?
+
+    Se não for, é um seletor escrito à mão pelo usuário em `profiles.json`
+    — aí preservamos como está, sem reescrever por cima.
+    """
+    q = (quality or "").strip()
+    if not q:
+        return True
+    return re.fullmatch(
+        r"(?:best|worst|bestaudio|worstaudio|bestvideo|worstvideo)"
+        r"(?:\[.*\])?|\d{3,4}p?", q, re.I) is not None
+
+
+def _video_container(p: Profile) -> str:
+    """Container de vídeo pedido pelo perfil ("" se não for de vídeo)."""
+    t = (p.format_target or "").lower()
+    return t if t in _VIDEO_CONTAINERS else ""
+
+
 @dataclass
 class ResolvedProfile:
     profile: Profile
     templates: list[CommandTemplate]
 
-    def ytdlp_args(self, media_type: str = "video") -> list[str]:
-        """Argumentos yt-dlp deste perfil (formato + templates)."""
+    def ytdlp_args(self, media_type: str = "video", height=None,
+                   ext: str = "", merge: Optional[bool] = None) -> list[str]:
+        """Argumentos yt-dlp deste perfil (formato + templates).
+
+        `height`/`ext` sobrepõem a qualidade do perfil (vindos da CLI, da API
+        ou do card da extensão). `merge=None` consulta o ffmpeg disponível.
+        """
         args: list[str] = []
         p = self.profile
-        if p.quality:
-            fmt = p.quality
-            if p.format_target and media_type == "video":
-                # best[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best
-                fmt = (f"best[height<=1080][ext={p.format_target}]+"
-                       f"bestaudio[ext=m4a]/best")
-            args += ["-f", fmt]
-        if p.format_target and media_type == "audio":
-            args += ["--audio-format", p.format_target]
+        if merge is None:
+            from minidm.deps import ffmpeg_available
+
+            merge = ffmpeg_available()
+        if media_type == "audio":
+            # áudio: melhor faixa de áudio, caindo para o arquivo único
+            # (sites sem faixa de áudio isolada ainda baixam).
+            args += ["-f", "bestaudio/b"]
+            if p.format_target:
+                args += ["--audio-format", p.format_target]
+        else:
+            h = _as_height(height) or _height_from_quality(p.quality)
+            e = (ext or _video_container(p)).strip().lower()
+            if height or ext or _is_simple_quality(p.quality):
+                args += ["-f", build_video_selector(h, e, merge=merge)]
+            else:
+                args += ["-f", p.quality]   # seletor custom: preserva
         for t in self.templates:
             if media_type == "audio" and not t.use_as_extra_command_audio:
                 continue
@@ -316,12 +427,15 @@ def _load_models(cls, raw, defaults):
 
 def apply_profile(task, store: "ProfileStore", profile_name: str,
                   filename_override: str = "", dir_override: str = "",
-                  info: dict | None = None) -> None:
+                  info: dict | None = None, height=None,
+                  ext: str = "") -> None:
     """Preenche a `task` com o perfil escolhido (estilo YT-DLnis).
 
     * `dest_dir`/`filename` vêm do perfil (ou dos overrides);
     * o nome é renderizado pelo template de nome do perfil;
-    * `ytdlp_args` recebe formato + templates de comando do perfil.
+    * `ytdlp_args` recebe formato + templates de comando do perfil;
+    * `height`/`ext` sobrepõem a qualidade/formato do perfil (vindos da
+      CLI, da API ou do card da extensão).
     """
     import os
     from minidm.nametpl import render, context_from
@@ -337,8 +451,8 @@ def apply_profile(task, store: "ProfileStore", profile_name: str,
     else:
         # o perfil manda: renderiza o template de nome
         stem = os.path.splitext(task.filename)[0] or "download"
-        ext = _media_ext(os.path.splitext(task.filename)[1])
-        ctx = context_from(info or {}, filename=stem, ext=ext,
+        ext_arch = _media_ext(os.path.splitext(task.filename)[1])
+        ctx = context_from(info or {}, filename=stem, ext=ext_arch,
                            quality=task.quality_label)
         if not ctx.get("id"):
             ctx["id"] = _id_from_url(task.url)
@@ -347,10 +461,12 @@ def apply_profile(task, store: "ProfileStore", profile_name: str,
             ctx["title"] = (_title_from_url(task.url)
                             or ctx["id"] or stem)
         # extensão: a do arquivo (se mídia), senão a que o perfil alvo
-        out_ext = ext or (_audio_target(p) if _is_audio_profile(p) else "")
+        out_ext = ext_arch or (_audio_target(p)
+                               if _is_audio_profile(p) else "")
         task.filename = render(p.filename_template, ctx, fallback_ext=out_ext)
     media = "audio" if _is_audio_profile(p) else "video"
-    task.ytdlp_args = resolved.ytdlp_args(media_type=media)
+    task.ytdlp_args = resolved.ytdlp_args(media_type=media, height=height,
+                                          ext=ext)
     task.use_ytdlp_downloader = p.use_ytdlp_downloader
 
 

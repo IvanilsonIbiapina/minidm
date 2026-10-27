@@ -10,7 +10,7 @@ from minidm.config import AppConfig
 from minidm.dashboard import human
 from minidm.meta import Task, TaskState
 from minidm.profiles import ProfileStore, apply_profile
-from minidm.remote import filename_from
+from minidm.remote import auto_delegate, filename_from
 from minidm.store import TaskStore
 
 
@@ -49,11 +49,17 @@ def cmd_add(args) -> int:
         if args.profile:
             apply_profile(task, pstore, args.profile,
                           filename_override=args.filename or "",
-                          dir_override=args.dir or "")
+                          dir_override=args.dir or "",
+                          height=getattr(args, "height", None),
+                          ext=getattr(args, "ext", "") or "")
         elif args.filename:
             task.filename = args.filename
         if args.ytdlp:
             task.use_ytdlp_downloader = True
+        else:
+            # delegação automática: link de PÁGINA (YouTube, Instagram…)
+            # e yt-dlp instalado -> usa o yt-dlp sem precisar pedir.
+            auto_delegate(task)
         store.add(task)
         created.append(task)
         prof = f"  [{task.profile}]" if task.profile else ""
@@ -222,6 +228,7 @@ def cmd_watch(args) -> int:
     def on_url(url: str):
         task = Task(url=url, dest_dir=args.dir or cfg.data_dir,
                     filename=filename_from(url), state=TaskState.QUEUED)
+        auto_delegate(task)     # link de página -> yt-dlp, se disponível
         store.add(task)
         print(f"[{task.id}] capturado: {url}")
 
@@ -300,6 +307,31 @@ def cmd_media(args) -> int:
               + (f"  [perfil {task.profile}]" if task.profile else ""))
         if args.start:
             return _run_inline(store, cfg, [task.id])
+    return 0
+
+
+def cmd_deps(args) -> int:
+    """Diagnóstico de dependências: o que falta e como instalar."""
+    from minidm import deps
+
+    st = deps.status()
+    print("dependências do minidm\n")
+    for name in ("ytdlp", "ffmpeg"):
+        info = st[name]
+        mark = "OK " if info["available"] else "FALTA"
+        print(f"  [{mark:5}] {name:7} {info['path'] or ''}")
+        if not info["available"]:
+            print(f"           instalar: {info['install']}")
+    print("\nfuncionalidades:")
+    for feat, ok in st["features"].items():
+        print(f"  {'✓' if ok else '✗'} {feat}")
+    if not st["ytdlp"]["available"]:
+        print("\nsem o yt-dlp, só links diretos (mp4/m3u8/mpd/arquivos) "
+              "funcionam.\ncom ele, qualquer site comum funciona colando o link.")
+    if not st["ffmpeg"]["available"]:
+        print("\nsem o ffmpeg, downloads continuam funcionando; só faltam "
+              "conversões (mp3),\nembed de miniatura/metadados e mux "
+              "vídeo+áudio.")
     return 0
 
 
@@ -408,6 +440,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="URL alternativa do mesmo arquivo (pode repetir)")
     a.add_argument("--sha256", help="hash esperado (valida ao concluir)")
     a.add_argument("--profile", help="perfil de download (ex.: Música, Vídeo)")
+    a.add_argument("--height", type=int, metavar="P",
+                   help="teto de altura do vídeo (ex.: 720, 1080)")
+    a.add_argument("--ext", metavar="CONT",
+                   help="container de vídeo pedido (mp4, webm…)")
     a.add_argument("--filename", help="nome do arquivo final (sobrepõe o perfil)")
     a.add_argument("--ytdlp", action="store_true",
                    help="delegar o download ao yt-dlp (se instalado)")
@@ -420,6 +456,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--new", metavar="NOME", help="cria um perfil novo")
     a.add_argument("--show", metavar="NOME", help="mostra um perfil")
     a.set_defaults(func=cmd_profiles)
+
+    a = sub.add_parser("deps", help="mostra dependências externas "
+                                    "(yt-dlp, ffmpeg) e como instalar",
+                       parents=[common])
+    a.set_defaults(func=cmd_deps)
 
     a = sub.add_parser("list", help="lista a fila", parents=[common])
     a.set_defaults(func=cmd_list)

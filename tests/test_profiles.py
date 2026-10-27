@@ -15,7 +15,9 @@ from minidm.config import AppConfig
 from minidm.meta import Task
 from minidm.nametpl import preview, render
 from minidm.profiles import (CommandTemplate, Profile, ProfileStore,
-                             apply_profile)
+                             apply_profile, build_video_selector,
+                             _height_from_quality, _as_height,
+                             _is_simple_quality, _video_container)
 
 
 class Base(unittest.TestCase):
@@ -128,6 +130,39 @@ class TestProfiles(unittest.TestCase):
         i = args.index("-f")
         self.assertIn("mp4", args[i + 1])
 
+    def test_ytdlp_args_video_teto_altura(self):
+        # override de altura reescreve o seletor com [height<=720]
+        r = self.store.resolve_profile("Vídeo")
+        args = r.ytdlp_args(media_type="video", height=720, merge=True)
+        i = args.index("-f")
+        sel = args[i + 1]
+        self.assertIn("[height<=720]", sel)
+        self.assertIn("bv*", sel)          # precisa cobrir DASH-only
+        self.assertIn("+ba", sel)
+
+    def test_ytdlp_args_video_ext_override(self):
+        r = self.store.resolve_profile("Vídeo")
+        args = r.ytdlp_args(media_type="video", ext="webm", merge=True)
+        i = args.index("-f")
+        self.assertIn("[ext=webm]", args[i + 1])
+
+    def test_ytdlp_args_audio_ignora_altura(self):
+        # áudio não carrega seletor de vídeo
+        r = self.store.resolve_profile("Música")
+        args = r.ytdlp_args(media_type="audio", height=720, merge=True)
+        i = args.index("-f")
+        self.assertEqual(args[i + 1], "bestaudio/b")
+
+    def test_ytdlp_args_seletor_custom_preservado(self):
+        # quality escrito à mão pelo usuário não é reescrito
+        from minidm.profiles import ResolvedProfile
+
+        p = Profile(name="Custom", quality="bv*[height<=480]+ba/b")
+        r = ResolvedProfile(profile=p, templates=[])
+        args = r.ytdlp_args(media_type="video", merge=True)
+        i = args.index("-f")
+        self.assertEqual(args[i + 1], "bv*[height<=480]+ba/b")
+
     def test_template_url_regex(self):
         c = CommandTemplate(title="curto", content="--no-playlist",
                             url_regex=[r"/shorts/"])
@@ -161,6 +196,45 @@ class TestProfiles(unittest.TestCase):
     def test_profile_inexistente_usa_primeiro(self):
         r = self.store.resolve_profile("nao-existe")
         self.assertEqual(r.profile.name, self.store.profiles[0].name)
+
+
+class TestVideoSelector(unittest.TestCase):
+    def test_inclui_fallback_dash(self):
+        # DASH-only: precisa de "bv*+ba" senão "Requested format not available"
+        sel = build_video_selector(1080, "mp4", merge=True)
+        self.assertIn("bv*[height<=1080][ext=mp4]+ba[ext=m4a]", sel)
+        self.assertIn("bv*[height<=1080]+ba", sel)
+
+    def test_respeita_teto_antes_de_relaxar(self):
+        sel = build_video_selector(720, "mp4", merge=True)
+        # a tier com teto vem antes da tier sem teto
+        self.assertLess(sel.index("[height<=720]"),
+                        sel.index("bv*[ext=mp4]+ba[ext=m4a]"))
+
+    def test_sem_ffmpeg_descarta_merge(self):
+        sel = build_video_selector(720, "mp4", merge=False)
+        self.assertNotIn("+ba", sel)
+        self.assertIn("b[height<=720]", sel)
+
+    def test_sem_altura_nem_ext(self):
+        self.assertEqual(build_video_selector(None, "", merge=True),
+                         "bv*+ba/b")
+
+    def test_height_e_ext_helpers(self):
+        self.assertEqual(_height_from_quality("best[height<=1080]"), 1080)
+        self.assertEqual(_height_from_quality("720p"), 720)
+        self.assertIsNone(_height_from_quality("best"))
+        self.assertEqual(_as_height("720p"), 720)
+        self.assertEqual(_as_height(1080), 1080)
+        self.assertIsNone(_as_height(""))
+        self.assertTrue(_is_simple_quality("best"))
+        self.assertTrue(_is_simple_quality("best[height<=1080]"))
+        self.assertFalse(_is_simple_quality("bv*[ext=mp4]+ba/b"))
+        self.assertEqual(_video_container(Profile(name="x",
+                                                  format_target="mp4")),
+                         "mp4")
+        self.assertEqual(_video_container(Profile(name="x",
+                                                  format_target="mp3")), "")
 
 
 # ------------------------------------------------------------- archive

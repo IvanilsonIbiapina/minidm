@@ -51,6 +51,16 @@
     background: transparent; color: inherit;
   }
   .empty { padding: 24px 16px; text-align: center; opacity: .7; }
+  /* card "baixar esta página" (links de página -> yt-dlp) */
+  #pageDl { border-bottom: 1px solid rgba(128,128,128,.25);
+            padding: 10px 12px; background: rgba(10,123,216,.08); }
+  #pageDl .ptitle { font-weight: 600; margin-bottom: 2px;
+                    overflow: hidden; text-overflow: ellipsis;
+                    white-space: nowrap; }
+  #pageDl .phint { font-size: 11px; opacity: .75; margin-bottom: 6px; }
+  #pageDl .row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+  #pageDl select { flex: 1; min-width: 0; }
+  #pageDl.hidden { display: none; }
   .save { margin-top: 8px; padding: 8px; border-radius: 6px;
           background: rgba(128,128,128,.12); }
   .save .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
@@ -69,7 +79,10 @@
   <span id="status">verificando…</span>
   <span id="apiDot"></span>
 </header>
-<main id="list"><div class="empty">Carregando…</div></main>
+<main>
+  <div id="pageDl" class="hidden"></div>
+  <div id="list"><div class="empty">Carregando…</div></div>
+</main>
 <footer>API: <code>127.0.0.1:9742</code> — inicie com <code>python -m minidm serve</code> ou a GUI</footer>
 <script src="popup.js"></script>
 </body>

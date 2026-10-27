@@ -246,6 +246,45 @@ class TestApiIntegration(unittest.TestCase):
         self.assertEqual(body["drm"], "widevine")
         self.assertIn("DRM", body["error"])
 
+    def test_10_add_pagina_delega_ao_ytdlp(self):
+        """Link de PÁGINA (não mídia direta) + yt-dlp -> usa yt-dlp sozinho.
+
+        É o fluxo do botão "Baixar vídeo desta página" da extensão.
+        """
+        from minidm import ytdlp
+
+        stub = os.path.join(self.tmp, "yt-dlp")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write("#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
+        os.chmod(stub, 0o755)
+        old = os.environ.get("MINIDM_YTDLP")
+        os.environ["MINIDM_YTDLP"] = stub
+        try:
+            self.assertTrue(ytdlp.available())
+            status, data = post_json(
+                f"{self.api_base}/add",
+                {"url": "https://www.youtube.com/watch?v=abc123",
+                 "filename": "watch"})
+            self.assertEqual(status, 201)
+            task = self.store.get(data["id"])
+            self.assertTrue(task.use_ytdlp_downloader,
+                            "link de página deveria delegar ao yt-dlp")
+        finally:
+            if old is None:
+                os.environ.pop("MINIDM_YTDLP", None)
+            else:
+                os.environ["MINIDM_YTDLP"] = old
+
+    def test_11_add_direto_nao_delega(self):
+        """Mídia direta continua na engine própria (não delega ao yt-dlp)."""
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": f"{self.hls_base}/high.m3u8", "kind": "hls",
+             "filename": "stream"})
+        self.assertEqual(status, 201)
+        task = self.store.get(data["id"])
+        self.assertFalse(task.use_ytdlp_downloader)
+
 
 if __name__ == "__main__":
     unittest.main()
