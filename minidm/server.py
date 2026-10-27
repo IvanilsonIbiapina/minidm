@@ -69,6 +69,20 @@ def make_handler(app: App):
                         "throttle_bps": app.config.throttle_bps,
                     },
                 })
+            elif path == "/profiles":
+                # perfis do minidm (estilo YT-DLnis) p/ o popup escolher
+                from minidm.profiles import ProfileStore
+
+                ps = ProfileStore(app.store.data_dir)
+                self._json({
+                    "profiles": [{"name": p.name, "quality": p.quality,
+                                  "format": p.format_target,
+                                  "filename_template": p.filename_template}
+                                 for p in ps.profiles],
+                    "command_templates": [{"title": c.title,
+                                           "content": c.content}
+                                          for c in ps.command_templates],
+                })
             elif path == "/config":
                 c = app.config
                 self._json({
@@ -122,6 +136,7 @@ def make_handler(app: App):
             dest_dir = payload.get("dir") or app.store.data_dir
             quality_url = payload.get("quality_url", "")
             kind = payload.get("kind", "")
+            profile = payload.get("profile", "")
 
             # ------------------------------ modo automático (estilo IDM):
             # o cliente manda a URL da página/mídia e o SERVIDOR analisa,
@@ -174,6 +189,7 @@ def make_handler(app: App):
                 page_title=page_title,
                 quality_label=payload.get("quality_label", ""),
                 origin_url=url if quality_url != url else "",
+                profile=profile,
                 mirrors=[m for m in payload.get("mirrors", [])
                          if isinstance(m, str)],
                 proxy=payload.get("proxy", ""),
@@ -181,11 +197,22 @@ def make_handler(app: App):
                 user_agent=payload.get("user_agent", ""),
                 expected_sha256=payload.get("sha256"),
             )
+            # perfil preenche destino/nome/args yt-dlp (estilo YT-DLnis)
+            if profile:
+                from minidm.profiles import ProfileStore, apply_profile
+
+                pstore = ProfileStore(app.store.data_dir)
+                apply_profile(task, pstore, profile,
+                              filename_override=payload.get("filename", ""),
+                              dir_override=payload.get("dir", ""))
+            if payload.get("ytdlp"):
+                task.use_ytdlp_downloader = True
             app.store.add(task)
             if payload.get("start", True):
                 app.scheduler.submit([task.id])
             self._json({"ok": True, "id": task.id, "kind": kind,
-                        "filename": filename, "dir": dest_dir}, 201)
+                        "filename": task.filename, "dir": task.dest_dir,
+                        "profile": task.profile or None}, 201)
 
         # -------------------------------------------------- /media/analyze
         def _media_analyze(self, payload):

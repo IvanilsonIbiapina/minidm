@@ -380,12 +380,18 @@ class StreamDownloader:
 
         Cada worker consome o próximo índice não-baixado até esvaziar — assim
         não se perde item quando há mais segmentos que `max_connections`.
+        `concurrent_fragments` (config) limita os fragmentos simultâneos
+        *deste stream* — o equivalente ao `--concurrent-fragments` do yt-dlp.
         """
         pending = [i for i in range(len(self._items)) if not self._item_done(i)]
         if not pending:
             return
         self._queue = list(pending)
-        n = min(len(pending), max(1, self.config.max_connections))
+        limit = max(1, self.config.max_connections)
+        frags = getattr(self.config, "concurrent_fragments", 0) or 0
+        if frags > 0:
+            limit = min(limit, frags)
+        n = min(len(pending), limit)
         for w in range(n):
             th = threading.Thread(target=self._worker, name=f"stream-{w}",
                                   daemon=True)
@@ -595,7 +601,25 @@ def _rmtree_quiet(path: str) -> None:
 
 
 def make_downloader(task: Task, config: Optional[AppConfig] = None, **kw):
-    """Fábrica: streams (hls/dash) usam StreamDownloader; o resto, Downloader."""
+    """Fábrica de downloader.
+
+    Ordem:
+    1. yt-dlp (CLI externa) quando a tarefa ou a config mandam e ele existe;
+    2. streams (hls/dash) -> StreamDownloader;
+    3. o resto -> Downloader (engine própria, segmentada).
+    """
+    cfg = config or AppConfig()
+    want_ytdlp = getattr(task, "use_ytdlp_downloader", False) or \
+        getattr(cfg, "use_ytdlp_downloader", False)
+    if want_ytdlp and task.kind in ("hls", "dash", "file", "ytdlp"):
+        try:
+            from minidm.ytdlp import available
+            from minidm.ytdlpdl import YtdlpDownloader
+
+            if available():
+                return YtdlpDownloader(task, config=cfg, **kw)
+        except Exception:
+            pass                      # sem yt-dlp -> engine própria
     if task.kind in ("hls", "dash"):
         return StreamDownloader(task, config=config, **kw)
     from minidm.downloader import Downloader

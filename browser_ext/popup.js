@@ -12,6 +12,27 @@ const $ = (sel) => document.querySelector(sel);
 let currentTab = null;
 let pageTitle = "";
 
+function _option(value, label) {
+  const o = document.createElement("option");
+  o.value = value;
+  o.textContent = label;
+  return o;
+}
+
+// nomes dos perfis do minidm (via API /profiles)
+let _profilesCache = null;
+async function _profiles() {
+  if (_profilesCache) return _profilesCache;
+  try {
+    const r = await fetch("http://127.0.0.1:9742/profiles");
+    const d = await r.json();
+    _profilesCache = (d && d.profiles ? d.profiles : []).map((p) => p.name);
+  } catch (e) {
+    _profilesCache = [];
+  }
+  return _profilesCache;
+}
+
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab || null;
@@ -201,6 +222,19 @@ async function openSaveDialog(el, item, preselectedQuality) {
   const qualityAt = () =>
     qualitySelect ? qualities[parseInt(qualitySelect.value, 10)] : qualities[0];
 
+  // --- perfil (estilo YT-DLnis: Música/Vídeo/… preenchem tudo)
+  const profileRow = document.createElement("div");
+  profileRow.className = "row";
+  const profileLab = document.createElement("label");
+  profileLab.textContent = "Perfil:";
+  const profileSelect = document.createElement("select");
+  profileSelect.appendChild(_option("", "— nenhum —"));
+  for (const name of await _profiles()) {
+    profileSelect.appendChild(_option(name, name));
+  }
+  profileRow.append(profileLab, profileSelect);
+  box.appendChild(profileRow);
+
   // --- nome do arquivo (editável, como o "Salvar como" do IDM)
   const nameRow = document.createElement("div");
   nameRow.className = "row";
@@ -249,6 +283,7 @@ async function openSaveDialog(el, item, preselectedQuality) {
       filename: nameInput.value.trim() || undefined,
       dir: dirInput.value.trim() || undefined,
       quality_label: q.label || undefined,
+      profile: profileSelect.value || undefined,
     };
     btnRow.querySelectorAll("button").forEach((b) => (b.disabled = true));
     const sent = await chrome.runtime.sendMessage({ type: "download", payload });

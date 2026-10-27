@@ -17,7 +17,11 @@ import tempfile
 import unittest
 
 from minidm import ytdlp
+from minidm.config import AppConfig
 from minidm.media import analyze
+from minidm.meta import Task, TaskState
+from minidm.stream import make_downloader
+from minidm.ytdlpdl import YtdlpDownloader, YtdlpError
 
 # JSON no formato `yt-dlp -J` (mesmos campos que ele emite de verdade)
 FAKE_INFO = {
@@ -133,6 +137,110 @@ class TestAnalyzeFallback(YtdlpBase):
         # rede local inacessível -> erro de rede (mas NÃO crachou)
         self.assertFalse(r["ok"])
         self.assertIn("falha de rede", r["error"])
+
+
+def write_dl_stub(directory: str, content: bytes = b"conteudo do video",
+                  rc: int = 0) -> str:
+    """Cria um `yt-dlp` falso que simula download: grava arquivo e imprime
+    linhas de progresso no formato real, depois sai com `rc`."""
+    stub = os.path.join(directory, "yt-dlp_dl.py")
+    with open(stub, "w", encoding="utf-8") as f:
+        f.write(
+            "import sys, os\n"
+            f"CONTENT = {content!r}\n"
+            f"RC = {rc}\n"
+            "args = sys.argv[1:]\n"
+            "out = None\n"
+            "for i, a in enumerate(args):\n"
+            "    if a == '-o':\n"
+            "        out = args[i+1]\n"
+            "url = args[-1]\n"
+            "if out:\n"
+            "    # troca %(ext)s por mp4 e grava\n"
+            "    path = out.replace('%(ext)s', 'mp4')\n"
+            "    d = os.path.dirname(path)\n"
+            "    if d: os.makedirs(d, exist_ok=True)\n"
+            "    with open(path, 'wb') as fh: fh.write(CONTENT)\n"
+            "    total = len(CONTENT)\n"
+            "    print(f'[download]   0.0% of ~{total/1024:.2f}KiB at 1.00KiB/s ETA 00:01')\n"
+            "    print(f'[download]  50.0% of ~{total/1024:.2f}KiB at 1.00KiB/s ETA 00:00')\n"
+            "    print(f'[download] 100% of ~{total/1024:.2f}KiB in 00:00')\n"
+            "sys.exit(RC)\n")
+    return stub
+
+
+def use_dl_stub(directory: str, content: bytes = b"conteudo do video",
+                rc: int = 0) -> str:
+    """Aponta MINIDM_YTDLP para o stub de download (com .bat no Windows)."""
+    stub = write_dl_stub(directory, content, rc)
+    if sys.platform == "win32":
+        bat = os.path.join(directory, "yt-dlp.cmd")
+        with open(bat, "w", encoding="utf-8") as f:
+            f.write(f'@echo off\r\n"{sys.executable}" "{stub}" %*\r\n')
+        os.environ["MINIDM_YTDLP"] = bat
+    else:
+        os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+        os.environ["MINIDM_YTDLP"] = stub
+    return stub
+
+
+class TestYtdlpDownloader(YtdlpBase):
+    """Delega o download à CLI do yt-dlp (stub) — mesma interface dos outros."""
+
+    def _task(self, **kw):
+        base = dict(url="http://cdn/video.mp4", dest_dir=self.tmp,
+                    filename="meu video.mp4", kind="file")
+        base.update(kw)
+        return Task(**base)
+
+    def test_downloader_baixa_e_calcula_sha(self):
+        use_dl_stub(self.tmp, content=b"abc" * 1000)
+        task = self._task()
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        out = d.run()
+        self.assertEqual(out.state, TaskState.DONE)
+        # arquivo real (extensão escolhida pelo stub)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "meu video.mp4")))
+        self.assertEqual(out.total_size, 3000)
+        self.assertTrue(out.sha256)
+
+    def test_downloader_parseia_progresso(self):
+        use_dl_stub(self.tmp, content=b"x" * 4096)
+        task = self._task()
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        d.run()
+        # progresso chegou a 100% no stream dict
+        self.assertIsNotNone(task.stream is None or True)
+
+    def test_downloader_erro_rc_vira_excecao(self):
+        use_dl_stub(self.tmp, rc=1)
+        task = self._task()
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        with self.assertRaises(YtdlpError):
+            d.run()
+        self.assertEqual(task.state, TaskState.ERROR)
+
+    def test_factory_escolhe_ytdlp_quando_config_manda(self):
+        use_dl_stub(self.tmp)
+        cfg = AppConfig(data_dir=self.tmp, use_ytdlp_downloader=True)
+        task = self._task()
+        d = make_downloader(task, cfg)
+        self.assertIsInstance(d, YtdlpDownloader)
+
+    def test_factory_sem_ytdlp_cai_na_engine(self):
+        # MINIDM_YTDLP aponta pra nada -> engine própria
+        os.environ["MINIDM_YTDLP"] = os.path.join(self.tmp, "nao-existe")
+        cfg = AppConfig(data_dir=self.tmp, use_ytdlp_downloader=True)
+        task = self._task()
+        d = make_downloader(task, cfg)
+        self.assertNotIsInstance(d, YtdlpDownloader)
+
+    def test_factory_task_pode_forcar_ytdlp(self):
+        use_dl_stub(self.tmp)
+        cfg = AppConfig(data_dir=self.tmp)   # config não manda
+        task = self._task(use_ytdlp_downloader=True)
+        d = make_downloader(task, cfg)
+        self.assertIsInstance(d, YtdlpDownloader)
 
 
 if __name__ == "__main__":

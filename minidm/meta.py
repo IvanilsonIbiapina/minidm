@@ -71,6 +71,10 @@ class Task:
     page_title: str = ""             # título da página (melhora o nome)
     quality_label: str = ""          # "1080p", "áudio — pt-BR"…
     origin_url: str = ""             # URL da página (quando difere da mídia)
+    # ---- v5 (perfis estilo YT-DLnis)
+    profile: str = ""                # nome do perfil usado ("Música"…)
+    use_ytdlp_downloader: bool = False   # delegar download ao yt-dlp
+    ytdlp_args: list[str] = field(default_factory=list)  # args extras yt-dlp
 
     # ---------------------------------------------------------------- paths
     @property

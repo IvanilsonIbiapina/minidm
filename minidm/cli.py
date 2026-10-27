@@ -9,6 +9,7 @@ from minidm import __version__
 from minidm.config import AppConfig
 from minidm.dashboard import human
 from minidm.meta import Task, TaskState
+from minidm.profiles import ProfileStore, apply_profile
 from minidm.remote import filename_from
 from minidm.store import TaskStore
 
@@ -32,6 +33,7 @@ def _print_task_line(t: Task) -> None:
 def cmd_add(args) -> int:
     cfg = _cfg(args)
     store = TaskStore(cfg.data_dir)
+    pstore = ProfileStore(cfg.data_dir)
     created = []
     for url in args.urls:
         kind = "hls" if url.lower().split("?")[0].endswith(".m3u8") else (
@@ -44,9 +46,18 @@ def cmd_add(args) -> int:
                     cookie=args.cookie or "",
                     user_agent=args.user_agent or "",
                     expected_sha256=args.sha256)
+        if args.profile:
+            apply_profile(task, pstore, args.profile,
+                          filename_override=args.filename or "",
+                          dir_override=args.dir or "")
+        elif args.filename:
+            task.filename = args.filename
+        if args.ytdlp:
+            task.use_ytdlp_downloader = True
         store.add(task)
         created.append(task)
-        print(f"[{task.id}] {task.filename}  <- {url}"
+        prof = f"  [{task.profile}]" if task.profile else ""
+        print(f"[{task.id}] {task.filename}  <- {url}{prof}"
               + (f"  (+{len(task.mirrors)} mirror(s))" if task.mirrors else ""))
     if args.start:
         return _run_inline(store, cfg, [t.id for t in created])
@@ -275,19 +286,66 @@ def cmd_media(args) -> int:
                     kind="hls" if "hls" in (r["kind"], q["kind"]) else
                          ("dash" if "dash" in (r["kind"], q["kind"]) else "file"),
                     referer=args.referer or "",
+                    page_title=getattr(args, "page_title", "") or "",
+                    quality_label=q.get("label", ""),
                     cookie=args.cookie or cfg.cookie,
                     user_agent=args.user_agent or cfg.user_agent)
+        if getattr(args, "profile", ""):
+            pstore = ProfileStore(cfg.data_dir)
+            apply_profile(task, pstore, args.profile,
+                          filename_override=args.filename or "",
+                          dir_override=args.dir or "")
         store.add(task)
-        print(f"[{task.id}] {q['label']} na fila — use `start {task.id}`")
+        print(f"[{task.id}] {q['label']} na fila — use `start {task.id}`"
+              + (f"  [perfil {task.profile}]" if task.profile else ""))
         if args.start:
             return _run_inline(store, cfg, [task.id])
+    return 0
+
+
+def cmd_profiles(args) -> int:
+    """Lista/cria perfis e mostra os templates de comando."""
+    cfg = _cfg(args)
+    store = ProfileStore(cfg.data_dir)
+    if args.new:
+        from minidm.profiles import Profile
+        if store.get_profile(args.new):
+            print(f"perfil já existe: {args.new}", file=sys.stderr)
+            return 1
+        store.profiles.append(Profile(name=args.new))
+        store.save()
+        print(f"perfil criado: {args.new}  (edite {store.path})")
+        return 0
+    if args.show:
+        p = store.get_profile(args.show)
+        if not p:
+            print(f"perfil não encontrado: {args.show}", file=sys.stderr)
+            return 1
+        print(f"perfil: {p.name}")
+        for k, v in vars(p).items():
+            print(f"  {k}: {v}")
+        return 0
+    print("perfis:")
+    for p in store.profiles:
+        extra = f"  (ytdlp={p.format_target})" if p.format_target else ""
+        print(f"  {p.name:12} qualidade={p.quality:18} "
+              f"nome={p.filename_template}{extra}")
+    print("\ntemplates de comando:")
+    for c in store.command_templates:
+        flags = []
+        if c.use_as_extra_command_audio: flags.append("áudio")
+        if c.use_as_extra_command_video: flags.append("vídeo")
+        if c.use_as_extra_command_data_fetching: flags.append("análise")
+        rx = f"  url~{c.url_regex}" if c.url_regex else ""
+        print(f"  {c.title:28} [{', '.join(flags) or '-'}]{rx}")
+        if c.content:
+            print(f"      args: {c.content}")
     return 0
 
 
 def cmd_daemon(args) -> int:
     cfg = _cfg(args)
     from minidm.daemon import run_daemon
-
     return run_daemon(cfg, watch_clipboard=not args.no_clipboard,
                       dashboard=args.dashboard)
 
@@ -349,9 +407,19 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--mirror", action="append",
                    help="URL alternativa do mesmo arquivo (pode repetir)")
     a.add_argument("--sha256", help="hash esperado (valida ao concluir)")
+    a.add_argument("--profile", help="perfil de download (ex.: Música, Vídeo)")
+    a.add_argument("--filename", help="nome do arquivo final (sobrepõe o perfil)")
+    a.add_argument("--ytdlp", action="store_true",
+                   help="delegar o download ao yt-dlp (se instalado)")
     _add_net_flags(a)
     a.add_argument("--start", action="store_true", help="começa já baixar")
     a.set_defaults(func=cmd_add)
+
+    a = sub.add_parser("profiles", help="lista perfis e templates de comando",
+                       parents=[common])
+    a.add_argument("--new", metavar="NOME", help="cria um perfil novo")
+    a.add_argument("--show", metavar="NOME", help="mostra um perfil")
+    a.set_defaults(func=cmd_profiles)
 
     a = sub.add_parser("list", help="lista a fila", parents=[common])
     a.set_defaults(func=cmd_list)
@@ -416,6 +484,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="baixa a qualidade de índice N (listada acima)")
     a.add_argument("--filename", help="nome do arquivo final")
     a.add_argument("--dir", help="diretório de destino")
+    a.add_argument("--profile", help="perfil de download (ex.: Música, Vídeo)")
+    a.add_argument("--page-title", dest="page_title",
+                   help="título da página (melhora o nome sugerido)")
     a.add_argument("--start", action="store_true",
                    help="começa já baixar (com --download)")
     a.add_argument("--ytdlp", action="store_true",

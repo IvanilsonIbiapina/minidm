@@ -18,12 +18,14 @@ import threading
 import time
 from typing import Callable, Optional
 
+from minidm.archive import Archive
 from minidm.config import AppConfig
 from minidm.downloader import DownloadError
 from minidm.meta import Task, TaskState
 from minidm.store import TaskStore
 from minidm.stream import StreamError, make_downloader
 from minidm.throttle import TokenBucket
+from minidm.ytdlpdl import YtdlpError
 
 
 class Scheduler:
@@ -39,6 +41,10 @@ class Scheduler:
         self.sem = threading.BoundedSemaphore(max(1, config.max_connections))
         self.bucket = (TokenBucket(config.throttle_bps)
                        if config.throttle_bps > 0 else None)
+        # arquivo de URLs já concluídas (como --download-archive do yt-dlp)
+        self.archive = (Archive(config.data_dir)
+                        if getattr(config, "download_archive", False)
+                        else None)
         # recupera tarefas que ficaram "downloading" de uma execução anterior
         for t in store.all():
             if t.state == TaskState.DOWNLOADING:
@@ -127,6 +133,7 @@ class Scheduler:
                 "url": t.url,
                 "filename": t.filename,
                 "kind": t.kind,
+                "profile": t.profile,
                 "state": t.state,
                 "progress": t.progress,
                 "received": t.received,
@@ -187,6 +194,17 @@ class Scheduler:
                     self._cv.wait(0.5)
                 continue
 
+            # archive: pula URLs já concluídas com sucesso antes
+            if self.archive and self.archive.has(task.url):
+                task.state = TaskState.DONE
+                task.finished_at = time.time()
+                task.error = None
+                self._emit("done", task)
+                with self._cv:
+                    self.store.save()
+                    self._cv.notify_all()
+                continue
+
             dl = make_downloader(task, config=self.config, semaphore=self.sem,
                                  bucket=self.bucket)
             with self._cv:
@@ -194,8 +212,10 @@ class Scheduler:
             self._emit("start", task)
             try:
                 dl.run()
+                if self.archive:
+                    self.archive.add(task.url)
                 self._emit("done", task)
-            except (DownloadError, StreamError):
+            except (DownloadError, StreamError, YtdlpError):
                 self._emit("paused" if task.state == TaskState.PAUSED
                            else "error", task)
             finally:

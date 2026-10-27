@@ -21,6 +21,13 @@ class AppConfig:
     backoff_max: float = 60.0
     # banda
     throttle_bps: int = 0          # 0 = sem limite (bytes/segundo, global)
+    # streams (HLS/DASH)
+    concurrent_fragments: int = 0  # 0 = usar max_connections; >0 = fragmentos
+                                   # simultâneos por stream (como --concurrent-fragments)
+    # yt-dlp (CLI externa, opcional)
+    use_ytdlp_downloader: bool = False  # delegar download ao yt-dlp quando
+                                        # disponível (perfis podem forçar)
+    download_archive: bool = False      # não rebaixar URLs já concluídas
     # rede
     user_agent: str = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "minidm/2.0")

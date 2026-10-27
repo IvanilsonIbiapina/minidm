@@ -5,7 +5,7 @@ inspirado nos conceitos observados em gerenciadores comerciais (fila de
 downloads, retomada, segmentação multi-thread, integração com navegador),
 porém com código próprio e sem qualquer mecanismo de licenciamento.
 
-## Recursos (v2 + captura de vídeo)
+## Recursos (v5 — perfis estilo YT-DLnis)
 
 | Recurso | Como usar |
 |---|---|
@@ -30,6 +30,12 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Nome de arquivo legível** | `Content-Disposition` → URL → título da página (editável no popup) |
 | **Pasta de destino escolhida** | popup e `/add` aceitam `dir`; a última pasta fica guardada |
 | **Análise via yt-dlp** (opcional) | `media <url> --ytdlp` — cobre sites complexos (chama a CLI do yt-dlp) |
+| **Perfis de download** (conceito do YT-DLnis) | `add --profile Música` — perfil define qualidade, formato, pasta e nome |
+| **Templates de comando yt-dlp** | `CommandTemplate` com `url_regex` de ativação automática (`profiles` no CLI) |
+| **Template de nome de arquivo** | motor `{title} [{id}].{ext}` com preview e sanitização (`nametpl.py`) |
+| **Download-archive** (não rebaixar) | `config set download_archive true` — URLs concluídas são puladas |
+| **`--concurrent-fragments`** | `config set concurrent_fragments 4` — fragmentos simultâneos por stream |
+| **Downloader yt-dlp** (delegação) | `add --ytdlp` ou perfil `use_ytdlp_downloader` — mesma interface do scheduler |
 
 ## Instalação
 
@@ -57,10 +63,11 @@ qualidades disponíveis. O `minidm` faz o mesmo com a extensão `browser_ext/`:
 4. **Clique no ícone** — o painel lista o que foi capturado **com os que têm
    qualidade primeiro** (HLS/DASH no topo, depois vídeo, áudio e o resto).
    **Baixar…** abre a caixa *Salvar como* (estilo IDM): qualidade (quando
-   há), **nome do arquivo editável** (sugerido pelo `Content-Disposition`,
-   URL ou título da página) e **pasta de destino** — a última usada fica
-   guardada. O envio leva `Referer`, cookies do domínio e o título da aba,
-   como o IDM faz.
+   há), **perfil** (Música/Vídeo/…, vem do `GET /profiles`), **nome do
+   arquivo editável** (sugerido pelo `Content-Disposition`, URL ou título
+   da página) e **pasta de destino** — a última usada fica guardada. O
+   envio leva `Referer`, cookies do domínio e o título da aba, como o IDM
+   faz.
 
 Também há botão de contexto **Enviar para o minidm** (link/página) e
 **Baixar vídeo desta página**.
@@ -81,6 +88,58 @@ Com `--ytdlp`, a análise é delegada ao **yt-dlp instalado** (chamado como
 CLI externa — o código deles é GPL-3.0 e não é copiado). Isso cobre sites
 que exigem player próprio; se o yt-dlp falhar ou não existir, o parser
 HLS/DASH próprio assume.
+
+## Perfis de download (conceito do YT-DLnis)
+
+Inspirado no sistema de **categorias/CommandTemplate** do YT-DLnis
+(GPL-3.0 — só o conceito é usado, nunca código). Um **perfil** é um "modo
+de baixar": qualidade, formato alvo, pasta e template de nome. Em vez de
+configurar tudo a cada download, escolhe o perfil.
+
+Perfis embutidos:
+
+| Perfil | Qualidade | Alvo | Nome |
+|---|---|---|---|
+| **Padrão** | `best` | — | `{title} [{id}].{ext}` |
+| **Música** | `bestaudio` | `mp3` | `{title}.{ext}` |
+| **Vídeo** | `best[height<=1080]` | `mp4` | `{title} [{id}].{ext}` |
+
+```bat
+:: baixa como música (áudio extraído, convertido p/ mp3 via yt-dlp)
+python -m minidm add "https://youtube.com/watch?v=…" --profile Música
+
+:: lista perfis e templates de comando
+python -m minidm profiles
+python -m minidm profiles --show Música
+python -m minidm profiles --new Podcast     # cria um perfil novo (edite profiles.json)
+```
+
+O perfil é salvo em `<data_dir>/profiles.json` (editável à mão). Cada
+perfil pode referenciar **templates de comando** — argumentos extras do
+yt-dlp (ex.: `--embed-thumbnail`) ativáveis por perfil ou automaticamente
+por `url_regex` (como o `CommandTemplate` do YTDLnis).
+
+### Template de nome de arquivo
+
+Motor próprio (`nametpl.py`) com placeholders `{...}` e sanitização
+Windows. Placeholders: `{title}`, `{id}`, `{ext}`, `{uploader}`,
+`{duration}`, `{height}`, `{quality}`, `{date}`, `{n}`, `{filename}`.
+Grupos que ficam vazios são removidos (`aula [].mp4` → `aula.mp4`),
+caracteres inválidos viram `_`, `{{literal}}` fica literal.
+
+### Download-archive e fragmentos
+
+```bat
+python -m minidm config set download_archive true   # não rebaixar URLs já concluídas
+python -m minidm config set concurrent_fragments 4  # fragmentos HLS/DASH simultâneos
+```
+
+### Delegar download ao yt-dlp
+
+Com o yt-dlp instalado, o perfil ou `add --ytdlp` fazem o scheduler
+delegar o download à CLI do yt-dlp (`YtdlpDownloader`), mantendo a mesma
+interface de progresso/pausa. Sem yt-dlp, a engine própria (segmentada)
+assume automaticamente.
 
 ### DRM: detectamos, nunca contornamos
 
@@ -184,8 +243,9 @@ mostra as qualidades. Botão direito → **Enviar para o minidm**.
 ```
 GET  /status                  -> tarefas + config resumida
 GET  /config                  -> configuração efetiva
+GET  /profiles                -> perfis + templates de comando (popup)
 POST /add      {url, filename?, dir?, kind?, referer?, page_title?,
-                quality?|quality_url?, ytdlp?, mirrors?, sha256?,
+                quality?|quality_url?, profile?, ytdlp?, mirrors?, sha256?,
                 proxy?, cookie?, user_agent?, start?}
 POST /start    {id|ids|all}
 POST /pause    {id}
@@ -202,8 +262,9 @@ POST /media/analyze {url, referer?, page_title?, cookie?, user_agent?,
 "Baixar vídeo" do IDM): `quality` aceita índice (`0`), rótulo
 (`"720p (1280x720)"`) ou vazio = a melhor. `quality_url` envia a mídia
 já escolhida (fluxo do popup, evita reanalisar). `dir`/`filename` são o
-caminho e nome escolhidos pelo usuário. Se a URL tiver DRM, o `/add`
-responde `400 {ok:false, drm, error}`.
+caminho e nome escolhidos pelo usuário; `profile` aplica o perfil
+(preence nome/pasta/args yt-dlp — o `filename` explícito tem prioridade).
+Se a URL tiver DRM, o `/add` responde `400 {ok:false, drm, error}`.
 
 ## Como funciona
 
@@ -232,23 +293,27 @@ minidm-gui-debug.bat   idem, com terminal (depuração)
 docs/analise-idm.md    análise reversa do IDM que embasa este projeto
 minidm/
   gui.py         interface gráfica (tkinter, roda o scheduler em processo)
-  cli.py         argparse + comandos (gui, add, media, daemon, tui, verify, …)
+  cli.py         argparse + comandos (gui, add, media, profiles, daemon, …)
   config.py      AppConfig (arquivo + flags)
-  meta.py        Task/Segment + persistência (kind/referer/stream/page_title)
+  meta.py        Task/Segment + persistência (kind/referer/stream/profile)
   remote.py      sondagem do servidor
   downloader.py  engine de arquivo: segmentos, retry, mirrors, throttle
   stream.py      engine de stream: HLS/DASH, AES-128, retomada, recusa DRM
   media.py       parsing/análise de mídia (m3u8, MPD, DRM, nome, áudio)
+  profiles.py    perfis + CommandTemplate (conceito YTDLnis)
+  nametpl.py     motor de template de nome {title} [{id}].{ext}
+  archive.py     download-archive (não rebaixar URLs concluídas)
   ytdlp.py       integração opcional com a CLI do yt-dlp (GPL-3.0, externa)
-  scheduler.py   pool global: N tarefas, semáforo de conexões, bucket
+  ytdlpdl.py     downloader que delega ao yt-dlp (mesma interface)
+  scheduler.py   pool global: N tarefas, semáforo, bucket, archive
   throttle.py    token bucket
   verify.py      SHA-256, checksums remotos, Authenticode
   clipboard.py   observador Win32 (ctypes)
-  server.py      API HTTP local (+ /media/analyze, /add kind=auto)
+  server.py      API HTTP local (+ /profiles, /media/analyze, /add auto)
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
-  browser_ext/   extensão MV3 (captura de vídeo + Salvar como + API)
-tests/           74 testes (engine, stream, mídia, DRM, yt-dlp, API, integração)
+  browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
+tests/           109 testes (engine, stream, mídia, DRM, yt-dlp, perfis, API)
 ```
 
 ## Testes
@@ -261,8 +326,9 @@ Cobrem: engine de arquivo (segmentação/retomada/retry/mirrors/throttle),
 engine de stream (master/media/AES/DASH/retomada/recusa DRM), parsing de
 m3u8+MPD, detecção de DRM (HLS SESSION-KEY/KEY e DASH ContentProtection),
 nome de arquivo (Content-Disposition/título/genérico), faixas de áudio,
-integração yt-dlp (stub), e a API (`/media/analyze`+`/add` kind=auto) de
-ponta a ponta.
+integração yt-dlp (stub), **perfis + templates de nome + archive**,
+**YtdlpDownloader** (stub), e a API (`/media/analyze`, `/add` kind=auto e
+`/profiles`) de ponta a ponta.
 
 ## Limitações conhecidas
 
