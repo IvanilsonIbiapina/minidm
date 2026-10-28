@@ -125,9 +125,13 @@ class Scheduler:
     # ------------------------------------------------------------- snapshot
     def snapshot(self) -> list[dict]:
         """Estado consolidado p/ dashboard e API."""
+        # sincroniza com outros processos (CLI pode ter adicionado/removido
+        # tarefas) antes de reportar — identidade preservada, barato
+        self.store.refresh()
         rows = []
         for t in self.store.all():
             dl = self._active.get(t.id)
+            st = t.stream if isinstance(t.stream, dict) else {}
             rows.append({
                 "id": t.id,
                 "url": t.url,
@@ -146,6 +150,9 @@ class Scheduler:
                 "signature_signer": t.signature_signer,
                 "segments_done": sum(1 for s in t.segments if s.done),
                 "segments_total": len(t.segments),
+                # HLS ao vivo: total desconhecido até o ENDLIST chegar
+                "live": bool(st.get("live")),
+                "lost": int(st.get("lost") or 0),
             })
         return rows
 

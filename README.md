@@ -25,6 +25,8 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | API p/ extensão do navegador | `python -m minidm serve` + `browser_ext/` |
 | **Captura de vídeo (HLS/DASH/direto)** | extensão detecta vídeos e lista qualidades (abaixo) |
 | **Download de stream HLS/DASH** | `media <url>` — segmentos `.ts`/`.m4s` em paralelo, concatena e decifra AES-128 |
+| **HLS ao vivo** (playlist sem `#EXT-X-ENDLIST`) | a engine re-busca a playlist no período do `#EXT-X-TARGETDURATION` até o `ENDLIST`/limite de duração; pausa/retoma salva; segmento que sai da janela vira `lost`, não erro |
+| **Mux vídeo+áudio (ffmpeg)** | streams com faixa de áudio separada (DASH/HLS) baixam as duas pernas e o `ffmpeg -c copy` mescla — sem ffmpeg, segue com uma faixa |
 | **Detecção de DRM** (Widevine/FairPlay/PlayReady) | analisa e **recusa** com aviso — nunca tenta contornar (DMCA §1201) |
 | **Faixa de áudio separada** | HLS `EXT-X-MEDIA`/DASH áudio viram qualidade "áudio" (baixar música) |
 | **Nome de arquivo legível** | `Content-Disposition` → URL → título da página (editável no popup) |
@@ -105,6 +107,32 @@ Com `--ytdlp`, a análise é delegada ao **yt-dlp instalado** (chamado como
 CLI externa — o código deles é GPL-3.0 e não é copiado). Isso cobre sites
 que exigem player próprio; se o yt-dlp falhar ou não existir, o parser
 HLS/DASH próprio assume.
+
+### Transmissão ao vivo (HLS sem `#EXT-X-ENDLIST`)
+
+Playlist sem `#EXT-X-ENDLIST` é **ao vivo** — não tem tamanho nem duração
+ainda. O `media` sinaliza isso (`** AO VIVO **` e a qualidade "ao vivo") e
+a engine:
+
+- re-busca a playlist a cada `target_duration / 2` (entre 1 e 10s) e
+  anexa os segmentos **novos** à fila — a janela anda sozinha, como num
+  player;
+- termina no `#EXT-X-ENDLIST` ou quando bate `live_max_seconds`
+  (padrão 4h; `0` = sem limite, pare com `pause`);
+- **pausa/retomada funcionam**: o progresso fica no sidecar `.meta.json`
+  e a retomada continua dos segmentos pendentes + os novos;
+- segmento que sai da janela ou responde 404 vira `lost` (contado em
+  `stream["lost"]`) e **não falha a tarefa** — é o que um player tolera;
+- a barra mostra `ao vivo` em vez de um `%` falso (o total só existe
+  depois do `ENDLIST`);
+- com mux (vídeo+áudio separados), as **duas pernas gravam ao mesmo
+  tempo** — senão o áudio pegaria outra janela da transmissão.
+
+```bat
+python -m minidm config set live_poll_seconds 0    # 0 = automático (meio do targetduration)
+python -m minidm config set live_max_seconds 3600  # 0 = sem limite
+python -m minidm config set live_playlist_retries 20
+```
 
 ## Perfis de download (conceito do YT-DLnis)
 
@@ -395,9 +423,11 @@ minidm/
   cli.py         argparse + comandos (gui, add, media, profiles, daemon, …)
   config.py      AppConfig (arquivo + flags)
   meta.py        Task/Segment + persistência (kind/referer/stream/profile)
+  store.py       fila JSON multi-processo (trava de arquivo, merge, tombstones)
+  categories.py  categorias estilo IDM (pasta + perfil por tipo de arquivo)
   remote.py      sondagem do servidor
   downloader.py  engine de arquivo: segmentos, retry, mirrors, throttle
-  stream.py      engine de stream: HLS/DASH, AES-128, retomada, recusa DRM
+  stream.py      engine de stream: HLS/DASH, AES-128, ao vivo (re-fetch até ENDLIST), retomada, recusa DRM, mux (MuxDownloader)
   media.py       parsing/análise de mídia (m3u8, MPD, DRM, nome, áudio)
   profiles.py    perfis + CommandTemplate (conceito YTDLnis)
   nametpl.py     motor de template de nome {title} [{id}].{ext}
@@ -413,17 +443,24 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           169 testes (engine, stream, mídia, DRM, yt-dlp, perfis, categorias, deps, API)
+tests/           212 testes (engine, stream, mídia, DRM, yt-dlp, perfis, categorias, deps, fila multi-processo, mux, HLS ao vivo, API)
+e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
+e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 ```
 
 ## Testes
 
 ```bat
 python -m unittest discover -s tests -v
+python e2e_mux_real.py        # E2E real: mídia gerada + ffmpeg mesclando
+python e2e_live_real.py       # E2E real: playlist AO VIVO + mux ao vivo
 ```
 
 Cobrem: engine de arquivo (segmentação/retomada/retry/mirrors/throttle),
-engine de stream (master/media/AES/DASH/retomada/recusa DRM), parsing de
+engine de stream (master/media/AES/DASH/retomada/recusa DRM), **HLS ao
+vivo** (re-fetch até o ENDLIST, janela que anda, 404 → `lost`,
+pausa+retomada, limite de duração, pernas de mux concorrentes e a
+exibição "ao vivo"), parsing de
 m3u8+MPD, detecção de DRM (HLS SESSION-KEY/KEY e DASH ContentProtection),
 nome de arquivo (Content-Disposition/título/genérico), faixas de áudio,
 integração yt-dlp (stub), **perfis + templates de nome + archive**,
@@ -434,12 +471,29 @@ link direto × página**, e a API (`/media/analyze`, `/add` kind=auto e
 ## Limitações conhecidas
 
 - Sem suporte a `sftp`/`ftp`, sem segmentação por `multipart/form-data`.
-- Fila em JSON único (bom para uso local; sem trava entre processos).
+- Fila em JSON único com **trava entre processos**: escrita atômica sob
+  lock exclusivo (`tasks.json.lock`), merge de criações e tombstones de
+  remoção — GUI + CLI podem abrir a mesma fila ao mesmo tempo. Mutação do
+  mesmo campo segue "último escritor vence" (com o daemon rodando, prefira
+  a API: `/pause`, `/remove`).
 - A extensão do navegador é um exemplo mínimo — não há auto-instalação.
 - `verify` usa `Get-AuthenticodeSignature` (só Windows).
-- HLS ao vivo (sem `#EXT-X-ENDLIST`) não é suportado.
 - **DRM (Widevine/FairPlay/PlayReady) não é suportado de propósito** —
   apenas detectado e recusado (contornar viola DMCA §1201 / Lei 9.610).
 - DASH `SegmentTemplate` assume período único e timeline contínua.
-- Streams DRM/áudio+vídeo separados: baixa uma faixa por vez (sem mux —
-  não há ffmpeg no ambiente).
+
+Limitações **superadas** nesta versão (antes eram limitações):
+
+- ~~Fila JSON sem trava entre processos~~ → trava de arquivo + merge +
+  tombstones (acima, mantida na lista só pelo detalhe do "último
+  escritor vence").
+- ~~"baixa uma faixa por vez (sem mux)"~~ → a engine própria agora
+  **mescla vídeo+áudio com `ffmpeg -c copy`** (`stream.MuxDownloader`):
+  a análise pareia a melhor faixa de áudio (DASH `AdaptationSet`
+  separado / HLS `EXT-X-MEDIA`), as duas pernas são baixadas com
+  retomada própria e o ffmpeg junta. Sem ffmpeg na máquina, cai no
+  download de uma faixa (como antes) em vez de quebrar.
+- ~~"HLS ao vivo (sem `#EXT-X-ENDLIST`) não é suportado"~~ → a engine
+  **re-busca a playlist** até o `ENDLIST`/limite de duração, com
+  pausa+retomada, `lost` tolerado para segmento da janela e pernas de mux
+  concorrentes (acima, "Transmissão ao vivo").

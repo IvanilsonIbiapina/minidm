@@ -57,10 +57,14 @@ def render(rows: list[dict], throttle_bps: int = 0) -> Panel:
 
     total_speed = 0.0
     for r in rows:
-        pct = r["progress"] * 100
+        # HLS ao vivo: total desconhecido — não mostra % nem ETA enganoso
+        is_live = bool(r.get("live")) and \
+            r["state"] == TaskState.DOWNLOADING
+        pct = "  --" if is_live else f"{r['progress']*100:5.1f}"
         filled = int(r["progress"] * 22)
         # ASCII puro: renderiza em qualquer console (cp1252, UTF-8, pipe)
-        bar = "#" * filled + "-" * (22 - filled)
+        bar = "ao vivo (sem fim)" if is_live else \
+            "#" * filled + "-" * (22 - filled)
         style = STATE_STYLE.get(r["state"], "")
         speed = r.get("speed", 0.0) or 0.0
         total_speed += speed
@@ -74,17 +78,20 @@ def render(rows: list[dict], throttle_bps: int = 0) -> Panel:
             signer = (r.get("signature_signer") or "")[:60]
             if signer:
                 extra += f"{signer}[/]"
+        segs = (f"{r['segments_done']}/{r['segments_total']}"
+                if r["segments_total"]
+                else (str(r.get("segments_done") or "")
+                      if r.get("live") else ""))
         table.add_row(
             r["id"],
             r["filename"],
             f"[{style}]{r['state']}[/]",
             f"[{style}]{bar}[/]",
-            f"{pct:5.1f}",
+            pct,
             human(r["received"]),
             f"{human(int(speed))}/s" if speed else "",
             eta(r["received"], r["total"], speed),
-            f"{r['segments_done']}/{r['segments_total']}"
-            if r["segments_total"] else "",
+            segs,
         )
         if extra:
             table.add_row("", Text.from_markup(extra), "", "", "", "", "", "", "")

@@ -149,6 +149,12 @@ def make_handler(app: App):
             quality_url = payload.get("quality_url", "")
             kind = payload.get("kind", "")
             profile = payload.get("profile", "")
+            # escolha de qualidade vinda do cliente (extensão): rep do MPD
+            # com SegmentTemplate + par de áudio p/ mux na engine própria
+            rep_id = payload.get("rep_id") or ""
+            mux_audio = (payload.get("audio")
+                         if isinstance(payload.get("audio"), dict) else None)
+            analyzed = False
 
             # ---------------------------- categoria estilo IDM (pasta+perfil):
             # a categoria define a PASTA (base configurável + subpasta) e, se
@@ -202,6 +208,14 @@ def make_handler(app: App):
                 if not filename:
                     filename = res.get("filename", "")
                 payload.setdefault("quality_label", q.get("label", ""))
+                analyzed = True
+                # qualidade escolhida neste analyze: a representação do
+                # MPD (senão o downloader re-escolheria a maior banda) e o
+                # par áudio p/ mux (senão o vídeo baixaria mudo)
+                if not rep_id:
+                    rep_id = (q.get("dash") or {}).get("id") or ""
+                if mux_audio is None and isinstance(q.get("audio"), dict):
+                    mux_audio = q["audio"]
 
             if not quality_url:
                 quality_url = url
@@ -229,6 +243,30 @@ def make_handler(app: App):
                 user_agent=payload.get("user_agent", ""),
                 expected_sha256=payload.get("sha256"),
             )
+            # ---------------------------- qualidade escolhida (engine própria):
+            # `rep_id` senão o downloader do MPD com SegmentTemplate re-
+            # escolheria a maior banda, ignorando o que o usuário pediu; e o
+            # par `mux_audio` p/ baixar vídeo+áudio e mesclar com ffmpeg.
+            if rep_id and kind == "dash":
+                task.stream = {"rep_id": str(rep_id), "media": "video"}
+            if mux_audio is not None:
+                from minidm.deps import ffmpeg_available
+
+                if ffmpeg_available():
+                    task.mux_audio = dict(mux_audio)
+            elif kind in ("hls", "dash") and not analyzed \
+                    and not payload.get("quality_url"):
+                # manifest direto sem análise (CLI/API): analisa rápido p/
+                # achar a qualidade certa e o par de áudio. Silencioso —
+                # falhou, a tarefa segue como estava.
+                from minidm.media import attach_mux_hints
+
+                attach_mux_hints(
+                    task, url, referer=referer,
+                    user_agent=payload.get("user_agent", "")
+                    or app.config.user_agent,
+                    cookie=payload.get("cookie", "") or app.config.cookie,
+                    proxy=payload.get("proxy", "") or app.config.proxy)
             # perfil preenche destino/nome/args yt-dlp (estilo YT-DLnis)
             if profile:
                 from minidm.profiles import ProfileStore, apply_profile

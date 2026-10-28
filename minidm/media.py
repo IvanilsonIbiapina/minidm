@@ -513,6 +513,28 @@ def _quality_label(resolution: str, bandwidth: Optional[int],
     return "original"
 
 
+def _probe_live(session, variants: list[dict], headers: dict,
+                timeout: float) -> bool:
+    """Sonda a variante de maior banda: a playlist sem `#EXT-X-ENDLIST`
+    é sessão AO VIVO.
+
+    Todas as variantes de um master compartilham a sessão, então UMA
+    leitura basta para marcar o resultado inteiro. Falha de rede aqui não
+    derruba a análise — assume VOD e o downloader detecta de novo.
+    """
+    if not variants:
+        return False
+    best = max(variants, key=lambda v: v.get("bandwidth") or 0)
+    try:
+        r = session.get(best["url"], headers=headers, timeout=timeout)
+        if r.status_code >= 400:
+            return False
+        pl = parse_m3u8(r.text, best["url"])
+        return pl.get("type") == "media" and not pl.get("endlist")
+    except (requests.RequestException, ValueError):
+        return False
+
+
 def _estimate_media_size(session, media: dict, headers: dict,
                          timeout: float) -> Optional[int]:
     """Estima o tamanho somando o primeiro segmento x nº de segmentos."""
@@ -543,7 +565,22 @@ def _dash_qualities(session, dash: dict, headers: dict, base_url: str,
     reps = dash.get("representations") or []
     # prefere vídeo; se não houver, áudio
     video = [r for r in reps if r["mimeType"].startswith("video")]
-    pool = video or [r for r in reps if r["mimeType"].startswith("audio")]
+    audio_only = [r for r in reps if r["mimeType"].startswith("audio")]
+    pool = video or audio_only
+    # melhor faixa de áudio separada: cada qualidade de vídeo ganha o par
+    # ("audio") p/ o mux com ffmpeg — sem isso o downloader baixaria só o
+    # vídeo (mudo), que é a limitação antiga da engine própria.
+    best_audio = max(audio_only, key=lambda r: r.get("bandwidth") or 0) \
+        if (video and audio_only) else None
+    audio_pair = None
+    if best_audio is not None:
+        if best_audio.get("template") or best_audio.get("list"):
+            audio_pair = {"url": base_url, "kind": "dash",
+                          "rep_id": best_audio.get("id") or "",
+                          "media": "audio"}
+        else:
+            # BaseURL direto -> a própria URL do áudio já é o arquivo
+            audio_pair = {"url": best_audio["url"], "kind": "file"}
     for rep in pool:
         tpl, lst = rep.get("template"), rep.get("list")
         kind = "dash"
@@ -578,6 +615,7 @@ def _dash_qualities(session, dash: dict, headers: dict, base_url: str,
             "duration": rep.get("duration") or dash.get("duration"),
             "estimated_size": size,
             "dash": rep if kind == "dash" else None,
+            "audio": dict(audio_pair) if (audio_pair and video) else None,
         })
     qualities.sort(key=lambda q: q["bandwidth"] or 0, reverse=True)
     return qualities
@@ -671,6 +709,16 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                                   f"({media['drm']}) — não é possível baixar")}
             if media["type"] == "master":
                 qualities = []
+                # faixas de áudio separadas do próprio master (EXT-X-MEDIA):
+                # vira o par de mux das qualidades de vídeo (senão o vídeo
+                # baixaria mudo) e também uma qualidade "só áudio" própria.
+                audio_alts = [a for a in media["alternates"]
+                              if a.get("type") == "audio" and a.get("url")]
+                audio_pair = ({"url": audio_alts[0]["url"], "kind": "hls"}
+                              if audio_alts else None)
+                # a sessão é a mesma em todas as variantes: uma leitura na
+                # de maior banda já diz se é playlist ao vivo (sem ENDLIST)
+                live = _probe_live(session, media["variants"], headers, timeout)
                 for v in media["variants"]:
                     qualities.append({
                         "label": _quality_label(v["resolution"], v["bandwidth"],
@@ -681,6 +729,8 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                         "resolution": v["resolution"] or None,
                         "duration": None,
                         "estimated_size": None,
+                        "live": live,
+                        "audio": dict(audio_pair) if audio_pair else None,
                     })
                 # faixas de áudio separadas (música) — só quando há faixa
                 # própria com URL; HLS áudio puro costuma vir assim
@@ -694,26 +744,31 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                             "resolution": None,
                             "duration": None,
                             "estimated_size": None,
+                            "live": live,
                             "audio_only": True,
                         })
                 return {"ok": True, "kind": "hls-master", "qualities": qualities,
                         "alternates": media["alternates"],
-                        "duration": None, "encrypted": False,
+                        "duration": None, "encrypted": False, "live": live,
                         "filename": _suggest_name(url, content_disposition,
                                                   page_title)}
             # playlist de mídia direto: estima tamanho pelo 1º segmento
-            size = _estimate_media_size(session, media, headers, timeout)
-            return {"ok": True, "kind": "hls-media",
+            # — exceto quando é AO VIVO: o tamanho/duração ainda não existem
+            live = not media.get("endlist")
+            size = (None if live
+                    else _estimate_media_size(session, media, headers, timeout))
+            return {"ok": True, "kind": "hls-media", "live": live,
                     "qualities": [{
-                        "label": "original",
+                        "label": "ao vivo" if live else "original",
                         "url": url,
                         "kind": "hls",
                         "bandwidth": None,
                         "resolution": None,
-                        "duration": media["duration"],
+                        "duration": None if live else media["duration"],
                         "estimated_size": size,
+                        "live": live,
                     }],
-                    "duration": media["duration"],
+                    "duration": None if live else media["duration"],
                     "encrypted": media["encrypted"],
                     "filename": _suggest_name(url, content_disposition,
                                               page_title)}
@@ -754,6 +809,54 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
         return {"ok": False, "error": str(e)}
     finally:
         session.close()
+
+
+def attach_mux_hints(task, url: str, referer: str = "",
+                     user_agent: str = "", cookie: str = "",
+                     proxy: str = "", timeout: float = TIMEOUT) -> bool:
+    """Analisa o manifesto de `url` e liga na `task` a escolha de qualidade.
+
+    Dois ganhos (era o que faltava na engine própria):
+
+    - `task.stream = {"rep_id": …}` quando a qualidade veio de um MPD com
+      `SegmentTemplate` — sem isso o downloader re-escolhia a maior banda,
+      ignorando a qualidade que o usuário pediu;
+    - `task.mux_audio` com o par áudio (DASH/HLS com faixas separadas),
+      quando há ffmpeg — aí a engine baixa as DUAS faixas e mescla
+      (`stream.MuxDownloader`).
+
+    Silencioso de propósito: falhou a análise (ou é DRM/sem ffmpeg)? A
+    tarefa segue exatamente como estava — o download continua do jeito de
+    antes, só sem os extras.
+    """
+    try:
+        res = analyze(url, referer=referer, user_agent=user_agent,
+                      cookie=cookie, proxy=proxy, timeout=timeout)
+    except Exception:
+        return False
+    if not res.get("ok") or res.get("drm"):
+        return False
+    quals = res.get("qualities") or []
+    if not quals:
+        return False
+
+    def score(q):
+        # melhor vídeo primeiro (áudio puro só se for o que existe)
+        return (-1 if q.get("audio_only") else 0,
+                q.get("height") or 0, q.get("bandwidth") or 0)
+
+    q = max(quals, key=score)
+    if not task.quality_label and q.get("label"):
+        task.quality_label = q["label"]
+    rep = q.get("dash") or {}
+    if rep.get("id") and q.get("kind") == "dash":
+        task.stream = {"rep_id": rep["id"], "media": "video"}
+    if isinstance(q.get("audio"), dict):
+        from minidm.deps import ffmpeg_available
+
+        if ffmpeg_available():
+            task.mux_audio = dict(q["audio"])
+    return True
 
 
 def _suggest_name(url: str, content_disposition: str = "",

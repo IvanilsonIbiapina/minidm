@@ -75,6 +75,16 @@ class Task:
     profile: str = ""                # nome do perfil usado ("Música"…)
     use_ytdlp_downloader: bool = False   # delegar download ao yt-dlp
     ytdlp_args: list[str] = field(default_factory=list)  # args extras yt-dlp
+    # ---- v6 (fila multi-processo + mux)
+    # último instante em que a ESTRUTURA da tarefa mudou (estado, erro…).
+    # Progresso NÃO marca — serve só p/ dois processos concorrentes
+    # decidirem quem tem a versão mais nova de cada tarefa (ver store.py).
+    updated_at: float = 0.0
+    # par de áudio separado p/ mux (DASH com faixas separadas / HLS com
+    # EXT-X-MEDIA): {"url", "kind", "rep_id"?, "media"?, "video_done"?,
+    # "audio_filename"?, "vseg"?, "vbytes"?}. A engine baixa as duas
+    # faixas e junta com `ffmpeg -c copy` (ver stream.MuxDownloader).
+    mux_audio: Optional[dict] = None
 
     # ---------------------------------------------------------------- paths
     @property
@@ -124,7 +134,7 @@ class Task:
     def save_meta(self) -> None:
         """Grava o estado de progresso ao lado do `.part` (atômico)."""
         os.makedirs(self.dest_dir, exist_ok=True)
-        tmp = self.meta_path + ".tmp"
+        tmp = f"{self.meta_path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=1)
         os.replace(tmp, self.meta_path)

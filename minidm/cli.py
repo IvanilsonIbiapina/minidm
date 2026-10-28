@@ -78,6 +78,17 @@ def cmd_add(args) -> int:
             # delegação automática: link de PÁGINA (YouTube, Instagram…)
             # e yt-dlp instalado -> usa o yt-dlp sem precisar pedir.
             auto_delegate(task)
+        if kind in ("hls", "dash") and not task.use_ytdlp_downloader:
+            # manifest direto: analisa em silêncio p/ pegar a qualidade
+            # certa (rep_id no MPD) e o par de áudio (mux com ffmpeg).
+            # Falhou? segue como estava — download igual ao de antes.
+            from minidm.media import attach_mux_hints
+
+            attach_mux_hints(
+                task, url, referer=args.referer or "",
+                user_agent=args.user_agent or cfg.user_agent,
+                cookie=args.cookie or cfg.cookie,
+                proxy=args.proxy or cfg.proxy)
         store.add(task)
         created.append(task)
         prof = f"  [{task.profile}]" if task.profile else ""
@@ -293,11 +304,13 @@ def cmd_media(args) -> int:
         return 1
     dur = r.get("duration")
     print(f"tipo: {r['kind']}" + (f"  duração: {dur:.1f}s" if dur else "")
-          + ("  (criptografado)" if r.get("encrypted") else ""))
+          + ("  (criptografado)" if r.get("encrypted") else "")
+          + ("  ** AO VIVO (sem #EXT-X-ENDLIST) **" if r.get("live") else ""))
     for i, q in enumerate(r["qualities"]):
         size = f"  ~{human(q['estimated_size'])}" if q.get("estimated_size") else ""
         bw = f"  {q['bandwidth']/1e6:.1f} Mbps" if q.get("bandwidth") else ""
-        print(f"  [{i}] {q['label']}{bw}{size}")
+        print(f"  [{i}] {q['label']}{bw}{size}"
+              + ("  [ao vivo]" if q.get("live") else ""))
     if args.download is not None:
         idx = args.download
         if not (0 <= idx < len(r["qualities"])):
@@ -315,6 +328,17 @@ def cmd_media(args) -> int:
                     quality_label=q.get("label", ""),
                     cookie=args.cookie or cfg.cookie,
                     user_agent=args.user_agent or cfg.user_agent)
+        # qualidade já analisada aqui: aproveita a escolha direto —
+        # representação do MPD (senão re-escolheria a maior banda) e o
+        # par de áudio p/ mux na engine própria (senão vídeo mudo).
+        rep = q.get("dash") or {}
+        if rep.get("id") and "dash" in (r["kind"], q["kind"]):
+            task.stream = {"rep_id": rep["id"], "media": "video"}
+        if isinstance(q.get("audio"), dict):
+            from minidm.deps import ffmpeg_available
+
+            if ffmpeg_available():
+                task.mux_audio = dict(q["audio"])
         if getattr(args, "profile", ""):
             pstore = ProfileStore(cfg.data_dir)
             apply_profile(task, pstore, args.profile,

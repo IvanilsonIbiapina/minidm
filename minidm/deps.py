@@ -89,6 +89,22 @@ def ffmpeg_available() -> bool:
     return ffmpeg_dir() is not None
 
 
+def ffmpeg_bin() -> Optional[str]:
+    """Caminho do executável `ffmpeg`, ou None se não existir.
+
+    `ffmpeg_dir()` devolve o diretório (o yt-dlp quer assim); para rodar o
+    ffmpeg DIRETO (mux da engine própria) precisamos do binário.
+    """
+    d = ffmpeg_dir()
+    if not d:
+        return None
+    for name in _FFMPEG_NAMES:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return shutil.which("ffmpeg")
+
+
 @lru_cache(maxsize=1)
 def status() -> dict:
     """Estado das dependências externas, legível, p/ `minidm deps`."""

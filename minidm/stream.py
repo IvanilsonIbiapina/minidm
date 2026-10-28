@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import subprocess
 import threading
 import time
 from typing import Callable, Optional
@@ -155,6 +156,9 @@ class StreamDownloader:
         self._key_cache: dict[str, bytes] = {}
         self._plan: dict = {}
         self._queue: list[int] = []
+        self._inflight: set[int] = set()   # índices em download agora
+        self._failed: set[int] = set()     # índices que esgotaram as retries
+        self._live = False                 # playlist ao vivo (sem ENDLIST)
 
     # ----------------------------------------------------------------- top
     def run(self) -> Task:
@@ -163,8 +167,11 @@ class StreamDownloader:
         t.error = None
         try:
             self._prepare()
-            self._spawn_workers()
-            self._checkpoint_loop()
+            if self._live:
+                self._live_loop()      # rebusca a playlist até o ENDLIST
+            else:
+                self._spawn_workers()
+                self._checkpoint_loop()
             self._finalize()
         except (StreamError, requests.RequestException) as e:
             if t.state != TaskState.PAUSED:
@@ -211,8 +218,15 @@ class StreamDownloader:
             self._plan = cached
             self._items = cached["items"]
             t.total_size = cached.get("bytes_total")
-            if not t.segments:
-                t.segments = _segments_for_items(self._items)
+            self._live = bool(cached.get("live"))
+            if len(t.segments) < len(self._items):
+                # gravação atômica mantém os dois juntos, mas por segurança
+                # completa os segmentos que faltarem (nunca encurta)
+                from minidm.meta import Segment
+
+                while len(t.segments) < len(self._items):
+                    i = len(t.segments)
+                    t.segments.append(Segment(start=i, end=i, received=0))
             return
         if cached:
             # escolha parcial (rep_id/variant_index) vinda do chamador
@@ -222,7 +236,9 @@ class StreamDownloader:
         self._plan = plan
         self._items = plan["items"]
         t.segments = _segments_for_items(self._items)
-        t.total_size = plan.get("bytes_total")
+        self._live = bool(plan.get("live"))
+        # ao vivo: não existe tamanho total — a playlist cresce com o tempo
+        t.total_size = None if self._live else plan.get("bytes_total")
         t.accept_ranges = False
         t.stream = {
             "base_url": t.url,
@@ -232,7 +248,11 @@ class StreamDownloader:
             "bytes_done": 0,
             "bytes_total": t.total_size,
             "segments_done": 0,
-            "segments_total": len(self._items),
+            # ao vivo o total é desconhecido (0) — a barra mostra "ao vivo"
+            "segments_total": 0 if self._live else len(self._items),
+            "live": self._live,
+            "target_duration": plan.get("target_duration") or 0.0,
+            "lost": 0,
         }
 
         # extensão do arquivo final (.ts/.mp4) se o nome não tiver uma
@@ -294,9 +314,14 @@ class StreamDownloader:
                 "init": False,
             })
         durations = [s.get("duration") or 0 for s in playlist["segments"]]
+        # playlist sem #EXT-X-ENDLIST = sessão AO VIVO: os segmentos ainda
+        # vão chegando e a playlist precisa ser rebuscada periodicamente
+        live = not playlist.get("endlist")
         return {"kind": "hls", "items": items, "init": init,
                 "resolved_url": resolved, "base_url": url,
-                "durations": durations, "encrypted": playlist["encrypted"]}
+                "durations": durations, "encrypted": playlist["encrypted"],
+                "live": live,
+                "target_duration": playlist.get("target_duration") or 0.0}
 
     def _pick_variant(self, variants: list[dict]) -> int:
         """Escolhe a variante: índice pedido, ou a de maior bandwidth."""
@@ -318,7 +343,15 @@ class StreamDownloader:
                 f"não é possível baixar")
         reps = dash.get("representations") or []
         video = [r for r in reps if r["mimeType"].startswith("video")]
-        pool = video or [r for r in reps if r["mimeType"].startswith("audio")]
+        audio = [r for r in reps if r["mimeType"].startswith("audio")]
+        # dica vinda do mux: esta resolução é da PERNA DE ÁUDIO — só a
+        # faixa de áudio, senão o "par" baixaria o vídeo de novo
+        if (self._plan or {}).get("media") == "audio":
+            if not audio:
+                raise StreamError("MPD sem faixa de áudio separada")
+            pool = audio
+        else:
+            pool = video or audio
         if not pool:
             raise StreamError("MPD sem representações")
         rep = self._pick_dash_rep(pool)
@@ -382,16 +415,25 @@ class StreamDownloader:
         não se perde item quando há mais segmentos que `max_connections`.
         `concurrent_fragments` (config) limita os fragmentos simultâneos
         *deste stream* — o equivalente ao `--concurrent-fragments` do yt-dlp.
+
+        Pode ser chamada de novo (HLS ao vivo): só enfileira o que ainda NÃO
+        está na fila nem em download e só abre threads enquanto há vaga.
         """
-        pending = [i for i in range(len(self._items)) if not self._item_done(i)]
-        if not pending:
+        with self._lock:
+            have = set(self._queue) | set(self._inflight) | set(self._failed)
+            pending = [i for i in range(len(self._items))
+                       if not self._item_done(i) and i not in have]
+            if pending:
+                self._queue.extend(pending)
+            queued = len(self._queue)
+            alive = sum(1 for th in self._threads if th.is_alive())
+        if not queued:
             return
-        self._queue = list(pending)
         limit = max(1, self.config.max_connections)
         frags = getattr(self.config, "concurrent_fragments", 0) or 0
         if frags > 0:
             limit = min(limit, frags)
-        n = min(len(pending), limit)
+        n = min(queued, limit - alive)
         for w in range(n):
             th = threading.Thread(target=self._worker, name=f"stream-{w}",
                                   daemon=True)
@@ -400,7 +442,11 @@ class StreamDownloader:
 
     def _next_index(self) -> Optional[int]:
         with self._lock:
-            return self._queue.pop(0) if self._queue else None
+            if not self._queue:
+                return None
+            i = self._queue.pop(0)
+            self._inflight.add(i)
+            return i
 
     def _seg_path(self, index: int) -> str:
         return os.path.join(self._segs_dir(), f"{index:06d}.bin")
@@ -417,32 +463,40 @@ class StreamDownloader:
             index = self._next_index()
             if index is None:
                 return
-            if self.stop.is_set():
-                return
-            if self._item_done(index):
-                continue
-            for attempt in range(cfg.retries + 1):
+            try:
                 if self.stop.is_set():
                     return
                 if self._item_done(index):
-                    break
-                try:
-                    self._download_item(index)
-                    break
-                except StopRequested:
-                    return
-                except (requests.RequestException, OSError) as e:
-                    if attempt >= cfg.retries:
+                    continue
+                for attempt in range(cfg.retries + 1):
+                    if self.stop.is_set():
+                        return
+                    if self._item_done(index):
+                        break
+                    try:
+                        self._download_item(index)
+                        break
+                    except StopRequested:
+                        return
+                    except (requests.RequestException, OSError) as e:
+                        if attempt >= cfg.retries:
+                            with self._lock:
+                                self.task.error = f"segmento {index}: {e}"
+                                self._failed.add(index)
+                            break
+                        delay = min(cfg.backoff_max,
+                                    cfg.backoff_base * (2 ** attempt))
+                        self.stop.wait(delay * (0.7 + 0.6 * ((attempt * 37) % 10) / 10))
+                    except StreamError as e:
                         with self._lock:
                             self.task.error = f"segmento {index}: {e}"
+                            self._failed.add(index)
                         break
-                    delay = min(cfg.backoff_max,
-                                cfg.backoff_base * (2 ** attempt))
-                    self.stop.wait(delay * (0.7 + 0.6 * ((attempt * 37) % 10) / 10))
-                except StreamError as e:
-                    with self._lock:
-                        self.task.error = f"segmento {index}: {e}"
-                    break
+            finally:
+                # tira o índice da fila "em download" — sem isso o próximo
+                # `_spawn_workers` (loop ao vivo) nunca re-enfileiraria ele
+                with self._lock:
+                    self._inflight.discard(index)
 
     def _download_item(self, index: int) -> None:
         item = self._items[index]
@@ -536,12 +590,172 @@ class StreamDownloader:
                                f"(primeiro: {missing[0]})")
             raise StreamError(self.task.error)
 
+    # --------------------------------------------------------------- ao vivo
+    def _live_interval(self) -> float:
+        """Intervalo entre re-fetches da playlist ao vivo.
+
+        Padrão: metade do `#EXT-X-TARGETDURATION`, entre 1 e 10s — rápido
+        o bastante p/ não perder segmento da janela e lento o bastante p/
+        não martelar o servidor. `live_poll_seconds` na config sobrepõe.
+        """
+        cfg_poll = float(getattr(self.config, "live_poll_seconds", 0.0) or 0.0)
+        if cfg_poll > 0:
+            return max(0.2, cfg_poll)
+        st = self.task.stream if isinstance(self.task.stream, dict) else {}
+        td = float(st.get("target_duration") or 0.0)
+        if td <= 0:
+            td = float((self._plan or {}).get("target_duration") or 0.0)
+        if td <= 0:
+            td = 4.0
+        return min(10.0, max(1.0, td / 2.0))
+
+    def _poll_playlist(self) -> tuple[int, bool]:
+        """Rebusca a playlist de mídia e anexa os segmentos NOVOS.
+
+        Devolve `(adicionados, endlist)`. Segmentos que já saíram da
+        janela deslizante antes de a gente ver (ou que ficaram para trás)
+        viram "lost": em transmissão ao vivo a falta é TOLERADA — é o que
+        um player faz (o `#EXT-X-MEDIA-SEQUENCE` avança sozinho).
+        """
+        from minidm.meta import Segment
+
+        st = self.task.stream if isinstance(self.task.stream, dict) else {}
+        url = st.get("resolved_url") or self.task.url
+        pl = parse_m3u8(self._get_text(url), url)
+        if pl.get("type") != "media":
+            raise StreamError("playlist ao vivo deixou de ser playlist de mídia")
+        if pl.get("drm"):
+            raise StreamError(
+                f"conteúdo protegido por DRM ({pl['drm']}) — "
+                f"não é possível baixar")
+
+        known = {it.get("sequence") for it in self._items
+                 if not it.get("init")}
+        seqs = [s.get("sequence") for s in pl["segments"]]
+        lost_gap = 0
+        if seqs and known:
+            # buraco entre o último que vimos e a nova janela: saiu do ar
+            # antes de a gente buscar -> perdido, não é erro
+            unseen = [s for s in seqs if s not in known]
+            if unseen:
+                lost_gap = max(0, min(unseen) - (max(known) + 1))
+
+        added = 0
+        for seg in pl["segments"]:
+            seq = seg.get("sequence")
+            if seq in known:
+                continue
+            known.add(seq)
+            self._items.append({
+                "url": seg["url"],
+                "byterange": seg.get("byterange"),
+                "key": dict(seg["key"]) if seg.get("key") else None,
+                "sequence": seq,
+                "init": False,
+                "live": True,
+            })
+            i = len(self._items) - 1
+            self.task.segments.append(Segment(start=i, end=i, received=0))
+            added += 1
+
+        if added or lost_gap:
+            st["items"] = self._items
+            st["lost"] = int(st.get("lost") or 0) + lost_gap
+        return added, bool(pl.get("endlist"))
+
+    def _live_loop(self) -> None:
+        """Baixa o HLS AO VIVO: segmentos que existem + re-fetch da playlist.
+
+        Termina quando aparece `#EXT-X-ENDLIST`, quando bate o limite de
+        duração (`live_max_seconds`) ou quando o usuário PAUSA (aí o
+        progresso é salvo e a retomada continua de onde parou — a janela
+        pode ter andado, aí os segmentos antigos viram "lost").
+        """
+        cfg = self.config
+        max_secs = float(getattr(cfg, "live_max_seconds", 0.0) or 0.0)
+        deadline = time.monotonic() + max_secs if max_secs > 0 else None
+        retries_max = max(1, int(getattr(cfg, "live_playlist_retries", 20)
+                                 or 20))
+        interval = self._live_interval()
+        last_poll = time.monotonic()       # já temos a 1ª playlist (prepare)
+        last_ckpt = time.monotonic()
+        failures = 0
+        ended = False
+
+        self._spawn_workers()
+        while True:
+            if self.stop.is_set():
+                if self.on_progress:
+                    self.on_progress(self.task)
+                self.task.state = TaskState.PAUSED
+                self.task.save_meta()
+                raise StreamError("interrompido (progresso salvo)")
+
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                ended = True                # duração máxima: encerra por aqui
+
+            added = 0
+            if not ended and now - last_poll >= interval:
+                last_poll = now
+                try:
+                    added, endlist = self._poll_playlist()
+                    if endlist:
+                        ended = True        # servidor disse "acabou"
+                    failures = 0
+                except (requests.RequestException, ValueError,
+                        StreamError) as e:
+                    failures += 1
+                    if failures >= retries_max:
+                        raise StreamError(
+                            f"playlist ao vivo indisponível "
+                            f"({failures} tentativas): {e}")
+
+            alive = [th for th in self._threads if th.is_alive()]
+            if added or not alive:
+                self._spawn_workers()
+                alive = [th for th in self._threads if th.is_alive()]
+
+            if ended and not alive:
+                # fila esvaziada (ou só perdeu) com a transmissão encerrada
+                break
+
+            if now - last_ckpt >= self.checkpoint_seconds:
+                last_ckpt = now
+                self.task.save_meta()
+                if self.on_progress:
+                    self.on_progress(self.task)
+            time.sleep(0.2)
+
+        self.task.save_meta()
+        if self.on_progress:
+            self.on_progress(self.task)
+
+        if self.stop.is_set():
+            self.task.state = TaskState.PAUSED
+            self.task.save_meta()
+            raise StreamError("interrompido (progresso salvo)")
+
     # --------------------------------------------------------------- final
     def _finalize(self) -> None:
         t = self.task
+        st = t.stream if isinstance(t.stream, dict) else {}
+        live = bool(st.get("live"))
+        missing = [i for i in range(len(self._items))
+                   if not self._item_done(i)]
+        if missing and not live:
+            # o `_checkpoint_loop` já abortou antes — defesa p/ não
+            # concatenar um arquivo incompleto por engano
+            t.error = (f"{len(missing)} segmento(s) não baixados "
+                       f"(primeiro: {missing[0]})")
+            raise StreamError(t.error)
+        lost = len(missing) if live else 0
+
         # concatena init + segmentos, em ordem, direto no .part
         with open(t.part_path, "wb") as out:
             for i in range(len(self._items)):
+                if not self._item_done(i):
+                    continue            # ao vivo: falta tolerada (lost)
                 with open(self._seg_path(i), "rb") as seg:
                     while True:
                         chunk = seg.read(CHUNK)
@@ -549,6 +763,16 @@ class StreamDownloader:
                             break
                         out.write(chunk)
         _rmtree_quiet(self._segs_dir())
+
+        if live:
+            # transmissão terminou: agora o total EXISTE (o que chegou),
+            # então a barra da tarefa concluída mostra o % real
+            st["lost"] = int(st.get("lost") or 0) + lost
+            st["segments_total"] = len(self._items)
+            st["segments_done"] = len(self._items) - lost
+            st["items"] = self._items
+            t.error = None             # lost não é erro em ao vivo
+            t.total_size = None
 
         # hash do .part antes de renomear (o final ainda não existe)
         t.sha256 = verify_mod.sha256_file(t.part_path)
@@ -600,13 +824,412 @@ def _rmtree_quiet(path: str) -> None:
         pass
 
 
+class MuxDownloader:
+    """Baixa as DUAS faixas (vídeo + áudio separados) e mescla com ffmpeg.
+
+    É a resposta à antiga limitação "baixa uma faixa por vez (sem mux)":
+    quando a análise ligou um par `task.mux_audio` (DASH com AdaptationSets
+    separados, HLS com EXT-X-MEDIA de áudio), esta classe roda a engine
+    normal na faixa de vídeo, depois na de áudio, e junta as duas com
+    `ffmpeg -c copy` — o mesmo que o yt-dlp faz, mas na engine própria.
+
+    Fases (a barra da tarefa principal espelha as duas juntas):
+      1. vídeo — progresso natural do StreamDownloader/Downloader;
+      2. áudio — segmentos do áudio somados aos do vídeo;
+      3. mescla — barra em 100% enquanto o ffmpeg copia os fluxos.
+
+    Pausa/erro em qualquer perna vira PAUSED/ERROR na tarefa principal (é
+    o estado que o scheduler lê p/ emitir o evento); retomada reusa os
+    dois sidecars (`.meta.json`) — vídeo pronto não é baixado de novo.
+    """
+
+    def __init__(self, task: Task, config: Optional[AppConfig] = None,
+                 on_progress: Optional[Callable[[Task], None]] = None,
+                 stop: Optional[threading.Event] = None,
+                 semaphore: Optional[threading.BoundedSemaphore] = None,
+                 bucket: Optional[TokenBucket] = None,
+                 checkpoint_seconds: float = CHECKPOINT_SECONDS):
+        self.task = task
+        self.config = config or AppConfig()
+        self.on_progress = on_progress
+        self.stop = stop or threading.Event()
+        self.sem = semaphore
+        self.bucket = bucket
+        self.checkpoint_seconds = checkpoint_seconds
+        self._leg = None                    # downloader da fase corrente
+        self._legs: list = []               # pernas simultâneas (ao vivo)
+        self._audio_seen = 0                # bytes do áudio já espelhados
+
+    # ------------------------------------------------------------- interface
+    def request_stop(self) -> None:
+        self.stop.set()
+        legs = list(self._legs) or [self._leg]
+        for leg in legs:
+            if leg is not None:
+                leg.request_stop()
+
+    def speed_bps(self, window: float = 5.0) -> float:
+        legs = [l for l in self._legs if l is not None]
+        if not legs:
+            legs = [self._leg] if self._leg is not None else []
+        if not legs:
+            return 0.0
+        # ao vivo as duas pernas gravam juntas: soma as velocidades
+        return sum(l.speed_bps(window) for l in legs)
+
+    def run(self) -> Task:
+        t = self.task
+        t.state = TaskState.DOWNLOADING
+        t.error = None
+        self._recover()
+        try:
+            mx = dict(t.mux_audio or {})
+            if (not mx.get("video_done")) and self._detect_live():
+                # AO VIVO: fases 1 e 2 CONCORRENTES (as duas faixas têm de
+                # gravar a MESMA janela da transmissão)
+                self._run_live_pair()
+            else:
+                self._run_video_then_audio(mx)
+            # ------------------------------ fase 3: mescla
+            self._check_stop()
+            self._mux()
+            return t
+        except Exception as exc:
+            self._translate(exc)
+            raise
+
+    # ------------------------------------------------------------ fases/apoio
+    def _run_video_then_audio(self, mx: dict) -> None:
+        """Sequência normal (VOD): vídeo, depois áudio."""
+        t = self.task
+        # ------------------------------ fase 1: vídeo
+        if not mx.get("video_done"):
+            self._leg = self._make_leg(t, self.on_progress)
+            self._leg.run()        # pausa/erro já gravados -> propaga
+            st = t.stream if isinstance(t.stream, dict) else {}
+            mx["video_done"] = True
+            mx.setdefault("vseg",
+                          st.get("segments_total") or len(t.segments))
+            mx.setdefault("vbytes",
+                          st.get("bytes_total") or t.total_size or 0)
+            t.mux_audio = mx
+            t.state = TaskState.DOWNLOADING   # ainda falta áudio+mescla
+            t.finished_at = None
+            t.save_meta()
+        # ------------------------------ fase 2: áudio
+        at = self._audio_task()
+        old_audio = Task.load_meta(at.meta_path)
+        audio_ok = bool(
+            old_audio and old_audio.state == TaskState.DONE
+            and os.path.exists(os.path.join(t.dest_dir, old_audio.filename)))
+        if not audio_ok:
+            self._check_stop()
+            leg = self._make_leg(at, self._audio_progress)
+            if isinstance(leg, StreamDownloader):
+                leg._prepare()       # resolve já -> espelha os totais
+            mx = dict(t.mux_audio or {})
+            mx["audio_filename"] = at.filename
+            t.mux_audio = mx
+            t.save_meta()
+            self._mirror_audio(at)
+            self._leg = leg
+            leg.run()
+            if mx.get("audio_filename") != at.filename:
+                mx["audio_filename"] = at.filename
+                t.mux_audio = mx
+                t.save_meta()
+
+    def _detect_live(self) -> bool:
+        """Pré-resolve a perna de vídeo p/ descobrir se é transmissão ao vivo.
+
+        O `#EXT-X-ENDLIST` só aparece depois de ler a playlist de mídia
+        (nem sempre é a URL dada), e as duas faixas de um master HLS são
+        da mesma sessão — uma leitura decide o modo das DUAS.
+        """
+        t = self.task
+        if t.kind != "hls" or not t.mux_audio:
+            return False
+        leg = self._make_leg(t, self.on_progress)
+        try:
+            leg._prepare()
+        except (StreamError, requests.RequestException):
+            return False            # a fase normal tenta de novo
+        self._leg = leg             # a fase 1 reusa o prepare
+        st = t.stream if isinstance(t.stream, dict) else {}
+        return bool(st.get("live"))
+
+    def _run_live_pair(self) -> None:
+        """Fases 1+2 ao mesmo tempo (HLS ao vivo) e deixa a fase 3 pronta."""
+        t = self.task
+        video_leg = self._leg
+        at = self._audio_task()
+        old_audio = Task.load_meta(at.meta_path)
+        audio_ok = bool(
+            old_audio and old_audio.state == TaskState.DONE
+            and os.path.exists(os.path.join(t.dest_dir, old_audio.filename)))
+        audio_leg = None
+        if not audio_ok:
+            self._check_stop()
+            audio_leg = self._make_leg(at, self._audio_progress)
+            if isinstance(audio_leg, StreamDownloader):
+                audio_leg._prepare()
+            mx = dict(t.mux_audio or {})
+            mx["audio_filename"] = at.filename
+            t.mux_audio = mx
+            t.save_meta()
+
+        legs = [l for l in (video_leg, audio_leg) if l is not None]
+        self._legs = legs
+        errors: list[tuple] = []
+
+        def _run(leg) -> None:
+            try:
+                leg.run()
+            except Exception as e:          # noqa: BLE001 — traduz no caller
+                errors.append((leg, e))
+
+        ths = [threading.Thread(target=_run, args=(leg,), daemon=True,
+                                name="mux-live") for leg in legs]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        self._legs = []
+        if errors:
+            self._leg = errors[0][0]
+            raise errors[0][1]
+
+        # bookkeeping da fase 1 (mesmo caminho do VOD)
+        st = t.stream if isinstance(t.stream, dict) else {}
+        mx = dict(t.mux_audio or {})
+        mx["video_done"] = True
+        mx.setdefault("vseg", st.get("segments_total") or len(t.segments))
+        mx.setdefault("vbytes", st.get("bytes_total") or t.total_size or 0)
+        # o nome do áudio pode ter ganhado extensão no prepare (.ts)
+        if audio_leg is not None and mx.get("audio_filename") != at.filename:
+            mx["audio_filename"] = at.filename
+        t.mux_audio = mx
+        t.state = TaskState.DOWNLOADING     # ainda falta mesclar
+        t.finished_at = None
+        t.save_meta()
+        self._leg = video_leg               # erro do ffmpeg manda no estado
+
+    def _make_leg(self, task: Task,
+                  on_progress: Optional[Callable[[Task], None]]):
+        if task.kind in ("hls", "dash"):
+            cls = StreamDownloader
+        else:
+            from minidm.downloader import Downloader
+
+            cls = Downloader
+        return cls(task, config=self.config, on_progress=on_progress,
+                   stop=self.stop, semaphore=self.sem, bucket=self.bucket,
+                   checkpoint_seconds=self.checkpoint_seconds)
+
+    def _recover(self) -> None:
+        """Retomada: o sidecar da tarefa principal é a verdade das fases.
+
+        Sem isso, um crash depois do vídeo (antes do áudio) rebaixaria o
+        vídeo inteiro — o `.meta.json` marca `video_done`/nomes reais.
+        """
+        t = self.task
+        old = Task.load_meta(t.meta_path)
+        if old and old.mux_audio:
+            t.mux_audio = old.mux_audio
+            if old.mux_audio.get("video_done"):
+                # o vídeo pode ter ganhado extensão no prepare (.mp4…)
+                t.filename = old.filename
+                t.sha256 = old.sha256
+                if old.total_size:
+                    t.total_size = old.total_size
+
+    def _check_stop(self) -> None:
+        """Pausa entre fases: preserva o que já baixou e sinaliza PAUSED."""
+        if self.stop.is_set():
+            self.task.state = TaskState.PAUSED
+            self.task.save_meta()
+            raise StreamError("interrompido (progresso salvo)")
+
+    def _audio_task(self) -> Task:
+        """Tarefa sintética da perna de áudio (mesma pasta, nome próprio)."""
+        t = self.task
+        mx = t.mux_audio or {}
+        name = mx.get("audio_filename") or (
+            os.path.splitext(t.filename)[0] + ".audio")
+        at = Task(url=mx.get("url") or t.url, dest_dir=t.dest_dir,
+                  filename=name, state=TaskState.QUEUED,
+                  kind=mx.get("kind") or t.kind,
+                  referer=t.referer, user_agent=t.user_agent,
+                  cookie=t.cookie, proxy=t.proxy,
+                  quality_label="áudio", origin_url=t.origin_url or t.url)
+        if mx.get("rep_id") or mx.get("media"):
+            at.stream = {k: mx[k] for k in ("rep_id", "media")
+                         if mx.get(k)}
+        # retomada da perna: o sidecar do áudio manda (segmentos/planos)
+        old = Task.load_meta(at.meta_path)
+        if old:
+            at.segments = old.segments
+            at.total_size = old.total_size
+            at.stream = old.stream or at.stream
+            at.accept_ranges = old.accept_ranges
+            at.etag = old.etag
+            at.last_modified = old.last_modified
+            at.filename = old.filename
+            at.attempts = old.attempts
+        return at
+
+    def _mirror_audio(self, atask: Task) -> None:
+        """Soma a fase de áudio à barra da tarefa principal (2 e 3)."""
+        t = self.task
+        st = t.stream if isinstance(t.stream, dict) else None
+        if st is None:
+            st = t.stream = {}
+        mx = t.mux_audio or {}
+        vseg = int(mx.get("vseg") or 0)
+        vbytes = int(mx.get("vbytes") or 0)
+        a_st = atask.stream if isinstance(atask.stream, dict) else {}
+        if st.get("live"):
+            # AO VIVO: nenhum lado tem total ainda — não toca em
+            # `segments_total` (senão a barra "ao vivo" viraria % falso).
+            # O áudio entra só como incremento: o vídeo grava `bytes_done`
+            # em outra thread, então somamos o DELTA (perda de um byte na
+            # corrida é tolerável — é exibição, não integridade).
+            now = int(a_st.get("bytes_done") or 0)
+            delta = now - int(getattr(self, "_audio_seen", 0))
+            if delta > 0:
+                st["bytes_done"] = int(st.get("bytes_done") or 0) + delta
+            self._audio_seen = now
+            return
+        a_total = a_st.get("segments_total") or len(atask.segments)
+        a_done = (a_st.get("segments_done")
+                  or sum(1 for s in atask.segments if s.done))
+        if a_total:
+            st["segments_total"] = vseg + a_total
+            st["segments_done"] = vseg + a_done
+        a_bytes = a_st.get("bytes_total") or atask.total_size
+        if a_bytes:
+            st["bytes_total"] = vbytes + a_bytes
+            st["bytes_done"] = vbytes + (a_st.get("bytes_done")
+                                         or atask.received)
+            t.total_size = vbytes + a_bytes
+
+    def _audio_progress(self, atask: Task) -> None:
+        self._mirror_audio(atask)
+        if self.on_progress:
+            self.on_progress(self.task)
+
+    def _translate(self, exc: Exception) -> None:
+        """Erro/pausa de QUALQUER perna vira estado da tarefa principal.
+
+        O scheduler decide "paused" × "error" lendo `task.state` — se a
+        perna do áudio pausasse só nela, a tarefa principal ficaria
+        "done" e a fila mentiria.
+        """
+        from minidm.downloader import DownloadError
+
+        if not isinstance(exc, (StreamError, DownloadError)):
+            return                        # bug interno: deixa passar cru
+        t = self.task
+        leg = self._leg
+        # espelha a perna do áudio, exceto quando ela TERMINOU (DONE): aí a
+        # exceção veio de depois (mux) e o estado gravado por `fail()` manda
+        # — espelhar DONE aqui faria a fila reportar sucesso com erro.
+        if (leg is not None and leg.task is not t
+                and leg.task.state != TaskState.DONE):
+            t.state = leg.task.state      # espelha a perna do áudio
+            t.error = leg.task.error
+        if t.state == TaskState.DOWNLOADING:
+            t.state = TaskState.ERROR
+        if t.state == TaskState.ERROR and not t.error:
+            t.error = str(exc) or "falha no download"
+        t.save_meta()
+
+    # ------------------------------------------------------------------ mux
+    def _mux(self) -> None:
+        """`ffmpeg -c copy` do vídeo + áudio; troca o arquivo final."""
+        from minidm.deps import ffmpeg_bin, hidden_kwargs
+
+        t = self.task
+        mx = t.mux_audio or {}
+
+        def fail(msg: str) -> None:
+            t.state = TaskState.ERROR
+            t.error = msg
+            t.save_meta()
+            raise StreamError(msg)
+
+        ff = ffmpeg_bin()
+        if not ff:
+            fail("ffmpeg não encontrado — a mesclagem de vídeo+áudio "
+                 "precisa dele (winget install Gyan.FFmpeg)")
+        # acha o arquivo de áudio (o nome final pode ter ganhado extensão)
+        stem0 = os.path.splitext(t.filename)[0]
+        audio_path = os.path.join(t.dest_dir, mx.get("audio_filename") or "")
+        if not os.path.isfile(audio_path) and os.path.isdir(t.dest_dir):
+            cands = [n for n in os.listdir(t.dest_dir)
+                     if n.startswith(stem0 + ".audio")
+                     and not n.endswith((".meta.json", ".part"))]
+            if cands:
+                audio_path = os.path.join(t.dest_dir, cands[0])
+        if not os.path.isfile(audio_path):
+            fail(f"arquivo de áudio não encontrado ({stem0}.audio…)")
+        if not os.path.isfile(t.final_path):
+            fail(f"arquivo de vídeo não encontrado ({t.filename})")
+
+        # barra em 100% enquanto o ffmpeg copia os fluxos
+        st = t.stream if isinstance(t.stream, dict) else None
+        if st and st.get("segments_total"):
+            st["segments_done"] = st["segments_total"]
+            if st.get("bytes_total"):
+                st["bytes_done"] = st["bytes_total"]
+        if self.on_progress:
+            self.on_progress(t)
+
+        stem, ext = os.path.splitext(t.filename)
+        out = os.path.join(t.dest_dir, stem + ".mux" + (ext or ".mp4"))
+        cmd = [ff, "-y", "-hide_banner", "-loglevel", "error",
+               "-i", t.final_path, "-i", audio_path,
+               "-c", "copy", "-map", "0:v:0", "-map", "1:a:0", out]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=1800,
+                                  **hidden_kwargs())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            fail(f"ffmpeg não rodou: {e}")
+            return
+        if proc.returncode != 0 or not os.path.exists(out):
+            tail = ((proc.stderr or b"").decode("utf-8", "replace")
+                    .strip().splitlines())
+            fail(f"ffmpeg não mesclou: {tail[-1] if tail else 'erro'}")
+
+        # o arquivo final ainda era o VÍDEO MUDO — troca pelo mesclado
+        os.replace(out, t.final_path)
+        # limpa os temporários do áudio
+        for p in (audio_path, audio_path + ".part",
+                  audio_path + ".meta.json"):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        _rmtree_quiet(os.path.join(t.dest_dir, f".{os.path.basename(audio_path)}.segs"))
+        # o conteúdo mudou -> hash de novo
+        t.sha256 = verify_mod.sha256_file(t.final_path)
+        t.checksum_ok = None
+        t.mux_audio = None
+        t.state = TaskState.DONE
+        t.finished_at = time.time()
+        t.error = None
+        t.save_meta()
+
+
 def make_downloader(task: Task, config: Optional[AppConfig] = None, **kw):
     """Fábrica de downloader.
 
     Ordem:
     1. yt-dlp (CLI externa) quando a tarefa ou a config mandam e ele existe;
-    2. streams (hls/dash) -> StreamDownloader;
-    3. o resto -> Downloader (engine própria, segmentada).
+    2. mux (vídeo+áudio separados) quando a análise ligou o par e há
+       ffmpeg -> MuxDownloader;
+    3. streams (hls/dash) -> StreamDownloader;
+    4. o resto -> Downloader (engine própria, segmentada).
     """
     cfg = config or AppConfig()
     want_ytdlp = getattr(task, "use_ytdlp_downloader", False) or \
@@ -620,6 +1243,17 @@ def make_downloader(task: Task, config: Optional[AppConfig] = None, **kw):
                 return YtdlpDownloader(task, config=cfg, **kw)
         except Exception:
             pass                      # sem yt-dlp -> engine própria
+    if getattr(task, "mux_audio", None) and task.kind in ("hls", "dash",
+                                                          "file"):
+        try:
+            from minidm.deps import ffmpeg_available
+
+            if ffmpeg_available():
+                # sem ffmpeg a fábrica nem entrega o MuxDownloader: cai no
+                # downloader de antes (uma faixa só) em vez de quebrar
+                return MuxDownloader(task, config=config, **kw)
+        except Exception:
+            pass
     if task.kind in ("hls", "dash"):
         return StreamDownloader(task, config=config, **kw)
     from minidm.downloader import Downloader

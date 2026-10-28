@@ -208,9 +208,17 @@ class MinidmApp(tk.Tk):
             total_speed += r.get("speed") or 0.0
             if r["state"] == TaskState.DOWNLOADING:
                 active += 1
-            filled = int(r["progress"] * 18)
-            bar = "#" * filled + "-" * (18 - filled)
-            pct = f"{r['progress']*100:.1f}"
+            # HLS ao vivo: total ainda não existe — mostra "ao vivo"
+            # em vez de uma barra mentirosa em 0%
+            live = bool(r.get("live")) and \
+                r["state"] == TaskState.DOWNLOADING
+            if live:
+                bar = "ao vivo (sem fim)"
+                pct = "--"
+            else:
+                filled = int(r["progress"] * 18)
+                bar = "#" * filled + "-" * (18 - filled)
+                pct = f"{r['progress']*100:.1f}"
             state = STATE_PT.get(r["state"], r["state"])
             vals = (
                 r["id"],

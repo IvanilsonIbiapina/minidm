@@ -466,6 +466,11 @@ async function openSaveDialog(el, item, preselectedQuality) {
       dir: dirInput.value.trim() || undefined,
       quality_label: q.label || undefined,
       profile: profileSelect.value || undefined,
+      // escolha da qualidade no próprio manifesto: representação do MPD
+      // (SegmentTemplate) + par de áudio -> engine baixa vídeo+áudio e
+      // mescla com ffmpeg (mux), em vez de gravar vídeo mudo.
+      rep_id: (q.dash && q.dash.id) || undefined,
+      audio: q.audio && q.audio.url ? q.audio : undefined,
     };
     btnRow.querySelectorAll("button").forEach((b) => (b.disabled = true));
     const sent = await chrome.runtime.sendMessage({ type: "download", payload });

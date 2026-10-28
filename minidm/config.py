@@ -24,6 +24,14 @@ class AppConfig:
     # streams (HLS/DASH)
     concurrent_fragments: int = 0  # 0 = usar max_connections; >0 = fragmentos
                                    # simultâneos por stream (como --concurrent-fragments)
+    # HLS AO VIVO (playlist sem #EXT-X-ENDLIST): o segmento chega junto com
+    # o tempo, então a engine rebusca a playlist até o ENDLIST aparecer.
+    live_poll_seconds: float = 0.0   # 0 = automático (target_duration/2,
+                                     # entre 1 e 10s)
+    live_max_seconds: float = 14400.0  # duração máxima do gravo (0 = sem
+                                       # limite) — evita tarefa infinita
+    live_playlist_retries: int = 20  # falhas seguidas na playlist antes de
+                                     # abortar (segmento perdido é tolerado)
     # yt-dlp (CLI externa, opcional)
     use_ytdlp_downloader: bool = False  # delegar download ao yt-dlp quando
                                         # disponível (perfis podem forçar)
