@@ -41,6 +41,10 @@ class AppConfig:
     remote_checksums: bool = True      # busca <arquivo>.sha256 / .md5
     # caminhos
     data_dir: str = DEFAULT_DATA_DIR
+    # pasta base para as CATEGORIAS estilo IDM (Vídeos, Músicas…).
+    # vazio = "~/Downloads" (convenção do IDM). Dentro dela criamos uma
+    # subpasta por categoria.
+    download_base: str = ""
 
     @property
     def config_path(self) -> str:

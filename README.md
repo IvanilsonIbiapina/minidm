@@ -32,6 +32,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Análise via yt-dlp** (opcional) | `media <url> --ytdlp` — cobre sites complexos (chama a CLI do yt-dlp) |
 | **Perfis de download** (conceito do YT-DLnis) | `add --profile Música` — perfil define qualidade, formato, pasta e nome |
 | **Escolha de qualidade/formato** | `add --height 720 --ext mp4` (ou o card da extensão) — teto de altura + container, com fallback p/ DASH-only |
+| **Categorias estilo IDM** (pasta+perfil) | `--category Vídeos` — separa por pastas (Vídeos, Músicas, Programas…); base configurável (`download_base`), Vídeos é a padrão |
 | **Templates de comando yt-dlp** | `CommandTemplate` com `url_regex` de ativação automática (`profiles` no CLI) |
 | **Template de nome de arquivo** | motor `{title} [{id}].{ext}` com preview e sanitização (`nametpl.py`) |
 | **Download-archive** (não rebaixar) | `config set download_archive true` — URLs concluídas são puladas |
@@ -80,11 +81,13 @@ Também há botão de contexto **Enviar para o minidm** (link/página) e
 
 **Card "Baixar esta página"** — quando a aba atual é uma *página* (YouTube,
 Instagram, um curso…), o popup mostra um card no topo com um seletor de
-perfil, um seletor de **qualidade** (Melhor/2160p…/360p) e um de
-**formato** (mp4/webm), mais os botões **Baixar vídeo** / **Só áudio**.
-Ele envia a URL da página (com `height`/`ext`, quando escolhidos) para o
-`/add`, que **delega ao yt-dlp automaticamente** — é assim que a extensão
-baixa de sites complexos sem precisar abrir a GUI.
+**categoria** (estilo IDM — Vídeos é a padrão; dá pra mudar para Músicas,
+Programas…) e um seletor de **qualidade com as opções REAIS** do vídeo
+(o servidor analisa com o yt-dlp e lista as alturas disponíveis + "Só
+áudio"), mais o botão **Baixar**. Ele envia a URL da página (com
+`category`/`height`) para o `/add`, que aplica a **pasta da categoria** e
+**delega ao yt-dlp automaticamente** — é assim que a extensão baixa de
+sites complexos, já separado por pastas, sem abrir a GUI.
 
 ### Análise via terminal
 
@@ -143,6 +146,37 @@ perfil pode referenciar **templates de comando** — argumentos extras do
 yt-dlp (ex.: `--embed-thumbnail`) ativáveis por perfil ou automaticamente
 por `url_regex` (como o `CommandTemplate` do YTDLnis).
 
+### Categorias (estilo IDM)
+
+Igual o IDM separa os downloads em pastas por categoria, o `minidm`
+tem um conjunto completo de categorias — cada uma é um par **pasta +
+perfil**:
+
+| Categoria | Pasta | Perfil |
+|---|---|---|
+| **Vídeos** (padrão) | `<base>/Vídeos` | Vídeo (vídeo) |
+| **Músicas** | `<base>/Músicas` | Música (áudio → mp3) |
+| **Programas** | `<base>/Programas` | Padrão |
+| **Documentos** | `<base>/Documentos` | Padrão |
+| **Imagens** | `<base>/Imagens` | Padrão |
+| **Comprimidos** | `<base>/Comprimidos` | Padrão |
+
+A **pasta base** é configurável (`download_base` em `config.json`; vazio
+= `~/Downloads`). As subpastas são criadas sob demanda.
+
+```bat
+:: define a pasta base (estilo IDM: os seus downloads)
+python -m minidm config set download_base "C:\Users\voce\Downloads"
+
+:: baixa já na pasta da categoria (Vídeos é a padrão)
+python -m minidm add "https://youtube.com/watch?v=…" --category Vídeos
+python -m minidm add "https://site.com/musica.mp3" --category Músicas --height 720
+```
+
+A extensão mostra um seletor de **categoria** (Vídeos pré-selecionado,
+dá pra trocar para Música/Áudio) e um de **qualidade com as opções reais**
+do vídeo — o servidor analisa com o yt-dlp e lista as alturas disponíveis.
+
 ### Template de nome de arquivo
 
 Motor próprio (`nametpl.py`) com placeholders `{...}` e sanitização
@@ -164,6 +198,14 @@ Com o yt-dlp instalado, o perfil ou `add --ytdlp` fazem o scheduler
 delegar o download à CLI do yt-dlp (`YtdlpDownloader`), mantendo a mesma
 interface de progresso/pausa. Sem yt-dlp, a engine própria (segmentada)
 assume automaticamente.
+
+Toda chamada de yt-dlp/análise roda com `CREATE_NO_WINDOW` (nada de CMD
+piscando na detecção de vídeo ou download). E quando o **cookie do
+navegador** faz o site devolver a página sem formatos (YouTube +
+challenge: "só imagens" → `Requested format is not available`), o
+minidm habilita o solver `--remote-components ejs:github` (cacheado pelo
+yt-dlp) e, se ainda faltar, **repete automaticamente sem o cookie** — o
+download segue em vez de morrer.
 
 ## "Qualquer site, só o link" — como funciona de fábrica
 
@@ -371,7 +413,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           149 testes (engine, stream, mídia, DRM, yt-dlp, perfis, deps, API)
+tests/           169 testes (engine, stream, mídia, DRM, yt-dlp, perfis, categorias, deps, API)
 ```
 
 ## Testes

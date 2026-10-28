@@ -83,6 +83,18 @@ def make_handler(app: App):
                                            "content": c.content}
                                           for c in ps.command_templates],
                 })
+            elif path == "/categories":
+                # categorias estilo IDM (pasta + perfil) p/ o popup escolher
+                from minidm.categories import (default_categories,
+                                               resolve_base)
+
+                self._json({
+                    "base": resolve_base(app.config),
+                    "categories": [{"name": c.name, "folder": c.folder,
+                                    "profile": c.profile,
+                                    "default": c.default}
+                                   for c in default_categories()],
+                })
             elif path == "/config":
                 c = app.config
                 self._json({
@@ -137,6 +149,26 @@ def make_handler(app: App):
             quality_url = payload.get("quality_url", "")
             kind = payload.get("kind", "")
             profile = payload.get("profile", "")
+
+            # ---------------------------- categoria estilo IDM (pasta+perfil):
+            # a categoria define a PASTA (base configurável + subpasta) e, se
+            # o cliente não mandou perfil, também o perfil de download.
+            category = payload.get("category", "")
+            if category:
+                from minidm.categories import (category_folder,
+                                               ensure_folder, get_category)
+
+                cat = get_category(category)
+                if cat:
+                    if not payload.get("dir"):
+                        dest_dir = ensure_folder(
+                            category_folder(cat, app.config))
+                    if not profile:
+                        profile = cat.profile
+                else:
+                    self._json({"error": f"categoria desconhecida: "
+                                         f"{category}"}, 400)
+                    return
 
             # ------------------------------ modo automático (estilo IDM):
             # o cliente manda a URL da página/mídia e o SERVIDOR analisa,

@@ -29,6 +29,20 @@ _FFMPEG_NAMES = ("ffmpeg.exe", "ffmpeg") if os.name == "nt" else ("ffmpeg",)
 _JS_RUNTIMES = ("node", "deno", "bun")
 
 
+def hidden_kwargs() -> dict:
+    """Argumentos de `subprocess` que evitam abrir janela de console.
+
+    yt-dlp, PowerShell etc. são apps de console; rodando a partir da GUI
+    (tkinter/pythonw) ou da extensão, o Windows criaria uma janela CMD a
+    cada chamada (análise de vídeo, verificação de assinatura, download).
+    Com CREATE_NO_WINDOW eles rodam silencioso em background — o
+    progresso continua chegando pelo pipe (stdout), que é como já lemos.
+    """
+    if os.name == "nt":
+        return {"creationflags": 0x08000000}   # CREATE_NO_WINDOW
+    return {}
+
+
 @lru_cache(maxsize=1)
 def js_runtime() -> Optional[str]:
     """Nome do runtime JS disponível (node/deno/bun), ou None.

@@ -18,7 +18,10 @@ import json
 import os
 import shutil
 import subprocess
+from functools import lru_cache
 from typing import Optional
+
+from minidm.deps import hidden_kwargs
 
 TIMEOUT = 60
 
@@ -47,38 +50,100 @@ def available() -> bool:
     return find() is not None
 
 
+@lru_cache(maxsize=1)
+def supports_remote_components() -> bool:
+    """O yt-dlp instalado aceita `--remote-components`? (verifica uma vez)
+
+    A flag existe desde 2024; versões antigas cairiam com
+    "no such option". Checamos no `--help` uma vez por processo.
+    """
+    cmd = find()
+    if not cmd:
+        return False
+    try:
+        proc = subprocess.run(cmd + ["--help"], capture_output=True,
+                              timeout=TIMEOUT, check=False,
+                              **hidden_kwargs())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    out = (proc.stdout or b"") + (proc.stderr or b"")
+    return b"--remote-components" in out
+
+
 def describe(url: str, referer: str = "", user_agent: str = "",
              cookie: str = "", timeout: float = TIMEOUT) -> dict:
-    """Roda `yt-dlp -J` e devolve o JSON bruto (ou levanta RuntimeError)."""
+    """Roda `yt-dlp -J` e devolve o JSON bruto (ou levanta RuntimeError).
+
+    Se o cookie do navegador fizer o site devolver a página sem formatos
+    (comportamento observado no YouTube: "só imagens"/rc!=0), tenta de novo
+    **sem o cookie** antes de desistir — o cookie é um extra, não um
+    requisito na maioria dos sites.
+    """
     cmd = find()
     if not cmd:
         raise RuntimeError("yt-dlp não encontrado (instale: pip install yt-dlp)")
-    args = cmd + ["-J", "--no-playlist", "--no-warnings", url]
-    # runtime JS: o YouTube exige para extrair todos os formatos
     from minidm.deps import js_runtime
 
-    js = js_runtime()
-    if js:
-        args += ["--js-runtimes", js]
-    if referer:
-        args += ["--add-header", f"Referer:{referer}"]
-    if user_agent:
-        args += ["--user-agent", user_agent]
-    if cookie:
-        # o yt-dlp aceita cookies no formato "a=b; c=d" via --add-header
-        args += ["--add-header", f"Cookie:{cookie}"]
-    try:
-        proc = subprocess.run(args, capture_output=True, timeout=timeout,
-                              check=False)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise RuntimeError(f"yt-dlp falhou: {e}") from e
+    def _args(ck: str) -> list[str]:
+        a = cmd + ["-J", "--no-playlist", "--no-warnings"]
+        # runtime JS: o YouTube exige para extrair todos os formatos
+        js = js_runtime()
+        if js:
+            a += ["--js-runtimes", js]
+            if supports_remote_components():
+                # solver de challenge do YouTube (EJS): sem ele o yt-dlp vem
+                # com a página "só imagens" (storyboards) — aí a análise não
+                # acha nenhuma qualidade e o download (com cookie) erra
+                # "Requested format is not available". Baixado uma vez e
+                # cacheado pelo yt-dlp; se o GitHub estiver fora, é só warning.
+                a += ["--remote-components", "ejs:github"]
+        if referer:
+            a += ["--add-header", f"Referer:{referer}"]
+        if user_agent:
+            a += ["--user-agent", user_agent]
+        if ck:
+            # o yt-dlp aceita cookies no formato "a=b; c=d" via --add-header
+            a += ["--add-header", f"Cookie:{ck}"]
+        a.append(url)
+        return a
+
+    def _run(a: list[str]):
+        try:
+            # CREATE_NO_WINDOW: esta é a chamada que a extensão dispara ao
+            # detectar o vídeo — sem ela o Windows abria um CMD por segundos.
+            return subprocess.run(a, capture_output=True, timeout=timeout,
+                                  check=False, **hidden_kwargs())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise RuntimeError(f"yt-dlp falhou: {e}") from e
+
+    def _decode(p) -> dict:
+        if p.returncode != 0:
+            err = (p.stderr or b"").decode("utf-8", "replace").strip()
+            raise RuntimeError(
+                f"yt-dlp: {err.splitlines()[-1] if err else 'erro'}")
+        try:
+            return json.loads(p.stdout.decode("utf-8", "replace"))
+        except ValueError as e:
+            raise RuntimeError(f"yt-dlp devolveu JSON inválido: {e}") from e
+
+    proc = _run(_args(cookie))
+    if cookie and not _usable_info(proc):
+        # cookie quebrou a extração -> segunda chance sem ele
+        retry = _run(_args(""))
+        if _usable_info(retry):
+            proc = retry
+    return _decode(proc)
+
+
+def _usable_info(proc) -> bool:
+    """O `-J` trouxe formatos de verdade (com URL), ou só storyboards/erro?"""
     if proc.returncode != 0:
-        err = (proc.stderr or b"").decode("utf-8", "replace").strip()
-        raise RuntimeError(f"yt-dlp: {err.splitlines()[-1] if err else 'erro'}")
+        return False
     try:
-        return json.loads(proc.stdout.decode("utf-8", "replace"))
-    except ValueError as e:
-        raise RuntimeError(f"yt-dlp devolveu JSON inválido: {e}") from e
+        info = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+    except ValueError:
+        return False
+    return any(f.get("url") for f in (info.get("formats") or []))
 
 
 def analyze(url: str, referer: str = "", user_agent: str = "",

@@ -120,7 +120,8 @@ class TestApiIntegration(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="minidm-int-")
         cfg = AppConfig(data_dir=cls.tmp, retries=2, backoff_base=0.05,
                         backoff_max=0.1, verify_signatures=False,
-                        remote_checksums=False, max_connections=4)
+                        remote_checksums=False, max_connections=4,
+                        download_base=os.path.join(cls.tmp, "Downloads"))
         cls.store = TaskStore(cls.tmp)
         cls.sched = Scheduler(cls.store, cfg)
         cls.sched.start()
@@ -284,6 +285,60 @@ class TestApiIntegration(unittest.TestCase):
         self.assertEqual(status, 201)
         task = self.store.get(data["id"])
         self.assertFalse(task.use_ytdlp_downloader)
+
+    # -------------------------------------------------- categorias (IDM)
+    def test_12_categories_endpoint(self):
+        status, data = get_json(f"{self.api_base}/categories")
+        self.assertEqual(status, 200)
+        names = [c["name"] for c in data["categories"]]
+        for expected in ("Vídeos", "Músicas", "Programas", "Documentos",
+                         "Imagens", "Comprimidos"):
+            self.assertIn(expected, names)
+        # Vídeos é a pré-definida
+        default = next(c for c in data["categories"] if c["default"])
+        self.assertEqual(default["name"], "Vídeos")
+        # pasta base = a configurada no teste
+        self.assertTrue(data["base"].endswith("Downloads"))
+
+    def test_13_add_com_categoria_vai_pra_pasta_e_perfil(self):
+        base = os.path.join(self.tmp, "Downloads")
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": "https://www.youtube.com/watch?v=abc123",
+             "category": "Vídeos", "height": 720, "start": False})
+        self.assertEqual(status, 201)
+        task = self.store.get(data["id"])
+        # pasta = base/Vídeos (criada)
+        self.assertTrue(task.dest_dir.startswith(base))
+        self.assertEqual(os.path.basename(task.dest_dir), "Vídeos")
+        self.assertTrue(os.path.isdir(task.dest_dir))
+        # perfil da categoria + seletor com o teto de altura
+        self.assertEqual(task.profile, "Vídeo")
+        args = task.ytdlp_args or []
+        sel = args[args.index("-f") + 1]
+        self.assertIn("[height<=720]", sel)
+
+    def test_14_add_categoria_musica_usa_perfil_audio(self):
+        base = os.path.join(self.tmp, "Downloads")
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": "https://www.youtube.com/watch?v=abc123",
+             "category": "Músicas", "start": False})
+        self.assertEqual(status, 201)
+        task = self.store.get(data["id"])
+        self.assertEqual(os.path.basename(task.dest_dir), "Músicas")
+        self.assertTrue(task.dest_dir.startswith(base))
+        self.assertEqual(task.profile, "Música")
+
+    def test_15_add_categoria_desconhecida_400(self):
+        req = urllib.request.Request(
+            f"{self.api_base}/add",
+            data=json.dumps({"url": "https://example.com/a.mp4",
+                             "category": "NaoExiste", "start": False}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(ctx.exception.code, 400)
 
 
 if __name__ == "__main__":

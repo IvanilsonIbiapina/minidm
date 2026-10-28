@@ -186,7 +186,7 @@ async function cookiesFor(url) {
   }
 }
 
-async function analyze({ url, referer, page_title }) {
+async function analyze({ url, referer, page_title, ytdlp }) {
   const cookie = await cookiesFor(url);
   try {
     const r = await fetch(`${API}/media/analyze`, {
@@ -198,6 +198,7 @@ async function analyze({ url, referer, page_title }) {
         page_title: page_title || "",
         cookie,
         user_agent: navigator.userAgent,
+        ytdlp: !!ytdlp,          // páginas (YouTube…) precisam do yt-dlp
       }),
     });
     return await r.json();

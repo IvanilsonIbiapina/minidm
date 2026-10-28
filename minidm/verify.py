@@ -70,9 +70,12 @@ def authenticode_status(path: str) -> tuple[str, str]:
         "Write-Output ($s.Status.ToString() + '|' + $who)"
     )
     try:
+        from minidm.deps import hidden_kwargs
+
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30,
+            **hidden_kwargs())
         line = (out.stdout or "").strip().splitlines()
         if line and "|" in line[-1]:
             status, who = line[-1].split("|", 1)

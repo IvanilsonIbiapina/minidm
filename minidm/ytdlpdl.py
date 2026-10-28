@@ -99,16 +99,10 @@ def _explain_error(tail: list[str], rc: int) -> str:
 
 
 def _hidden_kwargs() -> dict:
-    """Argumentos p/ Popen que evitam abrir janela de console no Windows.
+    """Evita abrir janela de console no Windows (ver `deps.hidden_kwargs`)."""
+    from minidm.deps import hidden_kwargs
 
-    O yt-dlp é um app de console; quando roda a partir da GUI (tkinter) ou
-    da extensão, o Windows criaria uma janela CMD a cada download. Com
-    CREATE_NO_WINDOW ele roda silencioso em background — o progresso continua
-    chegando pelo pipe (stdout), que é como já lemos.
-    """
-    if os.name == "nt":
-        return {"creationflags": 0x08000000}   # CREATE_NO_WINDOW
-    return {}
+    return hidden_kwargs()
 
 
 class YtdlpError(Exception):
@@ -124,17 +118,44 @@ class YtdlpDownloader:
         self._proc: Optional[subprocess.Popen] = None
         self._stop = threading.Event()
         self._received = 0
-        self._total: Optional[int] = None
+        self._total: Optional[float] = None
         self._speed = 0.0
         self._lock = threading.Lock()
         self._ytdlp_named = False   # yt-dlp escolheu o nome (título real)
+        self._drop_cookie = False   # retry sem cookie (cookie zerou formatos)
+        self._rc = 0                # código de saída da última execução
 
     # ------------------------------------------------------------- interface
     def run(self) -> Task:
         t = self.task
-        cmd = self._build_cmd()
         t.state = TaskState.DOWNLOADING
         t.error = None
+        while True:
+            cmd = self._build_cmd()
+            tail = self._spawn(cmd)
+            if self._stop.is_set():
+                t.state = TaskState.PAUSED
+                t.save_meta()
+                return t
+            rc = self._rc
+            if rc != 0 and self._retry_without_cookie(tail):
+                # cookie do navegador zerou a lista de formatos (YouTube
+                # devolveu "só imagens") -> refaz SEM o cookie, uma vez.
+                self._drop_cookie = True
+                self._received = 0
+                self._total = None
+                continue
+            if rc != 0:
+                t.state = TaskState.ERROR
+                t.error = _explain_error(tail, rc)
+                t.save_meta()
+                raise YtdlpError(t.error)
+            self._finalize()
+            return t
+
+    def _spawn(self, cmd: list[str]) -> list[str]:
+        """Roda o yt-dlp uma vez; devolve as últimas linhas (tail) de log."""
+        t = self.task
         try:
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -150,23 +171,25 @@ class YtdlpDownloader:
                 tail.append(line.rstrip())
                 if len(tail) > 30:
                     tail.pop(0)
-            rc = self._proc.wait()
-            if self._stop.is_set():
-                t.state = TaskState.PAUSED
-                t.save_meta()
-                return t
-            if rc != 0:
-                t.state = TaskState.ERROR
-                t.error = _explain_error(tail, rc)
-                t.save_meta()
-                raise YtdlpError(t.error)
-            self._finalize()
-            return t
+            self._rc = self._proc.wait()
+            return tail
         except OSError as e:
+            self._rc = 1
             t.state = TaskState.ERROR
             t.error = f"yt-dlp não rodou: {e}"
             t.save_meta()
             raise YtdlpError(t.error) from e
+
+    def _retry_without_cookie(self, tail: list[str]) -> bool:
+        """Este erro some se rodarmos sem o cookie do navegador?"""
+        if self._drop_cookie:
+            return False
+        if not (self.task.cookie or self.config.cookie):
+            return False
+        text = "\n".join(tail).lower()
+        return ("requested format is not available" in text
+                or "only images are available" in text
+                or "no video formats found" in text)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -200,6 +223,14 @@ class YtdlpDownloader:
         js = js_runtime()
         if js:
             args += ["--js-runtimes", js]
+            # solver de challenge (EJS) do YouTube: sem ele, o yt-dlp com
+            # cookie vem com a página "só imagens" (storyboards) e o seletor
+            # falha com "Requested format is not available". Testado: com a
+            # flag -> 399+140; sem -> nenhum formato.
+            from minidm.ytdlp import supports_remote_components
+
+            if supports_remote_components():
+                args += ["--remote-components", "ejs:github"]
         # saída: se o nome ainda é o id bruto do URL (sem título real),
         # deixa o yt-dlp nomear com o título de verdade. Se o usuário/perfil
         # definiu um nome, respeita (usa o stem como prefixo).
@@ -214,7 +245,7 @@ class YtdlpDownloader:
             args += ["--add-header", f"Referer:{t.referer}"]
         if t.user_agent or self.config.user_agent:
             args += ["--user-agent", t.user_agent or self.config.user_agent]
-        if t.cookie or self.config.cookie:
+        if not self._drop_cookie and (t.cookie or self.config.cookie):
             args += ["--add-header",
                      f"Cookie:{t.cookie or self.config.cookie}"]
         if t.proxy or self.config.proxy:
@@ -269,11 +300,16 @@ class YtdlpDownloader:
         found = None
         try:
             if self._ytdlp_named:
-                # o yt-dlp nomeou com o título real; acha o arquivo de mídia
-                # mais recente que não seja de estado (meta/part/tasks…)
-                import time as _time
+                # o yt-dlp nomeou com o título real ("%(title)s [%(id)s].%(ext)s").
+                # o "mais recente" é ambíguo quando várias tarefas yt-dlp
+                # dividem a mesma pasta — o id do vídeo identifica com
+                # segurança o arquivo DESTA tarefa; senão, cai no mais novo.
+                from minidm.profiles import _id_from_url
 
+                vid = _id_from_url(self.task.url)
+                tag = f"[{vid}]" if vid else None
                 best = None
+                idmatch = None
                 for name in os.listdir(t.dest_dir or "."):
                     if name.endswith((".part", ".ytdl", ".meta.json")) or \
                             name in ("tasks.json", "config.json",
@@ -282,11 +318,13 @@ class YtdlpDownloader:
                     full = os.path.join(t.dest_dir or ".", name)
                     if not os.path.isfile(full):
                         continue
+                    if tag and tag in name:
+                        idmatch = name     # arquivo com [id] deste vídeo
+                        break
                     mtime = os.path.getmtime(full)
                     if best is None or mtime > best[0]:
                         best = (mtime, name)
-                if best:
-                    found = best[1]
+                found = idmatch or (best[1] if best else None)
             else:
                 for name in os.listdir(t.dest_dir or "."):
                     if name.startswith(base) and not name.endswith(

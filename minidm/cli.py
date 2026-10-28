@@ -35,10 +35,28 @@ def cmd_add(args) -> int:
     store = TaskStore(cfg.data_dir)
     pstore = ProfileStore(cfg.data_dir)
     created = []
+    # categoria estilo IDM: define pasta (base+subpasta) e perfil se não pedido
+    category = getattr(args, "category", "") or ""
+    dest_dir = args.dir or cfg.data_dir
+    profile = args.profile or ""
+    if category:
+        from minidm.categories import (category_folder, ensure_folder,
+                                       get_category)
+
+        cat = get_category(category)
+        if not cat:
+            print(f"categoria desconhecida: {category} "
+                  "(use: Vídeos, Músicas, Programas, Documentos, "
+                  "Imagens, Comprimidos)")
+            return 2
+        if not args.dir:
+            dest_dir = ensure_folder(category_folder(cat, cfg))
+        if not profile:
+            profile = cat.profile
     for url in args.urls:
         kind = "hls" if url.lower().split("?")[0].endswith(".m3u8") else (
             "dash" if url.lower().split("?")[0].endswith(".mpd") else "file")
-        task = Task(url=url, dest_dir=args.dir or cfg.data_dir,
+        task = Task(url=url, dest_dir=dest_dir,
                     filename=filename_from(url), state=TaskState.QUEUED,
                     kind=kind, referer=args.referer or "",
                     mirrors=list(args.mirror or []),
@@ -46,8 +64,8 @@ def cmd_add(args) -> int:
                     cookie=args.cookie or "",
                     user_agent=args.user_agent or "",
                     expected_sha256=args.sha256)
-        if args.profile:
-            apply_profile(task, pstore, args.profile,
+        if profile:
+            apply_profile(task, pstore, profile,
                           filename_override=args.filename or "",
                           dir_override=args.dir or "",
                           height=getattr(args, "height", None),
@@ -440,6 +458,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="URL alternativa do mesmo arquivo (pode repetir)")
     a.add_argument("--sha256", help="hash esperado (valida ao concluir)")
     a.add_argument("--profile", help="perfil de download (ex.: Música, Vídeo)")
+    a.add_argument("--category", metavar="CAT",
+                   help="categoria estilo IDM (Vídeos, Músicas, Programas…) "
+                        "— define a pasta e o perfil; Vídeos é a padrão")
     a.add_argument("--height", type=int, metavar="P",
                    help="teto de altura do vídeo (ex.: 720, 1080)")
     a.add_argument("--ext", metavar="CONT",

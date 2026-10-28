@@ -33,6 +33,45 @@ async function _profiles() {
   return _profilesCache;
 }
 
+// categorias estilo IDM (via API /categories) — pasta + perfil
+let _catCache = null;
+async function _categories() {
+  if (_catCache) return _catCache;
+  try {
+    const r = await fetch("http://127.0.0.1:9742/categories");
+    _catCache = await r.json();
+  } catch (e) {
+    _catCache = null;
+  }
+  return _catCache;
+}
+
+// analisa a PÁGINA com o yt-dlp e devolve as qualidades REAIS do vídeo
+async function _analyzePage(url) {
+  try {
+    return await chrome.runtime.sendMessage({
+      type: "analyze",
+      payload: { url, referer: url, ytdlp: true },
+    });
+  } catch (e) {
+    return null;
+  }
+}
+
+// alturas distintas (desc) + áudio, a partir da análise do yt-dlp
+function _heightsFrom(analysis) {
+  const out = { heights: [], audio: false };
+  const qs = (analysis && analysis.qualities) || [];
+  const seen = new Set();
+  for (const q of qs) {
+    if (q.audio_only) { out.audio = true; continue; }
+    const h = q.height || 0;
+    if (h && !seen.has(h)) { seen.add(h); out.heights.push(h); }
+  }
+  out.heights.sort((a, b) => b - a);
+  return out;
+}
+
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab || null;
@@ -99,74 +138,89 @@ async function renderPageDownload(tab, up) {
   const hint = document.createElement("div");
   hint.className = "phint";
   hint.textContent = up
-    ? "Página detectada — baixa com o yt-dlp (qualquer site)."
+    ? "Página detectada — analisando as qualidades…"
     : "minidm offline — inicie com `python -m minidm serve`.";
   box.appendChild(hint);
 
-  // perfil (Música/Vídeo/…) — o mesmo dropdown do fluxo de mídia
-  const row = document.createElement("div");
-  row.className = "row";
-  const profileSelect = document.createElement("select");
-  profileSelect.appendChild(_option("", "Qualidade padrão"));
-  for (const name of await _profiles()) {
-    profileSelect.appendChild(_option(name, name));
-  }
-  row.appendChild(profileSelect);
-  box.appendChild(row);
+  // categorias (API local, rápido) + qualidades REAIS (yt-dlp, pode demorar)
+  const [cats, analysis] = await Promise.all([
+    _categories(),
+    up ? _analyzePage(tab.url) : Promise.resolve(null),
+  ]);
+  hint.textContent = up
+    ? "Página detectada — baixa com o yt-dlp (qualquer site)."
+    : "minidm offline — inicie com `python -m minidm serve`.";
 
-  // qualidade (altura) e formato — sobrepõem o perfil escolhido
+  // --- categoria estilo IDM (Vídeos é a padrão) -> pasta + perfil
+  const catRow = document.createElement("div");
+  catRow.className = "row";
+  const catLab = document.createElement("label");
+  catLab.textContent = "Categoria:";
+  const catSelect = document.createElement("select");
+  const catList = (cats && cats.categories) || [];
+  for (const c of catList) catSelect.appendChild(_option(c.name, c.name));
+  if (!catList.length) catSelect.appendChild(_option("Vídeos", "Vídeos"));
+  const defCat = catList.find((c) => c.default);
+  if (defCat) catSelect.value = defCat.name;
+  catRow.append(catLab, catSelect);
+  box.appendChild(catRow);
+
+  // --- qualidades REAIS do vídeo (só nas categorias de vídeo)
+  const info = _heightsFrom(analysis);
   const qRow = document.createElement("div");
   qRow.className = "row";
-  const qualitySelect = document.createElement("select");
-  qualitySelect.title = "Altura máxima do vídeo";
-  qualitySelect.appendChild(_option("", "Melhor"));
-  for (const h of [2160, 1440, 1080, 720, 480, 360]) {
-    qualitySelect.appendChild(_option(String(h), `${h}p`));
-  }
-  const fmtSelect = document.createElement("select");
-  fmtSelect.title = "Container do vídeo";
-  fmtSelect.appendChild(_option("", "mp4/webm"));
-  fmtSelect.appendChild(_option("mp4", "mp4"));
-  fmtSelect.appendChild(_option("webm", "webm"));
-  qRow.append(qualitySelect, fmtSelect);
+  const qLab = document.createElement("label");
+  qLab.textContent = "Qualidade:";
+  const qSelect = document.createElement("select");
+  qRow.append(qLab, qSelect);
   box.appendChild(qRow);
 
-  // botões: vídeo (padrão) e áudio (música) — como o IDM oferece
+  const VIDEO_CATS = new Set(["Vídeos", "Videos", "Video"]);
+  function fillQuality() {
+    const isVideo = VIDEO_CATS.has(catSelect.value) || !catList.length;
+    qRow.style.display = isVideo ? "" : "none";
+    if (!isVideo) return;
+    qSelect.innerHTML = "";
+    qSelect.appendChild(_option("", "Melhor"));
+    // alturas REAIS detectadas; se a análise falhou, cai numa lista fixa
+    const hs = info.heights.length
+      ? info.heights : [2160, 1440, 1080, 720, 480, 360];
+    for (const h of hs) qSelect.appendChild(_option(String(h), `${h}p`));
+    if (info.audio) qSelect.appendChild(_option("audio", "Só áudio"));
+  }
+  fillQuality();
+  catSelect.addEventListener("change", fillQuality);
+
+  // --- botão baixar (estilo IDM: um botão; a categoria manda na pasta)
   const btnRow = document.createElement("div");
   btnRow.className = "row";
-  const dlVideo = document.createElement("button");
-  dlVideo.textContent = "Baixar vídeo";
-  const dlAudio = document.createElement("button");
-  dlAudio.className = "secondary";
-  dlAudio.textContent = "Só áudio (música)";
-  btnRow.append(dlVideo, dlAudio);
+  const dlBtn = document.createElement("button");
+  dlBtn.textContent = "Baixar";
+  btnRow.appendChild(dlBtn);
   box.appendChild(btnRow);
 
   const status = document.createElement("div");
   status.className = "row";
   box.appendChild(status);
 
-  async function sendPage(asAudio) {
-    [dlVideo, dlAudio].forEach((b) => (b.disabled = true));
+  async function sendPage() {
+    dlBtn.disabled = true;
     status.textContent = "enviando…";
-    // o perfil "Música" força áudio; senão, escolhe pelo botão
-    let profile = profileSelect.value;
-    if (asAudio && profile !== "Música") {
-      profile = "Música";               // atalho: botão áudio usa o perfil Música
-    }
     const payload = {
       url: tab.url,
       page_title: tab.title || "",
       referer: tab.url,
-      profile: profile || undefined,
+      category: catSelect.value || "Vídeos",
     };
-    // qualidade/formato só valem para vídeo (áudio ignora altura/container)
-    if (!asAudio) {
-      if (qualitySelect.value) payload.height = parseInt(qualitySelect.value, 10);
-      if (fmtSelect.value) payload.ext = fmtSelect.value;
+    const q = qSelect.value;
+    if (q === "audio") {
+      // "Só áudio" -> usa a categoria Músicas (extrai áudio/ mp3)
+      payload.category = "Músicas";
+    } else if (q) {
+      payload.height = parseInt(q, 10);   // teto de altura escolhido
     }
     const sent = await chrome.runtime.sendMessage({ type: "download", payload });
-    [dlVideo, dlAudio].forEach((b) => (b.disabled = false));
+    dlBtn.disabled = false;
     if (sent && sent.ok) {
       status.textContent = `✓ na fila${sent.id ? ` [${sent.id}]` : ""}` +
         (sent.filename ? ` — ${sent.filename}` : "");
@@ -175,8 +229,7 @@ async function renderPageDownload(tab, up) {
     }
   }
 
-  dlVideo.addEventListener("click", () => sendPage(false));
-  dlAudio.addEventListener("click", () => sendPage(true));
+  dlBtn.addEventListener("click", sendPage);
 }
 
 function humanSize(n) {

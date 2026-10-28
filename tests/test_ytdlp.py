@@ -69,6 +69,28 @@ def write_stub(directory: str, info: dict, returncode: int = 0) -> str:
     return stub
 
 
+def write_cookie_stub(directory: str, info_with: dict,
+                      info_without: dict) -> str:
+    """Stub que responde DIFERENTE conforme leva header Cookie.
+
+    Reproduz o bug real do YouTube: com cookie devolve a página "só
+    imagens" (sem formatos utilizáveis); sem cookie, os formatos de
+    verdade. Serve p/ testar o retry automático sem cookie.
+    """
+    stub = os.path.join(directory, "yt-dlp_stub.py")
+    with open(stub, "w", encoding="utf-8") as f:
+        f.write(
+            "import json, sys\n"
+            f"WITH = json.loads({json.dumps(info_with)!r})\n"
+            f"WITHOUT = json.loads({json.dumps(info_without)!r})\n"
+            "has_cookie = any(a.lower().startswith('cookie:')\n"
+            "                  for a in sys.argv[1:])\n"
+            "if '--no-warnings' in sys.argv:\n"
+            "    print(json.dumps(WITH if has_cookie else WITHOUT))\n"
+            "sys.exit(0)\n")
+    return stub
+
+
 class YtdlpBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="minidm-ytdlp-")
@@ -126,6 +148,72 @@ class TestYtdlpDescribe(YtdlpBase):
     def test_ausente_devolve_none(self):
         os.environ["MINIDM_YTDLP"] = os.path.join(self.tmp, "nao-existe")
         self.assertIsNone(ytdlp.find())
+
+
+# informação "só storyboards" (sem formatos com URL) — o que o YouTube
+# devolve quando o cookie + falta do solver de challenge zera a lista
+INFO_SEM_FORMATOS = {
+    "title": "pagina sem formatos", "duration": None,
+    "webpage_url_domain": "youtube.com",
+    "formats": [{"format_id": "sb0", "ext": "mhtml"}],
+}
+
+
+class TestDescribeRetrySemCookie(YtdlpBase):
+    """Cookie do navegador zerando os formatos -> retry sem cookie."""
+
+    def test_retry_sem_cookie_quando_info_fica_sem_formatos(self):
+        stub = write_cookie_stub(self.tmp, INFO_SEM_FORMATOS, FAKE_INFO)
+        if sys.platform == "win32":
+            bat = os.path.join(self.tmp, "yt-dlp.cmd")
+            with open(bat, "w", encoding="utf-8") as f:
+                f.write(f'@echo off\r\n"{sys.executable}" "{stub}" %*\r\n')
+            os.environ["MINIDM_YTDLP"] = bat
+        else:
+            os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+            os.environ["MINIDM_YTDLP"] = stub
+        # com cookie -> o stub devolve sem formatos; o retry deve pedir de
+        # novo SEM cookie e receber os formatos de verdade
+        info = ytdlp.describe("http://youtube.com/watch?v=1", cookie="a=b")
+        self.assertTrue(any(f.get("url") for f in info["formats"]),
+                        "retry sem cookie não aconteceu")
+
+    def test_sem_cookie_nao_tenta_duas_vezes(self):
+        # sem cookie na chamada, o stub responde direto (só 1 execução)
+        stub = write_cookie_stub(self.tmp, INFO_SEM_FORMATOS, FAKE_INFO)
+        if sys.platform == "win32":
+            bat = os.path.join(self.tmp, "yt-dlp.cmd")
+            with open(bat, "w", encoding="utf-8") as f:
+                f.write(f'@echo off\r\n"{sys.executable}" "{stub}" %*\r\n')
+            os.environ["MINIDM_YTDLP"] = bat
+        else:
+            os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+            os.environ["MINIDM_YTDLP"] = stub
+        info = ytdlp.describe("http://youtube.com/watch?v=1")
+        self.assertTrue(any(f.get("url") for f in info["formats"]))
+
+    def test_describe_passa_hidden_kwargs(self):
+        # a chamada da extensão (detectar vídeo) não pode abrir CMD:
+        # CREATE_NO_WINDOW tem que estar em jogo no subprocess.run
+        from unittest import mock
+
+        self.use_stub()
+        fake = mock.Mock(returncode=0,
+                         stdout=json.dumps(FAKE_INFO).encode(),
+                         stderr=b"")
+        with mock.patch.object(ytdlp.subprocess, "run",
+                               return_value=fake) as m:
+            ytdlp.describe("http://example.com/watch?v=1")
+        kwargs = m.call_args.kwargs
+        if os.name == "nt":
+            self.assertEqual(kwargs.get("creationflags"), 0x08000000)
+
+    def test_supports_remote_components_cacheia(self):
+        # o --help real do yt-dlp (instalado) é consultado 1x e cacheado
+        self.use_stub()          # stub não tem a flag -> False
+        self.assertFalse(ytdlp.supports_remote_components())
+        self.assertFalse(ytdlp.supports_remote_components.cache_info()
+                         .misses > 1)
 
 
 class TestAnalyzeFallback(YtdlpBase):
@@ -220,6 +308,60 @@ class TestYtdlpDownloader(YtdlpBase):
             d.run()
         self.assertEqual(task.state, TaskState.ERROR)
 
+    def test_downloader_repete_sem_cookie_quando_formato_falta(self):
+        """Cookie zera os formatos (YouTube "só imagens") -> refaz sem cookie.
+
+        É o bug real: tarefa com cookie do navegador morria com
+        "Requested format is not available" mesmo com seletor válido.
+        """
+        # stub: com cookie -> erro de formato (rc=1); sem cookie -> baixa
+        stub = os.path.join(self.tmp, "yt-dlp_ck.py")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write(
+                "import sys, os\n"
+                "args = sys.argv[1:]\n"
+                "ck = any(a.lower().startswith('cookie:') for a in args)\n"
+                "out = None\n"
+                "for i, a in enumerate(args):\n"
+                "    if a == '-o': out = args[i+1]\n"
+                "if ck:\n"
+                "    print('ERROR: [youtube] x: Requested format is not "
+                "available. Use --list-formats for a list of available "
+                "formats')\n"
+                "    sys.exit(1)\n"
+                "path = out.replace('%(ext)s', 'mp4')\n"
+                "os.makedirs(os.path.dirname(path) or '.', exist_ok=True)\n"
+                "open(path, 'wb').write(b'abc' * 100)\n"
+                "print('[download] 100% of 300B in 00:00')\n"
+                "sys.exit(0)\n")
+        if sys.platform == "win32":
+            bat = os.path.join(self.tmp, "yt-dlp.cmd")
+            with open(bat, "w", encoding="utf-8") as f:
+                f.write(f'@echo off\r\n"{sys.executable}" "{stub}" %*\r\n')
+            os.environ["MINIDM_YTDLP"] = bat
+        else:
+            os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+            os.environ["MINIDM_YTDLP"] = stub
+        task = self._task(cookie="a=b; c=d")
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        out = d.run()
+        self.assertEqual(out.state, TaskState.DONE)
+        # o segundo passe rodou SEM cookie (flag interna virou)
+        self.assertTrue(d._drop_cookie)
+        # e a segunda execução não passou mais o header Cookie
+        cmd = d._build_cmd()
+        self.assertFalse(any(str(a).lower().startswith("cookie:")
+                             for a in cmd))
+
+    def test_downloader_com_cookie_bom_nao_repete(self):
+        # stub que baixa de primeira mesmo com cookie -> nenhuma repetição
+        use_dl_stub(self.tmp, content=b"xyz" * 10)
+        task = self._task(cookie="a=b")
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        out = d.run()
+        self.assertEqual(out.state, TaskState.DONE)
+        self.assertFalse(d._drop_cookie)
+
     def test_generic_stem_detecta_id_repetido(self):
         # "9CtAJ_nw640 [9CtAJ_nw640]" (title==id, sem título real) é
         # genérico -> o yt-dlp deve nomear com o título verdadeiro.
@@ -231,6 +373,26 @@ class TestYtdlpDownloader(YtdlpBase):
         self.assertTrue(d._generic_stem("9CtAJ_nw640 [9CtAJ_nw640]"))
         # nome com título real não é genérico
         self.assertFalse(d._generic_stem("Aula de Física [9CtAJ_nw640]"))
+
+    def test_finalize_prefere_arquivo_do_id_da_tarefa(self):
+        # várias tarefas yt-dlp dividem a pasta: o "mais recente" pode ser
+        # de OUTRA tarefa. O finalize deve escolher o arquivo cujo [id]
+        # casa com o id do vídeo DESTA tarefa, mesmo não sendo o mais novo.
+        yt = "https://www.youtube.com/watch?v=AEU4Y8BAw-c"
+        d = YtdlpDownloader(self._task(url=yt, filename="watch.mp4"),
+                            AppConfig(data_dir=self.tmp))
+        d._ytdlp_named = True
+        certo = os.path.join(self.tmp, "Victor & Leo [AEU4Y8BAw-c].webm")
+        errado = os.path.join(self.tmp, "DragonForce [OUTROidXYZ].webm")
+        for f in (certo, errado):
+            with open(f, "wb") as fh:
+                fh.write(b"x" * 10)
+        # o arquivo ERRADO é o mais recente (mtime maior)
+        os.utime(certo, (1000, 1000))
+        os.utime(errado, (9999999999, 9999999999))
+        d._finalize()
+        self.assertEqual(d.task.filename,
+                         "Victor & Leo [AEU4Y8BAw-c].webm")
 
     def test_factory_escolhe_ytdlp_quando_config_manda(self):
         use_dl_stub(self.tmp)
@@ -253,6 +415,36 @@ class TestYtdlpDownloader(YtdlpBase):
         task = self._task(use_ytdlp_downloader=True)
         d = make_downloader(task, cfg)
         self.assertIsInstance(d, YtdlpDownloader)
+
+    def test_build_cmd_inclui_remote_components_quando_suportado(self):
+        """O download tem que passar o solver de challenge (bug do cookie)."""
+        from unittest import mock
+
+        use_dl_stub(self.tmp)
+        task = self._task(cookie="a=b")
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        with mock.patch("minidm.ytdlpdl.js_runtime", return_value="node"), \
+                mock.patch("minidm.ytdlp.supports_remote_components",
+                           return_value=True):
+            cmd = d._build_cmd()
+        i = cmd.index("--remote-components")
+        self.assertEqual(cmd[i + 1], "ejs:github")
+        # e o cookie continua indo junto (o retry é que o remove se faltar)
+        self.assertTrue(any(str(a).lower().startswith("cookie:")
+                            for a in cmd))
+
+    def test_build_cmd_sem_flag_quando_ytdlp_antigo(self):
+        """yt-dlp antigo não tem a flag -> não passamos (não quebra)."""
+        from unittest import mock
+
+        use_dl_stub(self.tmp)
+        task = self._task()
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        with mock.patch("minidm.ytdlpdl.js_runtime", return_value="node"), \
+                mock.patch("minidm.ytdlp.supports_remote_components",
+                           return_value=False):
+            cmd = d._build_cmd()
+        self.assertNotIn("--remote-components", cmd)
 
 
 if __name__ == "__main__":
