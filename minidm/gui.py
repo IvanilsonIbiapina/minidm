@@ -19,7 +19,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from minidm import __version__, clipboard as clipboard_mod
 from minidm.config import AppConfig
-from minidm.dashboard import eta, human
+from minidm.dashboard import eta, eta_seconds, human
 from minidm.meta import Task, TaskState
 from minidm.remote import auto_delegate, filename_from
 from minidm.scheduler import Scheduler
@@ -43,6 +43,60 @@ STATE_PT = {
     TaskState.ERROR: "erro",
 }
 
+STATE_TAG = {
+    TaskState.DOWNLOADING: "down",
+    TaskState.PAUSED: "paused",
+    TaskState.DONE: "done",
+    TaskState.ERROR: "error",
+}
+
+
+def progress_bar(progress: float, width: int = 20) -> str:
+    """Barra em blocos Unicode (tkinter é UTF-16: renderiza em qualquer SO).
+
+    Bloco cheio = feito; vazio = falta. Corta em [0, 1] p/ não estourar
+    com valores estranhos (ytdlp reporta ~100% antes do mux).
+    """
+    p = 0.0 if progress is None or progress != progress else progress
+    p = max(0.0, min(1.0, p))
+    filled = int(round(p * width))
+    return "█" * filled + "░" * (width - filled)
+
+
+# chave de ordenação por coluna (clique no cabeçalho) — pura, p/ testar
+SORT_KEYS = {
+    "id": lambda r: r["id"],
+    "arquivo": lambda r: (r.get("filename") or "").lower(),
+    "estado": lambda r: str(r["state"]),
+    "badge": lambda r: kind_badge(r).lower(),
+    "barra": lambda r: r.get("progress") or 0.0,
+    "pct": lambda r: r.get("progress") or 0.0,
+    "recebido": lambda r: r.get("received") or 0,
+    "vel": lambda r: r.get("speed") or 0.0,
+    "eta": lambda r: eta_seconds(r.get("received") or 0, r.get("total"),
+                                 r.get("speed") or 0.0),
+    "segs": lambda r: r.get("segments_done") or 0,
+    "perfil": lambda r: (r.get("profile") or "").lower(),
+}
+
+
+def sort_rows(rows: list[dict], col: str, asc: bool = True) -> list[dict]:
+    """Ordena as linhas do snapshot pela coluna `col`.
+
+    ETA é o único que não pode ter `None` na comparação (tarefa sem
+    estimativa) — ele vai pro fim em qualquer sentido da ordenação.
+    """
+    key = SORT_KEYS.get(col)
+    if key is None:
+        return rows
+    if col == "eta":
+        # sem estimativa (parado/sem tamanho) -> sempre no fim
+        real = [r for r in rows if key(r) is not None]
+        pending = [r for r in rows if key(r) is None]
+        real.sort(key=key, reverse=not asc)
+        return real + pending
+    return sorted(rows, key=key, reverse=not asc)
+
 
 class MinidmApp(tk.Tk):
     def __init__(self):
@@ -60,6 +114,7 @@ class MinidmApp(tk.Tk):
         self._clipboard_on = False
         self._filter_category = ""      # "" = Todas (sidebar)
         self._rows_by_id: dict[str, dict] = {}   # cache p/ seleção pós-refresh
+        self._speed_smooth: dict[str, float] = {}  # p/ ETA não dançar
 
         self.sched = Scheduler(self.store, self.config_app,
                                on_event=self._on_event)
@@ -72,6 +127,18 @@ class MinidmApp(tk.Tk):
         self._build_statusbar()
         self._build_menu()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # API local ligada por padrão (config `api_enabled`): a extensão do
+        # navegador funciona logo ao abrir, sem clicar em nada.
+        if self.var_api.get():
+            try:
+                self._start_api()
+            except OSError as e:
+                # outro minidm/daemon já serve a porta — GUI segue normal
+                self.var_api.set(False)
+                self._status(f"API já ativa em outro processo (porta "
+                             f"{self.config_app.api_port}): {e}")
+        self._update_toolbar_state()
 
         self._tick()
         self._refresh()
@@ -95,20 +162,23 @@ class MinidmApp(tk.Tk):
 
         ttk.Button(bar, text="+ Adicionar URL", command=self._dlg_add
                    ).pack(side="left", padx=(0, 4))
-        ttk.Button(bar, text="Iniciar", command=self._do_start
-                   ).pack(side="left", padx=4)
-        ttk.Button(bar, text="Pausar", command=self._do_pause
-                   ).pack(side="left", padx=4)
-        ttk.Button(bar, text="Remover", command=self._do_remove
-                   ).pack(side="left", padx=4)
+        self.btn_start = ttk.Button(bar, text="Iniciar", command=self._do_start)
+        self.btn_start.pack(side="left", padx=4)
+        self.btn_pause = ttk.Button(bar, text="Pausar", command=self._do_pause)
+        self.btn_pause.pack(side="left", padx=4)
+        self.btn_remove = ttk.Button(bar, text="Remover",
+                                     command=self._do_remove)
+        self.btn_remove.pack(side="left", padx=4)
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                    padx=10)
 
-        ttk.Button(bar, text="▶ Visualizar", command=self._dlg_preview
-                   ).pack(side="left", padx=(0, 4))
-        ttk.Button(bar, text="Propriedades", command=self._dlg_details
-                   ).pack(side="left", padx=4)
+        self.btn_preview = ttk.Button(bar, text="▶ Visualizar",
+                                      command=self._dlg_preview)
+        self.btn_preview.pack(side="left", padx=(0, 4))
+        self.btn_details = ttk.Button(bar, text="Propriedades",
+                                      command=self._dlg_details)
+        self.btn_details.pack(side="left", padx=4)
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                    padx=10)
@@ -118,7 +188,9 @@ class MinidmApp(tk.Tk):
                         variable=self.var_clip,
                         command=self._toggle_clipboard).pack(side="left", padx=4)
 
-        self.var_api = tk.BooleanVar(value=False)
+        # API do navegador: LIGADA por padrão (config `api_enabled`) — a
+        # extensão captura vídeos assim que a GUI abre, sem marcar nada.
+        self.var_api = tk.BooleanVar(value=bool(self.config_app.api_enabled))
         ttk.Checkbutton(bar, text="API do navegador",
                         variable=self.var_api,
                         command=self._toggle_api).pack(side="left", padx=4)
@@ -150,11 +222,20 @@ class MinidmApp(tk.Tk):
             "perfil": ("Perfil", 84, "center"),
         }
         for c, (txt, w, anchor) in heads.items():
-            self.tree.heading(c, text=txt)
+            # ordenação por clique no cabeçalho (estilo IDM/Explorer)
+            self.tree.heading(c, text=txt, command=lambda col=c:
+                              self._sort_by(col))
             self.tree.column(c, width=w, anchor=anchor,
                              stretch=(c == "arquivo"))
+        # linhas listradas + estados: a UI "anda" sem depender do texto
         self.tree.tag_configure("done", foreground=STATE_COLOR[TaskState.DONE])
         self.tree.tag_configure("error", foreground=STATE_COLOR[TaskState.ERROR])
+        self.tree.tag_configure("down", foreground=STATE_COLOR[TaskState.DOWNLOADING])
+        self.tree.tag_configure("paused", foreground=STATE_COLOR[TaskState.PAUSED])
+        self.tree.tag_configure("odd", background="#f2f5f9")
+        self.tree.tag_configure("even", background="#ffffff")
+        self._sort_col = ""          # "" = ordem natural (fila)
+        self._sort_asc = True
 
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -163,6 +244,8 @@ class MinidmApp(tk.Tk):
 
         self.tree.bind("<Double-1>", self._dlg_details)
         self.tree.bind("<Delete>", lambda e: self._do_remove())
+        self.tree.bind("<<TreeviewSelect>>", lambda e:
+                       self._update_toolbar_state())
 
     def _build_statusbar(self):
         self.var_status = tk.StringVar(value="pronto")
@@ -170,6 +253,16 @@ class MinidmApp(tk.Tk):
         bar.pack(fill="x", side="bottom")
         ttk.Label(bar, textvariable=self.var_status,
                   style="Status.TLabel").pack(side="left")
+
+        # progresso AGREGADO de todas as tarefas com tamanho conhecido —
+        # barra viva, tipo IDM (algo sempre se mexe na janela)
+        self.pbar = ttk.Progressbar(bar, length=240, mode="determinate",
+                                    maximum=100.0)
+        self.pbar.pack(side="right", padx=(10, 0))
+        # tempo restante total (soma do que falta / soma das velocidades)
+        self.var_eta_total = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self.var_eta_total, style="Status.TLabel",
+                  foreground="#c07a00").pack(side="right", padx=(0, 10))
         self.var_speed = tk.StringVar(value="")
         ttk.Label(bar, textvariable=self.var_speed, style="Status.TLabel",
                   foreground="#0a7bd8").pack(side="right")
@@ -272,7 +365,7 @@ class MinidmApp(tk.Tk):
         """Chamado por threads do scheduler — só enfileira."""
         self.events.put((event, task))
 
-    def _refresh(self):
+    def _refresh(self, reschedule: bool = True):
         rows = self.sched.snapshot()
         self._update_sidebar(rows)
 
@@ -282,6 +375,10 @@ class MinidmApp(tk.Tk):
             rows = [r for r in rows
                     if (r.get("effective_category") or "") == self._filter_category]
 
+        # ordenação por clique no cabeçalho ("" = ordem natural da fila)
+        if self._sort_col:
+            rows = sort_rows(rows, self._sort_col, self._sort_asc)
+
         self._rows_by_id = {r["id"]: r for r in rows}
         selected = set(self.tree.selection())
         existing = set(self.tree.get_children())
@@ -289,9 +386,15 @@ class MinidmApp(tk.Tk):
 
         total_speed = 0.0
         active = 0
-        for r in rows:
+        for idx, r in enumerate(rows):
             seen.add(r["id"])
-            total_speed += r.get("speed") or 0.0
+            # velocidade suavizada (média 50/50): o ETA não fica pulando
+            # a cada amostra de 0,5 s
+            raw_speed = r.get("speed") or 0.0
+            prev_speed = self._speed_smooth.get(r["id"], 0.0)
+            speed = raw_speed if not prev_speed else (prev_speed + raw_speed) / 2
+            self._speed_smooth[r["id"]] = speed
+            total_speed += speed
             if r["state"] == TaskState.DOWNLOADING:
                 active += 1
             # HLS ao vivo: total ainda não existe — mostra "ao vivo"
@@ -302,8 +405,7 @@ class MinidmApp(tk.Tk):
                 bar = "ao vivo (sem fim)"
                 pct = "--"
             else:
-                filled = int(r["progress"] * 18)
-                bar = "#" * filled + "-" * (18 - filled)
+                bar = progress_bar(r["progress"])
                 pct = f"{r['progress']*100:.1f}"
             state = STATE_PT.get(r["state"], r["state"])
             # badge de tipo/qualidade (estilo IDM): HLS/DASH/áudio + qualidade
@@ -316,18 +418,19 @@ class MinidmApp(tk.Tk):
                 bar,
                 pct,
                 f"{human(r['received'])} / {human(r['total'])}",
-                f"{human(int(r.get('speed') or 0))}/s" if r.get("speed") else "",
-                eta(r["received"], r["total"], r.get("speed") or 0.0),
+                f"{human(int(speed))}/s" if speed else "",
+                eta(r["received"], r["total"], speed),
                 f"{r['segments_done']}/{r['segments_total']}"
                 if r["segments_total"] else "",
                 r.get("profile") or "",
             )
-            tags = ()
-            if r["state"] == TaskState.DONE:
-                tags = ("done",)
-            elif r["state"] == TaskState.ERROR:
-                tags = ("error",)
+            # listras zebradas + cor do estado (a linha "anda" visualmente)
+            tags = (("odd" if idx % 2 else "even"),)
+            st_tag = STATE_TAG.get(r["state"])
+            if st_tag:
+                tags += (st_tag,)
             if r["id"] in existing:
+                self.tree.move(r["id"], "", "end")
                 self.tree.item(r["id"], values=vals, tags=tags)
             else:
                 self.tree.insert("", "end", iid=r["id"], values=vals, tags=tags)
@@ -336,26 +439,71 @@ class MinidmApp(tk.Tk):
             self.tree.delete(iid)
         if selected & seen:
             self.tree.selection_set(list(selected & seen))
+        # esquece velocidades de tarefas que saíram da lista/filtro
+        if set(self._speed_smooth) - seen:
+            for k in list(self._speed_smooth):
+                if k not in seen:
+                    del self._speed_smooth[k]
+
+        # --------- progresso AGREGADO + tempo restante total (barra inferior)
+        known = [(r["received"], r["total"]) for r in rows if r.get("total")]
+        total_known = sum(t for _, t in known)
+        recv_known = sum(min(rv, t) for rv, t in known)
+        if total_known:
+            self.pbar["value"] = 100.0 * recv_known / total_known
+            eta_tot = eta_seconds(recv_known, total_known, total_speed)
+            self.var_eta_total.set(
+                f"restante {eta(recv_known, total_known, total_speed)}"
+                if eta_tot is not None else "restante --:--")
+        else:
+            self.pbar["value"] = 0.0
+            self.var_eta_total.set("")
 
         cfg = self.config_app
         lim = f" · limite {human(cfg.throttle_bps)}/s" if cfg.throttle_bps else ""
-        total_all = sum((r.get("total") or 0) for r in rows)
-        recv_all = sum((r.get("received") or 0) for r in rows)
         done_all = sum(1 for r in rows if r["state"] == TaskState.DONE)
         self.var_speed.set(
             f"{active} ativo(s) · {done_all}/{len(rows)} concluídos"
-            f" · {human(recv_all)}/{human(total_all)}"
+            f" · {human(recv_known)}/{human(total_known)}"
             f" · {cfg.max_concurrent} simultâneos"
             f" · {cfg.max_connections} conexões{lim}"
             f" · total {human(int(total_speed))}/s")
 
-        self.after(REFRESH_MS, self._refresh)
+        if reschedule:
+            self.after(REFRESH_MS, self._refresh)
 
     def _status(self, msg: str):
         self.var_status.set(msg)
 
     def _kind_badge(self, r: dict) -> str:
         return kind_badge(r)
+
+    # ------------------------------------------------- ordenação/toolbar
+    def _sort_by(self, col: str):
+        """Clique no cabeçalho: ordena; clique de novo inverte."""
+        if self._sort_col == col:
+            if self._sort_asc:            # 3º clique volta à ordem natural
+                self._sort_asc = False
+            else:
+                self._sort_col = ""
+                self._sort_asc = True
+        else:
+            self._sort_col = col
+            self._sort_asc = True
+        self._refresh_now()
+
+    def _refresh_now(self):
+        """Um ciclo de refresh imediato (a ordenação responde ao clique
+        sem esperar o tick periódico de 500 ms). Não reagenda — a cadeia
+        periódica continua viva sozinha."""
+        self._refresh(reschedule=False)
+
+    def _update_toolbar_state(self):
+        """Botões que exigem seleção ficam desligados sem seleção."""
+        has = bool(self.tree.selection())
+        for btn in (self.btn_pause, self.btn_remove, self.btn_details,
+                    self.btn_preview):
+            btn.configure(state="normal" if has else "disabled")
 
     # ------------------------------------------------------------- ações
     def _selected_ids(self) -> list[str]:
@@ -519,29 +667,50 @@ class MinidmApp(tk.Tk):
             self._status("Área de transferência desligada.")
 
     def _toggle_api(self):
-        if self.var_api.get():
-            from minidm.server import App, make_handler
-            from http.server import ThreadingHTTPServer
+        """Checkbox da toolbar: liga/desliga a API e persiste a escolha
+        em `api_enabled` (na próxima abertura já vem assim)."""
+        try:
+            if self.var_api.get():
+                self._start_api()
+            else:
+                self._stop_api()
+                self._status("API do navegador desligada.")
+        except OSError as e:
+            # porta ocupada (outro minidm/daemon já serve a API): avisa e
+            # desmarca o checkbox em vez de quebrar a GUI
+            self.var_api.set(False)
+            self._status(f"API não iniciada (porta "
+                         f"{self.config_app.api_port} em uso): {e}")
+        self.config_app.api_enabled = bool(self.var_api.get())
+        try:
+            self.config_app.save()
+        except OSError:
+            pass
 
-            app = App(self.store, self.sched, self.config_app)
-            httpd = ThreadingHTTPServer(
-                ("127.0.0.1", self.config_app.api_port), make_handler(app))
-            threading.Thread(target=httpd.serve_forever, daemon=True).start()
-            self._api_server = httpd
-            self._status(f"API do navegador ativa em "
-                         f"http://127.0.0.1:{self.config_app.api_port}")
-        else:
-            if self._api_server:
-                self._api_server.shutdown()
-                self._api_server.server_close()
-                self._api_server = None
-            self._status("API do navegador desligada.")
+    def _start_api(self):
+        if self._api_server:
+            return
+        from minidm.server import App, make_handler
+        from http.server import ThreadingHTTPServer
 
-    def _on_close(self):
-        self._clipboard_stop.set()
+        app = App(self.store, self.sched, self.config_app)
+        httpd = ThreadingHTTPServer(
+            ("127.0.0.1", self.config_app.api_port), make_handler(app))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self._api_server = httpd
+        self._status(f"API do navegador ativa em "
+                     f"http://127.0.0.1:{self.config_app.api_port} — "
+                     f"a extensão já pode enviar links")
+
+    def _stop_api(self):
         if self._api_server:
             self._api_server.shutdown()
             self._api_server.server_close()
+            self._api_server = None
+
+    def _on_close(self):
+        self._clipboard_stop.set()
+        self._stop_api()
         busy = any(r["state"] == TaskState.DOWNLOADING
                    for r in self.sched.snapshot())
         if busy and not messagebox.askyesno(
@@ -830,6 +999,11 @@ class DetailsDialog(tk.Toplevel):
             ("Tamanho", human(task.total_size)),
             ("Recebido", f"{human(task.received)} "
                          f"({task.progress*100:.1f}%)"),
+            ("Velocidade", f"{human(int(row.get('speed') or 0))}/s"
+             if row.get("speed") else "—"),
+            ("Tempo restante",
+             eta(task.received, task.total_size, row.get("speed") or 0.0)
+             if row else "—"),
             ("Segmentos", f"{sum(1 for s in task.segments if s.done)} / "
                           f"{len(task.segments)}"),
             ("SHA-256", task.sha256 or "—"),

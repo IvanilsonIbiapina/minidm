@@ -62,6 +62,10 @@ class AppConfig:
     cookie: str = ""               # header Cookie completo
     # integração
     api_port: int = 9742
+    # API local ligada ao abrir a GUI (extensão do navegador funciona sem
+    # precisar marcar nada). `daemon`/`serve` sempre ligam; aqui vale p/ a
+    # interface gráfica. A checkbox da toolbar altera e persiste este campo.
+    api_enabled: bool = True
     clipboard_interval: float = 2.0
     # verificação
     verify_signatures: bool = True     # Authenticode em .exe/.dll/.msi

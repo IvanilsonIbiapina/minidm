@@ -26,8 +26,12 @@ from minidm.ytdlp import find as find_ytdlp
 # [download]  12.3% of ~ 10.00MiB at  1.00MiB/s ETA 00:10
 _PROGRESS_RE = re.compile(
     r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+)([KMG]?i?B)")
+# a velocidade impressa pelo próprio yt-dlp na mesma linha ("at 1.00MiB/s")
+_SPEED_RE = re.compile(r"\bat\s+([\d.,]+)\s*([KMG]?i?B)/s")
 _SIZE_UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
                "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
+# quanto tempo a velocidade impressa vale antes de cair p/ a estimativa
+_SPEED_TTL = 3.0
 
 # flags do yt-dlp que exigem ffmpeg (pós-processamento: converter, embed, mux)
 _FFMPEG_FLAGS = {
@@ -123,7 +127,9 @@ class YtdlpDownloader:
         self._stop = threading.Event()
         self._received = 0
         self._total: Optional[float] = None
-        self._speed = 0.0
+        self._speed = 0.0            # última velocidade medida/impressa
+        self._speed_ts = 0.0         # monotonic da última medição
+        self._samples: list[tuple[float, int]] = []  # (monotonic, bytes)
         self._lock = threading.Lock()
         self._ytdlp_named = False   # yt-dlp escolheu o nome (título real)
         self._drop_cookie = False   # retry sem cookie (cookie zerou formatos)
@@ -149,6 +155,10 @@ class YtdlpDownloader:
                 self._drop_cookie = True
                 self._received = 0
                 self._total = None
+                with self._lock:
+                    self._samples.clear()
+                    self._speed = 0.0
+                    self._speed_ts = 0.0
                 continue
             if rc != 0:
                 t.state = TaskState.ERROR
@@ -213,8 +223,34 @@ class YtdlpDownloader:
                 pass
 
     def speed_bps(self, window: float = 5.0) -> float:
+        """Velocidade atual (fonte de verdade do ETA na UI).
+
+        1) usa a velocidade que o próprio yt-dlp imprimiu ("at 1.00MiB/s")
+           enquanto ela for fresca (≤ _SPEED_TTL);
+        2) senão estima pela diferença de bytes recebidos dentro de `window`
+           (serve p/ pausa de fragmento/mux, quando o yt-dlp não imprime).
+        """
+        now = time.monotonic()
         with self._lock:
-            return self._speed
+            speed, ts = self._speed, self._speed_ts
+            samples = list(self._samples)
+        if speed > 0 and now - ts <= _SPEED_TTL:
+            return speed
+        if len(samples) < 2:
+            return 0.0
+        base = None
+        for st, sv in samples:
+            if now - st >= window:
+                base = (st, sv)
+            else:
+                break
+        if base is None:
+            base = samples[0]
+        last = samples[-1]
+        dt = last[0] - base[0]
+        if dt <= 0:
+            return 0.0
+        return max(0.0, (last[1] - base[1]) / dt)
 
     # ----------------------------------------------------------------- cmd
     def _build_cmd(self) -> list[str]:
@@ -319,10 +355,31 @@ class YtdlpDownloader:
             return
         pct = float(m.group(1))
         total = float(m.group(2)) * _SIZE_UNITS.get(m.group(3), 1)
+        now = time.monotonic()
         with self._lock:
+            prev = self._received
             self._total = int(total)
             self._received = int(total * pct / 100.0)
-            self._speed = 0.0     # o yt-dlp já controla banda própria
+            # o yt-dlp imprime a velocidade na própria linha — é a fonte
+            # mais direta p/ o ETA; guardamos com o instante (TTL curto).
+            sp = _SPEED_RE.search(line)
+            if sp:
+                try:
+                    num = float(sp.group(1).replace(",", "."))
+                except ValueError:
+                    num = 0.0
+                if num > 0:
+                    self._speed = num * _SIZE_UNITS.get(sp.group(2), 1)
+                    self._speed_ts = now
+            # bytes recuaram muito -> o yt-dlp trocou de etapa (baixou o
+            # vídeo e começou o áudio num mux); zera a base da estimativa
+            # por amostras (a velocidade impressa nesta linha continua boa).
+            if self._received + 1024 < prev:
+                self._samples.clear()
+            self._samples.append((now, self._received))
+            # guarda só os últimos 30 s (janela p/ a estimativa)
+            self._samples = [(st, sv) for st, sv in self._samples
+                             if now - st <= 30.0]
         t = self.task
         t.total_size = self._total
         # received/progress vêm do stream dict para casar com a UI

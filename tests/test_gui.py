@@ -5,6 +5,9 @@ Só a lógica pura e o construtor de comando do player — sem abrir janelas
 
 * `_best_playable` escolhe a melhor qualidade (maior resolução/banda);
 * `_kind_badge` monta o rótulo de tipo/qualidade;
+* `progress_bar`/`sort_rows` desenham e ordenam a lista (lógica pura);
+* `dashboard.eta` calcula o tempo restante (casos-limite);
+* API local vem **ligada por padrão** (`api_enabled`);
 * `player._fit_box` escala mantendo proporção e pares;
 * `player.play_in_frame` monta o comando do ffmpeg e sobe sem ffmpeg.
 
@@ -15,11 +18,16 @@ Rodar:
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
 from unittest import mock
 
 from minidm import player
-from minidm.gui import _best_playable, kind_badge
+from minidm.config import AppConfig
+from minidm.dashboard import eta, eta_seconds
+from minidm.gui import _best_playable, kind_badge, progress_bar, sort_rows
 
 
 def _q(**kw):
@@ -137,6 +145,106 @@ class TestPlayerStart(unittest.TestCase):
         self.assertIn("-user_agent", cmd)
         self.assertIn("-http_proxy", cmd)
         self.assertIn("rawvideo", cmd)
+
+
+def _row(**kw):
+    """Linha no formato do `scheduler.snapshot()` p/ testar a lógica da UI."""
+    base = {"id": "t1", "filename": "arq.mp4", "state": "queued",
+            "kind": "file", "quality_label": "", "profile": "",
+            "progress": 0.0, "received": 0, "total": None, "speed": 0.0,
+            "segments_done": 0, "segments_total": 0}
+    base.update(kw)
+    return base
+
+
+class TestProgressBar(unittest.TestCase):
+    def test_metade_cheia(self):
+        self.assertEqual(progress_bar(0.5, 10), "█" * 5 + "░" * 5)
+
+    def test_valores_fora_do_intervalo_sao_cortados(self):
+        self.assertEqual(progress_bar(-1, 4), "░" * 4)
+        self.assertEqual(progress_bar(2, 4), "█" * 4)
+        self.assertEqual(progress_bar(None, 4), "░" * 4)
+
+    def test_nan_nao_quebra(self):
+        import math
+
+        self.assertEqual(progress_bar(math.nan, 6), "░" * 6)
+
+    def test_largura_fixa(self):
+        self.assertEqual(len(progress_bar(0.33, 20)), 20)
+
+
+class TestSortRows(unittest.TestCase):
+    def setUp(self):
+        self.rows = [
+            _row(id="a", filename="zebra.mp4", state="done", progress=1.0,
+                 received=100, total=100),
+            _row(id="b", filename="apple.mp4", state="downloading",
+                 progress=0.5, received=50, total=100, speed=10.0),
+            _row(id="c", filename="mid.mp4", state="queued"),
+        ]
+
+    def test_nome_asc(self):
+        out = sort_rows(self.rows, "arquivo", True)
+        self.assertEqual([r["id"] for r in out], ["b", "c", "a"])
+
+    def test_progresso_desc(self):
+        out = sort_rows(self.rows, "pct", False)
+        self.assertEqual([r["id"] for r in out], ["a", "b", "c"])
+
+    def test_eta_sem_estimativa_fica_no_fim_nos_dois_sentidos(self):
+        # "c" não tem total -> sem ETA -> sempre no fim
+        out = sort_rows(self.rows, "eta", True)
+        self.assertEqual(out[-1]["id"], "c")
+        out = sort_rows(self.rows, "eta", False)
+        self.assertEqual(out[-1]["id"], "c")
+        # com estimativa: menor ETA primeiro (asc) / maior primeiro (desc)
+        self.assertEqual(out[0]["id"], "b")
+
+    def test_coluna_desconhecida_devolve_a_mesma_lista(self):
+        self.assertIs(sort_rows(self.rows, "nao_existe"), self.rows)
+
+
+class TestEta(unittest.TestCase):
+    def test_sem_total_ou_parado_e_none(self):
+        self.assertIsNone(eta_seconds(0, None, 100))
+        self.assertIsNone(eta_seconds(0, 100, 0))
+
+    def test_completo_e_zero(self):
+        self.assertEqual(eta_seconds(100, 100, 10), 0.0)
+        self.assertEqual(eta(100, 100, 10), "00:00")
+
+    def test_calculo_simples(self):
+        self.assertEqual(eta_seconds(0, 100, 10), 10.0)
+        self.assertEqual(eta(0, 3672, 1), "01:01:12")
+
+    def test_mais_de_um_dia(self):
+        self.assertEqual(eta(0, 200000, 1), ">1d")
+
+    def test_parado_mostra_tracos(self):
+        self.assertEqual(eta(50, 100, 0.0), "--:--")
+
+
+class TestApiDefault(unittest.TestCase):
+    def test_api_vem_ligada(self):
+        self.assertTrue(AppConfig().api_enabled)
+
+    def test_config_antiga_sem_o_campo_continua_ligada(self):
+        # config.json gravado antes do campo -> padrão True (só ativa)
+        tmp = tempfile.mkdtemp(prefix="minidm-api-")
+        with open(os.path.join(tmp, "config.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"api_port": 9999, "max_concurrent": 1}, f)
+        cfg = AppConfig.load(tmp)
+        self.assertTrue(cfg.api_enabled)
+        self.assertEqual(cfg.api_port, 9999)
+
+    def test_escolha_desligada_e_preservada(self):
+        tmp = tempfile.mkdtemp(prefix="minidm-api-")
+        cfg = AppConfig(data_dir=tmp, api_enabled=False)
+        cfg.save()
+        self.assertFalse(AppConfig.load(tmp).api_enabled)
 
 
 if __name__ == "__main__":

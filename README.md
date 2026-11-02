@@ -23,6 +23,9 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | Fila persistente | `add`, `list`, `start`, `pause`, `remove` |
 | Área de transferência | `python -m minidm watch` (ou no daemon) |
 | API p/ extensão do navegador | `python -m minidm serve` + `browser_ext/` |
+| **API ligada por padrão** | a GUI já abre com a API local ativa (`api_enabled`) — a extensão funciona sem clicar em nada; porta ocupada por outro minidm é só avisada, não quebra |
+| **Tempo restante (ETA) de verdade** | usa a velocidade impressa pelo yt-dlp (`at 1.00MiB/s`) com fallback por diferença de amostras, suavizada p/ não dançar; ETA **total** na barra de status |
+| **Barra de progresso viva** | barra em blocos (`████░░░`) por linha, linha colorida pelo estado, listras zebradas e barra **agregada** na base da janela |
 | **Captura de vídeo (HLS/DASH/direto)** | extensão detecta vídeos e lista qualidades (abaixo) |
 | **Download de stream HLS/DASH** | `media <url>` — segmentos `.ts`/`.m4s` em paralelo, concatena e decifra AES-128 |
 | **HLS ao vivo** (playlist sem `#EXT-X-ENDLIST`) | a engine re-busca a playlist no período do `#EXT-X-TARGETDURATION` até o `ENDLIST`/limite de duração; pausa/retoma salva; segmento que sai da janela vira `lost`, não erro |
@@ -75,8 +78,10 @@ winget install Gyan.FFmpeg                # mux, conversão, embed
 O IDM detecta vídeos enquanto você navega e oferece download com as
 qualidades disponíveis. O `minidm` faz o mesmo com a extensão `browser_ext/`:
 
-1. **Ligue a API** — rode `python -m minidm serve` (ou `daemon`, ou marque
-   **API do navegador** na GUI). A API fica em `http://127.0.0.1:9742`.
+1. **A API já vem ligada** — `serve`/`daemon` sobem a API sempre, e a
+   **GUI abre com ela ativa** por padrão (`api_enabled`, campo em
+   `config.json`; a checkbox **API do navegador** liga/desliga e grava a
+   escolha). Fica em `http://127.0.0.1:9742`.
 2. **Instale a extensão** — no Chrome/Edge: `chrome://extensions` →
    **Modo programador** → **Carregar expandida** → escolha a pasta
    `browser_ext/`. (No Firefox, use a versão MV2 — não testada aqui.)
@@ -269,6 +274,7 @@ caracteres inválidos viram `_`, `{{literal}}` fica literal.
 ```bat
 python -m minidm config set download_archive true   # não rebaixar URLs já concluídas
 python -m minidm config set concurrent_fragments 4  # fragmentos HLS/DASH simultâneos
+python -m minidm config set api_enabled false       # GUI sem API local (padrão: true)
 ```
 
 ### Delegar download ao yt-dlp
@@ -437,12 +443,14 @@ O que dá pra fazer na janela:
 |---|---|
 | Adicionar download | botão **+ Adicionar URL** (ou `Ctrl+N`) — URL, categoria (define a pasta), mirrors, SHA-256, segmentos |
 | **Barra lateral de categorias** | clicar numa categoria (Todas, Vídeos, Músicas…) filtra a fila e mostra a contagem — como o IDM |
-| Iniciar / Pausar / Remover | botões da barra (ou `Delete`) — pausar salva o progresso |
+| Iniciar / Pausar / Remover | botões da barra (ou `Delete`) — pausar salva o progresso; os que exigem seleção ficam desligados sem seleção |
+| **Ordenar por coluna** | clique no cabeçalho (ID, arquivo, estado, %, velocidade, ETA…) — 1º clique sobe, 2º desce, 3º volta à ordem da fila |
+| Ver **tempo restante** | coluna **ETA** por tarefa (velocidade medida, suavizada) + **`restante HH:MM:SS`** e barra agregada na barra de status |
 | **Visualizar mídia** | botão **▶ Visualizar** — player embutido (via ffmpeg), lista as qualidades (HLS/DASH) e deixa escolher; recusa DRM |
-| Ver **propriedades ricas** | **duplo clique** na tarefa (página, origem, qualidade, categoria, perfil, segmentos, hash, assinatura, erro) |
+| Ver **propriedades ricas** | **duplo clique** na tarefa (página, origem, qualidade, categoria, perfil, velocidade, tempo restante, segmentos, hash, assinatura, erro) |
 | Abrir pasta do arquivo | selecionar e **Abrir pasta** |
 | Capturar links copiados | marcar **Área de transferência** |
-| Aceitar links do navegador | marcar **API do navegador** (a extensão manda pra `127.0.0.1:9742`) |
+| Aceitar links do navegador | **API do navegador** já vem marcada (ligada por padrão; a extensão manda pra `127.0.0.1:9742`) |
 | Ajustar tudo | **Configurações…** — concorrência, banda, retries, proxy, cookies, verificação |
 
 `minidm-gui-debug.bat` abre o mesmo com janela de terminal, para ver mensagens.
@@ -565,7 +573,7 @@ minidm-gui.bat         duplo clique -> interface gráfica
 minidm-gui-debug.bat   idem, com terminal (depuração)
 docs/analise-idm.md    análise reversa do IDM que embasa este projeto
 minidm/
-  gui.py         interface gráfica (tkinter, sidebar de categorias, visualizador, roda o scheduler em processo)
+  gui.py         interface gráfica (tkinter, sidebar de categorias, ordenação por coluna, ETA/barras ao vivo, visualizador, API ligada por padrão, roda o scheduler em processo)
   player.py      visualizador de mídia embutido (ffmpeg -> rawvideo em tk.Canvas)
   cli.py         argparse + comandos (gui, add, media, profiles, daemon, …)
   config.py      AppConfig (arquivo + flags)
@@ -592,7 +600,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           311 testes (engine, stream, mídia, DRM, yt-dlp, integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo, mux, HLS ao vivo, FTP/SFTP, API, GUI/player, extensão do navegador)
+tests/           332 testes (engine, stream, mídia, DRM, yt-dlp, integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/player, extensão do navegador)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

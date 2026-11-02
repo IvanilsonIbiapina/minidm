@@ -32,10 +32,22 @@ def human(n: int | None) -> str:
     return f"{x:.1f} TB"
 
 
-def eta(received: int, total: int | None, speed: float) -> str:
+def eta_seconds(received: int, total: int | None, speed: float) -> float | None:
+    """Segundos até terminar, ou None quando não dá p/ estimar.
+
+    None = total desconhecido, parado ou já completo (o chamador decide o
+    que mostrar). `received >= total` devolve 0.0 (acabou agora).
+    """
     if not total or speed <= 0:
+        return None
+    rest = total - received
+    return 0.0 if rest <= 0 else rest / speed
+
+
+def eta(received: int, total: int | None, speed: float) -> str:
+    secs = eta_seconds(received, total, speed)
+    if secs is None:
         return "--:--"
-    secs = (total - received) / speed
     if secs > 3600 * 24:
         return ">1d"
     m, s = divmod(int(secs), 60)

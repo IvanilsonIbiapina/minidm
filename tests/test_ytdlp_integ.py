@@ -23,6 +23,7 @@ import unittest
 from unittest import mock
 
 from minidm.config import AppConfig
+from minidm.dashboard import eta_seconds
 from minidm.cookies import (header_from_jar, jar_path, clear_cache,
                             browser_cookie_header)
 from minidm.meta import Task, TaskState
@@ -224,6 +225,70 @@ class TestOutdated(unittest.TestCase):
     def test_sem_versao_devolve_none(self):
         with mock.patch("minidm.ytdlp.version", return_value=None):
             self.assertIsNone(is_outdated())
+
+
+class TestSpeedYtdlp(unittest.TestCase):
+    """(ETA) velocidade/tempo restante do download delegado ao yt-dlp.
+
+    Antes o `_speed` era fixo 0.0 -> a UI mostrava ETA `--:--` sempre.
+    Agora: 1) velocidade impressa pelo yt-dlp ("at 1.00MiB/s"); 2) senão,
+    estimativa por diferença de bytes nas amostras recentes.
+    """
+
+    def _dl(self):
+        import tempfile
+
+        self.tmp = tempfile.mkdtemp(prefix="minidm-spd-")
+        t = Task(url="https://x/v", dest_dir=self.tmp, filename="v.mp4")
+        return YtdlpDownloader(t, AppConfig())
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(getattr(self, "tmp", ""), ignore_errors=True)
+
+    def test_velocidade_impressa_pelo_ytdlp(self):
+        dl = self._dl()
+        dl._parse_line("[download]  12.3% of ~ 10.00MiB at  1.00MiB/s "
+                       "ETA 00:10")
+        self.assertAlmostEqual(dl.speed_bps(), 1024 * 1024, delta=1)
+        self.assertIsNotNone(eta_seconds(dl.task.received,
+                                         dl.task.total_size, dl.speed_bps()))
+
+    def test_sem_velocidade_impressa_estima_por_amostras(self):
+        import time
+
+        dl = self._dl()
+        dl._parse_line("[download]  10.0% of 100.00MiB")   # 10 MiB
+        dl._parse_line("[download]  30.0% of 100.00MiB")   # +20 MiB
+        with dl._lock:
+            # base 5 s atrás -> 20 MiB / 5 s = 4 MiB/s
+            dl._samples[0] = (time.monotonic() - 5.0, dl._samples[0][1])
+        self.assertAlmostEqual(dl.speed_bps(), 4 * 1024 * 1024, delta=1)
+
+    def test_velocidade_velha_expira_e_cai_nas_amostras(self):
+        import time
+
+        dl = self._dl()
+        dl._parse_line("[download]  10.0% of 100.00MiB at  1.00MiB/s")
+        dl._parse_line("[download]  30.0% of 100.00MiB at  1.00MiB/s")
+        with dl._lock:
+            dl._speed_ts = time.monotonic() - 30      # venceu o TTL
+            dl._samples[0] = (time.monotonic() - 5.0, dl._samples[0][1])
+        self.assertAlmostEqual(dl.speed_bps(), 4 * 1024 * 1024, delta=1)
+
+    def test_troca_de_etapa_zera_as_amostras(self):
+        # mux: baixou o vídeo (50 MiB) e começou o áudio (0,05 MiB)
+        dl = self._dl()
+        dl._parse_line("[download]  50.0% of 100.00MiB at 2.00MiB/s")
+        dl._parse_line("[download]   1.0% of 5.00MiB at 3.00MiB/s")
+        with dl._lock:
+            self.assertEqual(len(dl._samples), 1)      # base reiniciada
+        self.assertAlmostEqual(dl.speed_bps(), 3 * 1024 * 1024, delta=1)
+
+    def test_parado_devolve_zero(self):
+        dl = self._dl()
+        self.assertEqual(dl.speed_bps(), 0.0)
 
 
 class TestFiltroFfmpeg(unittest.TestCase):
