@@ -187,13 +187,15 @@ class TestApiIntegration(unittest.TestCase):
         self.assertEqual(task.kind, "file")
 
     def test_05_add_url_invalida_400(self):
-        req = urllib.request.Request(
-            f"{self.api_base}/add",
-            data=json.dumps({"url": "ftp://x"}).encode(),
-            headers={"Content-Type": "application/json"}, method="POST")
-        with self.assertRaises(urllib.error.HTTPError) as ctx:
-            urllib.request.urlopen(req, timeout=10)
-        self.assertEqual(ctx.exception.code, 400)
+        # scheme fora do suportado (http/https/ftp/sftp) -> 400
+        for ruim in ("mailto:x@y", "javascript:alert(1)", "x"):
+            req = urllib.request.Request(
+                f"{self.api_base}/add",
+                data=json.dumps({"url": ruim}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=10)
+            self.assertEqual(ctx.exception.code, 400, f"url={ruim!r}")
 
     def test_06_add_auto_escolhe_melhor_qualidade_e_titulo(self):
         # fluxo do popup: kind=auto + page_title -> servidor analisa,
@@ -339,6 +341,48 @@ class TestApiIntegration(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(req, timeout=10)
         self.assertEqual(ctx.exception.code, 400)
+
+    # --------------------------------------------- integrações yt-dlp A–F
+    def test_16_add_playlist_expande(self):
+        """(C) /add com playlist=true vira várias tarefas na fila."""
+        from unittest import mock
+        fake = [{"url": "https://youtu.be/p1", "title": "Um", "duration": 1},
+                {"url": "https://youtu.be/p2", "title": "Dois", "duration": 2}]
+        with mock.patch("minidm.server.expand_playlist", return_value=fake,
+                        create=True):
+            # o import é local no _add_playlist; mocka o símbolo no módulo
+            with mock.patch("minidm.ytdlp.expand_playlist", return_value=fake):
+                status, data = post_json(
+                    f"{self.api_base}/add",
+                    {"url": "https://youtube.com/playlist?list=PLx",
+                     "playlist": True, "start": False})
+        self.assertEqual(status, 201)
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(len(data["ids"]), 2)
+        t1 = self.store.get(data["ids"][0])
+        self.assertEqual(t1.url, "https://youtu.be/p1")
+
+    def test_17_add_section_e_marcada(self):
+        """(D) /add com section grava o campo na task e delega ao yt-dlp."""
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": "https://youtu.be/abc", "section": "01:00-02:00",
+             "ytdlp": True, "start": False})
+        self.assertEqual(status, 201)
+        task = self.store.get(data["id"])
+        self.assertEqual(task.section, "01:00-02:00")
+        self.assertTrue(task.use_ytdlp_downloader)
+
+    def test_18_add_sponsorblock_vira_arg(self):
+        """(F) /add com sponsorblock vira extra arg do yt-dlp."""
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": "https://youtu.be/abc", "sponsorblock": "all",
+             "ytdlp": True, "start": False})
+        self.assertEqual(status, 201)
+        task = self.store.get(data["id"])
+        self.assertIn("--sponsorblock-remove", task.ytdlp_args)
+        self.assertIn("all", task.ytdlp_args)
 
 
 if __name__ == "__main__":

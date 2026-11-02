@@ -32,10 +32,29 @@ class AppConfig:
                                        # limite) — evita tarefa infinita
     live_playlist_retries: int = 20  # falhas seguidas na playlist antes de
                                      # abortar (segmento perdido é tolerado)
+    # FTP/SFTP (credenciais padrão; `user:pass@` no URL tem precedência)
+    ftp_user: str = ""               # vazio = anônimo
+    ftp_password: str = ""
+    sftp_user: str = ""              # vazio = agent/chaves locais do SO
+    sftp_password: str = ""
+    sftp_key: str = ""               # caminho da chave privada (~ expandido)
+    sftp_known_hosts: str = ""       # vazio = ~/.ssh/known_hosts
+    sftp_accept_host_key: bool = True  # 1ª conexão aceita e salva a chave;
+                                       # False = estrita (chave nova = erro)
     # yt-dlp (CLI externa, opcional)
     use_ytdlp_downloader: bool = False  # delegar download ao yt-dlp quando
                                         # disponível (perfis podem forçar)
     download_archive: bool = False      # não rebaixar URLs já concluídas
+    # cookies do NAVEGADOR do usuário (conceito --cookies-from-browser do
+    # yt-dlp): "chrome"/"edge"/"firefox"/"brave"/"opera" = usar a sessão do
+    # usuário p/ sites que exigem login. Vazio = desligado. Só a sessão do
+    # próprio usuário — nada de contorno de DRM.
+    cookies_from_browser: str = ""
+    # playlists: nº máx. de itens expandidos por URL de playlist
+    playlist_limit: int = 50
+    # SponsorBlock: "" = desligado; "all" ou lista ("sponsor,selfpromo,…")
+    # remove trechos de patrocínio no pós-processamento (yt-dlp + ffmpeg)
+    sponsorblock: str = ""
     # rede
     user_agent: str = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "minidm/2.0")

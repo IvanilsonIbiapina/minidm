@@ -9,14 +9,18 @@ Endpoints:
     POST /remove   {id, delete}   -> remove da fila
     GET  /config                  -> configuração efetiva
     POST /media/analyze {url,...} -> lista qualidades de vídeo (HLS/DASH/dir.)
+    GET  /update.xml              -> manifest da extensão (política forcelist)
+    GET  /minidm.crx              -> pacote CRX3 assinado da extensão
 """
 
 from __future__ import annotations
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from minidm.extsetup import CRX_NAME, UPDATE_XML_NAME
 from minidm.meta import Task, TaskState
 from minidm.remote import auto_delegate, filename_from
 from minidm.scheduler import Scheduler
@@ -51,6 +55,22 @@ def make_handler(app: App):
 
         def log_message(self, *a):
             pass
+
+        def _file(self, path: str, ctype: str):
+            """Serve um arquivo estático (CRX3/update.xml da extensão)."""
+            try:
+                with open(path, "rb") as f:
+                    body = f.read()
+            except OSError:
+                self._json({"error": "arquivo de extensão ausente — "
+                                     "rode `minidm ext install`"}, 404)
+                return
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         # ------------------------------------------------------------- verbos
         def do_OPTIONS(self):
@@ -106,6 +126,15 @@ def make_handler(app: App):
                     "proxy": bool(c.proxy),
                     "api_port": c.api_port,
                 })
+            elif path in ("/update.xml", f"/{UPDATE_XML_NAME}"):
+                # manifest de atualização p/ a política ExtensionInstallForcelist
+                self._file(os.path.join(app.store.data_dir, "ext",
+                                        UPDATE_XML_NAME),
+                           "application/xml")
+            elif path in ("/minidm.crx", f"/{CRX_NAME}"):
+                # pacote CRX3 assinado da extensão (auto-hospedado)
+                self._file(os.path.join(app.store.data_dir, "ext", CRX_NAME),
+                           "application/x-chrome-extension")
             else:
                 self._json({"error": "not found"}, 404)
 
@@ -138,8 +167,15 @@ def make_handler(app: App):
         # -------------------------------------------------------------- /add
         def _add(self, payload):
             url = payload.get("url")
-            if not url or urlparse(url).scheme not in ("http", "https"):
-                self._json({"error": "url http(s) obrigatória"}, 400)
+            if not url or urlparse(url).scheme not in ("http", "https",
+                                                       "ftp", "sftp"):
+                self._json({"error": "url http(s)/ftp/sftp obrigatória"}, 400)
+                return
+
+            # (C) modo playlist: expande em várias tarefas e sai — cada
+            # entrada vira uma tarefa na fila (mesmo caminho do modo single).
+            if payload.get("playlist"):
+                self._add_playlist(payload, url)
                 return
 
             referer = payload.get("referer", "")
@@ -192,6 +228,9 @@ def make_handler(app: App):
                     proxy=payload.get("proxy", "") or app.config.proxy,
                     page_title=page_title,
                     use_ytdlp=bool(payload.get("ytdlp")),
+                    cookies_from_browser=payload.get("cookies_from_browser",
+                                                     "")
+                    or app.config.cookies_from_browser,
                 )
                 if not res.get("ok"):
                     # DRM e erros voltam claros para o cliente mostrar
@@ -236,13 +275,22 @@ def make_handler(app: App):
                 quality_label=payload.get("quality_label", ""),
                 origin_url=url if quality_url != url else "",
                 profile=profile,
+                category=category or _classify(quality_url, filename),
+                section=payload.get("section", "") or "",
                 mirrors=[m for m in payload.get("mirrors", [])
                          if isinstance(m, str)],
                 proxy=payload.get("proxy", ""),
                 cookie=payload.get("cookie", ""),
                 user_agent=payload.get("user_agent", ""),
+                cookies_from_browser=payload.get("cookies_from_browser",
+                                                 "") or "",
                 expected_sha256=payload.get("sha256"),
             )
+            # (F) sponsorblock: vai como extra arg do yt-dlp
+            sb = payload.get("sponsorblock", "") or app.config.sponsorblock
+            if sb:
+                task.ytdlp_args = (task.ytdlp_args or []) + [
+                    "--sponsorblock-remove", sb]
             # ---------------------------- qualidade escolhida (engine própria):
             # `rep_id` senão o downloader do MPD com SegmentTemplate re-
             # escolheria a maior banda, ignorando o que o usuário pediu; e o
@@ -298,16 +346,53 @@ def make_handler(app: App):
             app.store.add(task)
             if payload.get("start", True):
                 app.scheduler.submit([task.id])
+            # (C) modo playlist: acumula o id e NÃO responde (uma resposta
+            # só no fim, pelo _add_playlist).
+            acc = payload.get("_playlist_ids")
+            if isinstance(acc, list):
+                acc.append(task.id)
+                return
             self._json({"ok": True, "id": task.id, "kind": kind,
                         "filename": task.filename, "dir": task.dest_dir,
                         "profile": task.profile or None}, 201)
 
+        # ------------------------------------------------------ /add playlist
+        def _add_playlist(self, payload, url):
+            """Expande uma playlist em várias tarefas (conceito yt-dlp)."""
+            from minidm.ytdlp import expand_playlist
+
+            limit = int(payload.get("limit") or app.config.playlist_limit)
+            try:
+                items = expand_playlist(
+                    url, limit=limit,
+                    cookie=payload.get("cookie", "") or app.config.cookie,
+                    cookies_from_browser=payload.get("cookies_from_browser", "")
+                    or app.config.cookies_from_browser)
+            except RuntimeError as e:
+                self._json({"error": f"playlist: {e}"}, 400)
+                return
+            if not items:
+                self._json({"error": "playlist vazia"}, 400)
+                return
+            ids = []
+            for it in items:
+                sub = dict(payload)
+                sub.pop("playlist", None)
+                sub["url"] = it["url"]
+                if it.get("title"):
+                    sub["filename"] = it["title"]
+                # reusa o fluxo single (cria a tarefa e devolve o id)
+                sub["_playlist_ids"] = ids
+                self._add(sub)
+            self._json({"ok": True, "count": len(ids), "ids": ids}, 201)
+
         # -------------------------------------------------- /media/analyze
         def _media_analyze(self, payload):
             url = payload.get("url")
-            if not url or urlparse(url).scheme not in ("http", "https"):
-                self._json({"ok": False, "error": "url http(s) obrigatória"},
-                           400)
+            if not url or urlparse(url).scheme not in ("http", "https",
+                                                       "ftp", "sftp"):
+                self._json({"ok": False,
+                            "error": "url http(s)/ftp/sftp obrigatória"}, 400)
                 return
             from minidm.media import analyze
 
@@ -360,12 +445,29 @@ def _kind_from_payload(url: str) -> str:
     """Detecta o tipo pela extensão quando o cliente não informa `kind`."""
     from urllib.parse import urlparse as _up
 
-    path = _up(url).path.lower()
+    p = _up(url)
+    if p.scheme.lower() in ("ftp", "sftp"):
+        return "file"     # remoto: streams HLS/DASH são HTTP(S); arquivo puro
+    path = p.path.lower()
     if path.endswith(".m3u8"):
         return "hls"
     if path.endswith(".mpd"):
         return "dash"
     return "file"
+
+
+def _classify(url: str, filename: str) -> str:
+    """Categoria automática (estilo IDM) quando o cliente não informou.
+
+    Deduz pela extensão do arquivo; para HLS/DASH (que muitas vezes não
+    têm extensão de vídeo no URL) usa a categoria Vídeos.
+    """
+    from minidm.categories import classify_filename, classify_url
+
+    cat = classify_url(url) or classify_filename(filename)
+    if not cat and _kind_from_payload(url) in ("hls", "dash"):
+        cat = "Vídeos"
+    return cat
 
 
 def serve(app: App, port: int | None = None) -> None:

@@ -89,6 +89,20 @@ def ffmpeg_available() -> bool:
     return ffmpeg_dir() is not None
 
 
+@lru_cache(maxsize=1)
+def paramiko_available() -> bool:
+    """True se o `paramiko` (cliente SFTP) está instalado.
+
+    FTP usa `ftplib` (stdlib, sempre lá); SFTP precisa do paramiko — sem
+    ele o `SftpDownloader` recusa com instrução de instalação em pt-BR.
+    """
+    try:
+        import paramiko  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def ffmpeg_bin() -> Optional[str]:
     """Caminho do executável `ffmpeg`, ou None se não existir.
 
@@ -108,15 +122,21 @@ def ffmpeg_bin() -> Optional[str]:
 @lru_cache(maxsize=1)
 def status() -> dict:
     """Estado das dependências externas, legível, p/ `minidm deps`."""
-    from minidm.ytdlp import find as find_ytdlp
+    from minidm.ytdlp import find as find_ytdlp, version as ytdlp_version, \
+        is_outdated as ytdlp_outdated
 
     ytdlp = find_ytdlp()
+    yv = ytdlp_version() if ytdlp else None
+    outdated = ytdlp_outdated() if yv else None
     ff = ffmpeg_dir()
     js = js_runtime()
+    pk = paramiko_available()
     return {
         "ytdlp": {
             "available": ytdlp is not None,
             "path": " ".join(ytdlp) if ytdlp else None,
+            "version": yv,
+            "outdated": outdated,      # True = >90 dias (sites mudam)
             "install": "python -m pip install yt-dlp",
         },
         "ffmpeg": {
@@ -125,6 +145,11 @@ def status() -> dict:
             "install": ("winget install Gyan.FFmpeg   (Windows)  ou  "
                         "brew install ffmpeg   (macOS)  ou  "
                         "apt install ffmpeg   (Linux)"),
+        },
+        "paramiko": {
+            "available": pk,
+            "path": None if not pk else "módulo Python paramiko",
+            "install": "python -m pip install paramiko",
         },
         "js_runtime": {
             "available": js is not None,
@@ -140,6 +165,8 @@ def status() -> dict:
             "embed miniatura/metadados": ff is not None,
             "mux vídeo+áudio (máx. qualidade)": ff is not None,
             "HLS/DASH e arquivos diretos (engine própria)": True,
+            "FTP (engine própria, sem dependência)": True,
+            "SFTP (servidores SSH)": pk,
         },
     }
 
@@ -148,6 +175,7 @@ def invalidate_cache() -> None:
     """Limpa o cache (útil após instalar algo em runtime/testes)."""
     ffmpeg_dir.cache_clear()
     js_runtime.cache_clear()
+    paramiko_available.cache_clear()
     status.cache_clear()
 
 

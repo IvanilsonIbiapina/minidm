@@ -78,6 +78,10 @@ def auto_segment_count(total: int) -> int:
 
 
 class Downloader:
+    # checksums publicados ao lado do arquivo (`<url>.sha256`) são uma
+    # convenção HTTP; downloaders remotos (ftp/sftp) desligam isso.
+    _supports_remote_checksums = True
+
     def __init__(
         self,
         task: Task,
@@ -125,6 +129,16 @@ class Downloader:
         t = self.task
         h = {"User-Agent": t.user_agent or self.config.user_agent or USER_AGENT}
         cookie = t.cookie or self.config.cookie
+        if not cookie and (getattr(t, "cookies_from_browser", "") or
+                           getattr(self.config, "cookies_from_browser", "")):
+            # (A) sem cookie explícito: tenta a sessão do navegador do
+            # usuário (exportada via yt-dlp p/ um jar cacheado).
+            from minidm.cookies import browser_cookie_header
+
+            cookie = browser_cookie_header(
+                getattr(t, "cookies_from_browser", "")
+                or self.config.cookies_from_browser,
+                self.config.data_dir, url=t.url)
         if cookie:
             h["Cookie"] = cookie
         if extra:
@@ -306,7 +320,8 @@ class Downloader:
         t.sha256 = verify_mod.sha256_file(t.final_path)
 
         # 2) checksums publicados ao lado do arquivo no servidor
-        if self.config.remote_checksums:
+        # (convenção HTTP — ftp/sftp não têm <arquivo>.sha256 via requests)
+        if self.config.remote_checksums and self._supports_remote_checksums:
             remote_sha, remote_md = verify_mod.fetch_remote_checksums(
                 t.url, self._headers()["User-Agent"])
             t.remote_sha256, t.remote_md5 = remote_sha, remote_md

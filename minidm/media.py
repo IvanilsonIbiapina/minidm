@@ -621,10 +621,37 @@ def _dash_qualities(session, dash: dict, headers: dict, base_url: str,
     return qualities
 
 
+def _analyze_remote(url: str, page_title: str = "") -> dict:
+    """Análise de ftp:// e sftp://: só tamanho + nome (arquivo comum)."""
+    from minidm.ftpdl import RemoteError, remote_stat
+    from minidm.remote import filename_from
+
+    try:
+        st = remote_stat(url)
+    except RemoteError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:               # paramiko ausente etc.
+        return {"ok": False, "error": str(e)}
+    if st.size is None:
+        return {"ok": False,
+                "error": "servidor não informou o tamanho do arquivo "
+                         "(SIZE/stat) — não é possível segmentar"}
+    return {"ok": True, "kind": "file", "qualities": [{
+        "label": "original",
+        "url": url,
+        "kind": "file",
+        "bandwidth": None,
+        "resolution": None,
+        "duration": None,
+        "estimated_size": st.size,
+    }], "duration": None, "encrypted": False,
+        "filename": filename_from(url) or "download.bin"}
+
+
 def analyze(url: str, referer: str = "", user_agent: str = "",
             cookie: str = "", proxy: str = "",
             timeout: float = TIMEOUT, page_title: str = "",
-            use_ytdlp: bool = False) -> dict:
+            use_ytdlp: bool = False, cookies_from_browser: str = "") -> dict:
     """Analisa uma URL de mídia e lista as qualidades disponíveis.
 
     Retorna {"ok", "kind", "qualities": [...], "duration", "encrypted",
@@ -634,12 +661,19 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
     nome do arquivo quando o URL é genérico (master.m3u8, get.php…).
     `use_ytdlp`: delega a análise para o yt-dlp (se instalado) — cobre
     sites complexos; se falhar, cai no parser HLS/DASH próprio.
+    `cookies_from_browser`: usa a sessão do navegador do usuário (yt-dlp).
     """
+    # FTP/SFTP: não há "site" nem manifesto — o que existe é um arquivo
+    # remoto com tamanho conhecido (SIZE/stat). Devolve a forma de "file"
+    # direto p/ a interface mostrar tamanho e nome antes de baixar.
+    if urlparse(url).scheme.lower() in ("ftp", "sftp"):
+        return _analyze_remote(url, page_title)
     if use_ytdlp:
         try:
             from minidm import ytdlp
             res = ytdlp.analyze(url, referer=referer, user_agent=user_agent,
-                                cookie=cookie, timeout=timeout)
+                                cookie=cookie, timeout=timeout,
+                                cookies_from_browser=cookies_from_browser)
             if res.get("ok") or res.get("drm"):
                 # DRM ou sucesso: não tenta o parser próprio por cima
                 return res

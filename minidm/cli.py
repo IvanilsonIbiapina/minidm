@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from minidm import __version__
-from minidm.config import AppConfig
+from minidm.config import AppConfig, DEFAULT_DATA_DIR
 from minidm.dashboard import human
 from minidm.meta import Task, TaskState
 from minidm.profiles import ProfileStore, apply_profile
@@ -16,7 +17,7 @@ from minidm.store import TaskStore
 
 # ---------------------------------------------------------------- utilitários
 def _cfg(args) -> AppConfig:
-    cfg = AppConfig.load(args.data_dir)
+    cfg = AppConfig.load(getattr(args, "data_dir", None) or DEFAULT_DATA_DIR)
     return cfg.apply_flags(args)
 
 
@@ -32,6 +33,9 @@ def _print_task_line(t: Task) -> None:
 # ------------------------------------------------------------------- comandos
 def cmd_add(args) -> int:
     cfg = _cfg(args)
+    # (A) flag --cookies-from-browser sobrepõe a config p/ ESTA execução
+    if getattr(args, "cookies_from_browser", ""):
+        cfg.cookies_from_browser = args.cookies_from_browser
     store = TaskStore(cfg.data_dir)
     pstore = ProfileStore(cfg.data_dir)
     created = []
@@ -53,17 +57,52 @@ def cmd_add(args) -> int:
             dest_dir = ensure_folder(category_folder(cat, cfg))
         if not profile:
             profile = cat.profile
-    for url in args.urls:
-        kind = "hls" if url.lower().split("?")[0].endswith(".m3u8") else (
-            "dash" if url.lower().split("?")[0].endswith(".mpd") else "file")
+    # (C) playlist: expande URL de playlist em várias URLs antes do loop
+    urls = list(args.urls)
+    if getattr(args, "playlist", False):
+        from minidm.ytdlp import expand_playlist
+
+        expanded: list[str] = []
+        for u in urls:
+            try:
+                items = expand_playlist(
+                    u, limit=cfg.playlist_limit,
+                    cookie=args.cookie or cfg.cookie,
+                    cookies_from_browser=getattr(args, "cookies_from_browser",
+                                                 "") or cfg.cookies_from_browser)
+            except RuntimeError as e:
+                print(f"playlist {u}: {e}", file=sys.stderr)
+                return 2
+            if not items:
+                print(f"playlist {u}: vazia", file=sys.stderr)
+                return 2
+            print(f"playlist {u}: {len(items)} item(ns)")
+            expanded += [it["url"] for it in items]
+        urls = expanded
+    for url in urls:
+        scheme = url.lower().split(":")[0]
+        if scheme in ("ftp", "sftp"):
+            kind = "file"      # remoto: streams HLS/DASH são HTTP(S)
+        else:
+            kind = "hls" if url.lower().split("?")[0].endswith(".m3u8") else (
+                "dash" if url.lower().split("?")[0].endswith(".mpd")
+                else "file")
         task = Task(url=url, dest_dir=dest_dir,
                     filename=filename_from(url), state=TaskState.QUEUED,
                     kind=kind, referer=args.referer or "",
+                    category=category,
+                    section=getattr(args, "section", "") or "",
                     mirrors=list(args.mirror or []),
                     proxy=args.proxy or "",
                     cookie=args.cookie or "",
                     user_agent=args.user_agent or "",
+                    cookies_from_browser=getattr(args, "cookies_from_browser",
+                                                 "") or "",
                     expected_sha256=args.sha256)
+        # (F) sponsorblock: vai como extra arg do yt-dlp
+        if getattr(args, "sponsorblock", ""):
+            task.ytdlp_args = (task.ytdlp_args or []) + [
+                "--sponsorblock-remove", args.sponsorblock]
         if profile:
             apply_profile(task, pstore, profile,
                           filename_override=args.filename or "",
@@ -72,7 +111,8 @@ def cmd_add(args) -> int:
                           ext=getattr(args, "ext", "") or "")
         elif args.filename:
             task.filename = args.filename
-        if args.ytdlp:
+        if args.ytdlp or (getattr(args, "section", "") or ""):
+            # section precisa do yt-dlp (--download-sections)
             task.use_ytdlp_downloader = True
         else:
             # delegação automática: link de PÁGINA (YouTube, Instagram…)
@@ -89,6 +129,11 @@ def cmd_add(args) -> int:
                 user_agent=args.user_agent or cfg.user_agent,
                 cookie=args.cookie or cfg.cookie,
                 proxy=args.proxy or cfg.proxy)
+        if not task.category:
+            # sem categoria explícita: deduz pela extensão (estilo IDM)
+            from minidm.categories import effective_category
+
+            task.category = effective_category(task)
         store.add(task)
         created.append(task)
         prof = f"  [{task.profile}]" if task.profile else ""
@@ -358,12 +403,19 @@ def cmd_deps(args) -> int:
 
     st = deps.status()
     print("dependências do minidm\n")
-    for name in ("ytdlp", "ffmpeg"):
+    for name in ("ytdlp", "ffmpeg", "paramiko"):
         info = st[name]
         mark = "OK " if info["available"] else "FALTA"
-        print(f"  [{mark:5}] {name:7} {info['path'] or ''}")
+        extra = ""
+        if name == "ytdlp" and info.get("version"):
+            extra = f"  v{info['version']}"
+        print(f"  [{mark:5}] {name:7} {info['path'] or ''}{extra}")
         if not info["available"]:
             print(f"           instalar: {info['install']}")
+    # (E) aviso de yt-dlp desatualizado (sites mudam; >90 dias costuma quebrar)
+    if st["ytdlp"].get("outdated"):
+        print(f"\n  ! yt-dlp v{st['ytdlp']['version']} tem mais de 90 dias — "
+              "sites mudam,\nprefira atualizar:  python -m pip install -U yt-dlp")
     print("\nfuncionalidades:")
     for feat, ok in st["features"].items():
         print(f"  {'✓' if ok else '✗'} {feat}")
@@ -374,7 +426,97 @@ def cmd_deps(args) -> int:
         print("\nsem o ffmpeg, downloads continuam funcionando; só faltam "
               "conversões (mp3),\nembed de miniatura/metadados e mux "
               "vídeo+áudio.")
+    if not st["paramiko"]["available"]:
+        print("\nsem o paramiko, downloads FTP funcionam (ftplib é nativo); "
+              "só falta o SFTP.")
     return 0
+
+
+def cmd_ext(args) -> int:
+    """Instala/detecta a extensão do navegador (Chrome/Edge) — híbrido."""
+    from minidm import extsetup
+
+    cfg = _cfg(args)
+    act = args.action
+
+    if act == "status":
+        st = extsetup.status(cfg.data_dir, ext_dir=args.ext_dir or "")
+        idtxt = st["ext_id"] or "(sem chave ainda — rode `minidm ext install|guided` para gerar)"
+        print(f"extensão (id estável): {idtxt}")
+        print(f"pasta: {st['ext_dir']}"
+              + ("  [existe]" if os.path.isdir(st['ext_dir']) else "  [AUSENTE]"))
+        print(f"CRX gerado: {'sim' if st['crx_present'] else 'não'}   "
+              f"API local rodando: {'sim' if st['api_running'] else 'não'}")
+        for b in st["browsers"]:
+            if not b["present"]:
+                continue
+            print(f"\n{b['name']}  ({b['user_data_dir']})")
+            any_p = False
+            for p in b["profiles"]:
+                if p["installed"]:
+                    any_p = True
+                    state = "habilitada" if p.get("state") == 1 else \
+                            ("desabilitada" if p.get("state") == 0 else "carregada")
+                    ver = f"v{p['version']}" if p.get("version") else ""
+                    nm = p.get("ext_name") or "minidm bridge"
+                    print(f"  [{p['name']}] INSTALADA — {nm} {ver}  {state}  "
+                          f"(location={p.get('location')}: "
+                          f"{p.get('location_label')})")
+                    print(f"          path: {p.get('path')}")
+            if not any_p:
+                print("  (extensão do minidm não instalada)")
+            pol = st["policy"].get(b["name"]) or {}
+            mine = [v for v in pol.values()
+                    if st["ext_id"] and st["ext_id"] in v]
+            if mine:
+                print(f"  política forcelist: {mine[0]}")
+        return 0
+
+    if act == "install":
+        if not extsetup.default_ext_dir() and not args.ext_dir:
+            print("pasta da extensão ausente.", file=sys.stderr)
+            return 1
+        rep = extsetup.install_policy(
+            cfg.data_dir, ext_dir=args.ext_dir or "",
+            browsers=tuple(args.browser or ("chrome", "edge")),
+            api_port=cfg.api_port)
+        print(f"CRX3 gerado (id {rep['ext_id']}) e política escrita:")
+        for b, k in rep["policy_keys"].items():
+            print(f"  {b}: {k}")
+        if rep["api_running"]:
+            print(f"\nAPI local ativa em 127.0.0.1:{cfg.api_port} — o "
+                  "navegador vai baixar o CRX sozinho.")
+        else:
+            print(f"\nATENÇÃO: a API local (127.0.0.1:{cfg.api_port}) não "
+                  "está rodando.\nO navegador só consegue instalar se ela "
+                  "servir o CRX. Inicie com\n`minidm daemon` (ou `minidm "
+                  "serve`) e reabra o navegador.\nSe não funcionar, use "
+                  "`minidm ext guided` (modo manual garantido).")
+        return 0
+
+    if act == "guided":
+        rep = extsetup.guided(cfg.data_dir, ext_dir=args.ext_dir or "")
+        print(f"pasta da extensão: {rep['ext_dir']}")
+        print("  caminho copiado p/ área de transferência: "
+              + ("sim" if rep["copied_to_clipboard"] else "não"))
+        print("  pasta aberta no Explorador: "
+              + ("sim" if rep["explorer_opened"] else "não"))
+        print("\npasso a passo:")
+        for i, s in enumerate(rep["steps"], 1):
+            print(f"  {i}. {s}")
+        return 0
+
+    if act == "uninstall":
+        rep = extsetup.uninstall_policy(
+            cfg.data_dir, browsers=tuple(args.browser or ("chrome", "edge")))
+        print(f"política removida de: "
+              f"{[b for b, ok in rep['removed'].items() if ok] or 'nenhum'}")
+        print("(a extensão 'unpacked' já instalada, se houver, é removida "
+              "pela própria página de extensões do navegador)")
+        return 0
+
+    print(f"ação desconhecida: {act}", file=sys.stderr)
+    return 2
 
 
 def cmd_profiles(args) -> int:
@@ -492,6 +634,19 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--filename", help="nome do arquivo final (sobrepõe o perfil)")
     a.add_argument("--ytdlp", action="store_true",
                    help="delegar o download ao yt-dlp (se instalado)")
+    a.add_argument("--cookies-from-browser", dest="cookies_from_browser",
+                   metavar="NAV",
+                   help="usa a sessão do navegador do usuário (chrome, edge, "
+                        "firefox…) via yt-dlp — p/ sites que exigem login")
+    a.add_argument("--playlist", action="store_true",
+                   help="expande URL de playlist em várias tarefas "
+                        "(yt-dlp --flat-playlist)")
+    a.add_argument("--section", metavar="INI-FIM",
+                   help="baixa só este trecho (ex.: 00:01:00-00:02:00) "
+                        "— delega ao yt-dlp --download-sections")
+    a.add_argument("--sponsorblock", metavar="CATS",
+                   help="remove trechos de patrocínio (all, ou sponsor,"
+                        "selfpromo,…) — requer ffmpeg")
     _add_net_flags(a)
     a.add_argument("--start", action="store_true", help="começa já baixar")
     a.set_defaults(func=cmd_add)
@@ -506,6 +661,18 @@ def build_parser() -> argparse.ArgumentParser:
                                     "(yt-dlp, ffmpeg) e como instalar",
                        parents=[common])
     a.set_defaults(func=cmd_deps)
+
+    a = sub.add_parser("ext", help="gerencia a extensão do navegador "
+                                   "(Chrome/Edge) — híbrido",
+                       parents=[common])
+    a.add_argument("action", choices=["status", "install", "guided",
+                                      "uninstall"])
+    a.add_argument("--ext-dir", dest="ext_dir",
+                   help="pasta da extensão (padrão: browser_ext embarcada)")
+    a.add_argument("--browser", action="append",
+                   choices=["chrome", "edge"],
+                   help="restringe aos navegadores citados (install/uninstall)")
+    a.set_defaults(func=cmd_ext)
 
     a = sub.add_parser("list", help="lista a fila", parents=[common])
     a.set_defaults(func=cmd_list)

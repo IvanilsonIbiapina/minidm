@@ -71,13 +71,18 @@ def supports_remote_components() -> bool:
 
 
 def describe(url: str, referer: str = "", user_agent: str = "",
-             cookie: str = "", timeout: float = TIMEOUT) -> dict:
+             cookie: str = "", timeout: float = TIMEOUT,
+             cookies_from_browser: str = "") -> dict:
     """Roda `yt-dlp -J` e devolve o JSON bruto (ou levanta RuntimeError).
 
     Se o cookie do navegador fizer o site devolver a página sem formatos
     (comportamento observado no YouTube: "só imagens"/rc!=0), tenta de novo
     **sem o cookie** antes de desistir — o cookie é um extra, não um
     requisito na maioria dos sites.
+
+    `cookies_from_browser` ("chrome", "edge"…) usa a sessão do próprio
+    navegador do usuário via flag nativa do yt-dlp — só quando não veio
+    `cookie` explícito.
     """
     cmd = find()
     if not cmd:
@@ -104,6 +109,9 @@ def describe(url: str, referer: str = "", user_agent: str = "",
         if ck:
             # o yt-dlp aceita cookies no formato "a=b; c=d" via --add-header
             a += ["--add-header", f"Cookie:{ck}"]
+        elif cookies_from_browser:
+            # sessão do navegador do usuário (flag nativa do yt-dlp)
+            a += ["--cookies-from-browser", cookies_from_browser]
         a.append(url)
         return a
 
@@ -147,7 +155,8 @@ def _usable_info(proc) -> bool:
 
 
 def analyze(url: str, referer: str = "", user_agent: str = "",
-            cookie: str = "", timeout: float = TIMEOUT) -> dict:
+            cookie: str = "", timeout: float = TIMEOUT,
+            cookies_from_browser: str = "") -> dict:
     """Analisa com o yt-dlp e converte para o formato do minidm.media.analyze.
 
     Retorna {"ok", "kind", "qualities", "duration", "drm", "filename"}.
@@ -155,7 +164,8 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
     apenas sinalizamos — nunca tentamos contornar.
     """
     info = describe(url, referer=referer, user_agent=user_agent,
-                    cookie=cookie, timeout=timeout)
+                    cookie=cookie, timeout=timeout,
+                    cookies_from_browser=cookies_from_browser)
 
     title = (info.get("title") or "").strip()
     duration = info.get("duration")
@@ -221,3 +231,106 @@ def _label(f: dict, height) -> str:
 def _safe_name(title: str) -> str:
     from minidm.remote import sanitize
     return sanitize(title[:80].strip(" .")) if title else ""
+
+
+# ------------------------------------------------------------ playlists (C)
+def expand_playlist(url: str, limit: int = 50, timeout: float = TIMEOUT,
+                    cookie: str = "", cookies_from_browser: str = "") -> list[dict]:
+    """Expande uma URL de playlist em entradas (conceito --flat-playlist).
+
+    Roda `yt-dlp --flat-playlist -J` (uma extração "rasa", rápida) e
+    devolve [{"url", "title", "duration"}…] — cada entrada vira uma tarefa
+    na fila do minidm. `limit` corta o excesso (playlists gigantes).
+
+    Se o URL não for playlist, o próprio yt-dlp devolve a entrada única —
+    aí o chamador recebe 1 item e segue normalmente.
+    """
+    cmd = find()
+    if not cmd:
+        raise RuntimeError("yt-dlp não encontrado (instale: pip install yt-dlp)")
+    from minidm.deps import hidden_kwargs as _hk
+    import subprocess
+
+    args = cmd + ["--flat-playlist", "-J", "--no-warnings"]
+    # --flat-playlist lista as entradas SEM extrair cada vídeo (rápido) —
+    # é o modo "playlist" explícito: quem chamou quer a lista inteira.
+    if cookie:
+        args += ["--add-header", f"Cookie:{cookie}"]
+    elif cookies_from_browser:
+        args += ["--cookies-from-browser", cookies_from_browser]
+    args.append(url)
+    try:
+        proc = subprocess.run(args, capture_output=True, timeout=timeout,
+                              check=False, **_hk())
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"yt-dlp falhou: {e}") from e
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()
+        raise RuntimeError(
+            f"yt-dlp: {err.splitlines()[-1] if err else 'erro'}")
+    try:
+        info = json.loads(proc.stdout.decode("utf-8", "replace"))
+    except ValueError as e:
+        raise RuntimeError(f"yt-dlp devolveu JSON inválido: {e}") from e
+
+    entries = info.get("entries")
+    if entries is None:
+        # não é playlist: o -J devolveu o vídeo direto
+        u = info.get("webpage_url") or url
+        return [{"url": u, "title": info.get("title") or "",
+                 "duration": info.get("duration")}] if u else []
+    out: list[dict] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        u = e.get("url") or e.get("webpage_url") or ""
+        if not u:
+            continue
+        out.append({"url": u, "title": e.get("title") or "",
+                    "duration": e.get("duration")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+# --------------------------------------------------- versão/idade (E)
+@lru_cache(maxsize=1)
+def version() -> Optional[str]:
+    """Versão do yt-dlp instalado ("2026.10.26"), ou None."""
+    cmd = find()
+    if not cmd:
+        return None
+    from minidm.deps import hidden_kwargs as _hk
+    import subprocess
+    try:
+        proc = subprocess.run(cmd + ["--version"], capture_output=True,
+                              timeout=TIMEOUT, check=False, **_hk())
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or b"").decode("utf-8", "replace").strip() or None
+
+
+def is_outdated(days: int = 90) -> Optional[bool]:
+    """True se a versão tem mais de `days` dias (sites mudam; vale atualizar).
+
+    O upstream faz a mesma checagem (avisa >90 dias). Versões no formato
+    `YYYY.MM.DD` são datadas; outras (nightly com sufixo) também casam no
+    prefixo. Devolve None quando não dá p/ saber (sem yt-dlp, formato
+    irreconhecível).
+    """
+    v = version()
+    if not v:
+        return None
+    import re
+    from datetime import date
+
+    m = re.match(r"(\d{4})\.(\d{1,2})\.(\d{1,2})", v)
+    if not m:
+        return None
+    try:
+        built = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+    return (date.today() - built).days > days

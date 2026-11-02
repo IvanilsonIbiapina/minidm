@@ -75,6 +75,17 @@ class Task:
     profile: str = ""                # nome do perfil usado ("Música"…)
     use_ytdlp_downloader: bool = False   # delegar download ao yt-dlp
     ytdlp_args: list[str] = field(default_factory=list)  # args extras yt-dlp
+    # ---- v7 (GUI evoluída: barra lateral de categorias estilo IDM)
+    # nome da categoria ("Vídeos", "Músicas"…); "" = sem categoria. Usado só
+    # p/ agrupar/exibir na sidebar — a pasta continua vindo de dest_dir.
+    category: str = ""
+    # ---- v8 (integrações yt-dlp: trecho do vídeo)
+    # "MM:SS-MM:SS" ou "HH:MM:SS-HH:MM:SS" = baixar SÓ este trecho
+    # (delega ao yt-dlp --download-sections). "" = vídeo inteiro.
+    section: str = ""
+    # navegador cuja sessão (cookies) esta tarefa deve usar ("chrome"…);
+    # "" = usa o `cookies_from_browser` da config. Só a sessão do usuário.
+    cookies_from_browser: str = ""
     # ---- v6 (fila multi-processo + mux)
     # último instante em que a ESTRUTURA da tarefa mudou (estado, erro…).
     # Progresso NÃO marca — serve só p/ dois processos concorrentes

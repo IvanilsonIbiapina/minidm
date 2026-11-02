@@ -11,9 +11,10 @@ import shutil
 import tempfile
 import unittest
 
-from minidm.categories import (Category, category_folder, default_categories,
-                               default_category, ensure_folder, get_category,
-                               resolve_base)
+from minidm.categories import (Category, category_folder, classify_filename,
+                               classify_url, default_categories,
+                               default_category, effective_category,
+                               ensure_folder, get_category, resolve_base)
 
 
 class TestCategories(unittest.TestCase):
@@ -61,6 +62,53 @@ class TestCategories(unittest.TestCase):
         self.assertTrue(os.path.isdir(p))
         ensure_folder(p)   # idempotente
         self.assertTrue(os.path.isdir(p))
+
+
+class TestClassifier(unittest.TestCase):
+    """Classificação automática por extensão (estilo IDM) — sidebar."""
+
+    def test_classifica_por_extensao(self):
+        self.assertEqual(classify_filename("filme.mkv"), "Vídeos")
+        self.assertEqual(classify_filename("musica.mp3"), "Músicas")
+        self.assertEqual(classify_filename("instalar.exe"), "Programas")
+        self.assertEqual(classify_filename("doc.pdf"), "Documentos")
+        self.assertEqual(classify_filename("foto.PNG"), "Imagens")   # case-ins.
+        self.assertEqual(classify_filename("pack.zip"), "Comprimidos")
+
+    def test_streams_vao_pra_videos(self):
+        self.assertEqual(classify_filename("master.m3u8"), "Vídeos")
+        self.assertEqual(classify_filename("manifest.mpd"), "Vídeos")
+
+    def test_extensao_desconhecida_ou_ausente(self):
+        self.assertEqual(classify_filename("sem_extensao"), "")
+        self.assertEqual(classify_filename(""), "")
+        # múltiplas extensões usa a ÚLTIMA (tar.gz -> Comprimidos)
+        self.assertEqual(classify_filename("backup.tar.gz"), "Comprimidos")
+
+    def test_classify_url_ignora_query(self):
+        self.assertEqual(classify_url("https://cdn/f/filme.mp4?tok=1"),
+                         "Vídeos")
+        self.assertEqual(classify_url("https://cdn/path/musica.m4a"),
+                         "Músicas")
+
+    def test_effective_categoria_prefere_explicita(self):
+        class T:
+            filename = "x.bin"
+            category = "Comprimidos"
+        self.assertEqual(effective_category(T()), "Comprimidos")
+
+    def test_effective_dedu_de_categoria_vazia(self):
+        # tarefa antiga (category="") -> deduz pela extensão
+        class T:
+            filename = "filme.mkv"
+            category = ""
+        self.assertEqual(effective_category(T()), "Vídeos")
+
+    def test_effective_sem_categoria_nem_extensao(self):
+        class T:
+            filename = "weird"
+            category = ""
+        self.assertEqual(effective_category(T()), "")
 
 
 if __name__ == "__main__":

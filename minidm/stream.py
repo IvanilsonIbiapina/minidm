@@ -25,6 +25,7 @@ import subprocess
 import threading
 import time
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -1225,6 +1226,7 @@ def make_downloader(task: Task, config: Optional[AppConfig] = None, **kw):
     """Fábrica de downloader.
 
     Ordem:
+    0. ftp:// e sftp:// -> downloaders remotos (engine própria, segmentada);
     1. yt-dlp (CLI externa) quando a tarefa ou a config mandam e ele existe;
     2. mux (vídeo+áudio separados) quando a análise ligou o par e há
        ffmpeg -> MuxDownloader;
@@ -1232,6 +1234,11 @@ def make_downloader(task: Task, config: Optional[AppConfig] = None, **kw):
     4. o resto -> Downloader (engine própria, segmentada).
     """
     cfg = config or AppConfig()
+    scheme = urlparse(task.url).scheme.lower()
+    if scheme in ("ftp", "sftp"):
+        from minidm.ftpdl import make_remote_downloader
+
+        return make_remote_downloader(task, config=cfg, **kw)
     want_ytdlp = getattr(task, "use_ytdlp_downloader", False) or \
         getattr(cfg, "use_ytdlp_downloader", False)
     if want_ytdlp and task.kind in ("hls", "dash", "file", "ytdlp"):

@@ -12,6 +12,12 @@ par **pasta + perfil** do minidm:
 A categoria **Vídeos** é a padrão (pré-definida), mas o usuário pode
 mudar para Música/Áudio ou qualquer outra.
 
+Classificação automática: quando uma tarefa não tem categoria explícita,
+`classify_filename()` deduz a categoria pela **extensão do arquivo** (como
+o IDM). O campo `Task.category` fica vazio nas tarefas antigas — por isso
+a contagem da sidebar usa o `effective_category()`, que classifica sob
+demanda sem reescrever a fila.
+
 Nada de código do IDM é copiado — só o conceito de categorizar por pasta.
 """
 
@@ -22,6 +28,83 @@ from dataclasses import dataclass
 from typing import Optional
 
 DEFAULT_BASE = os.path.join(os.path.expanduser("~"), "Downloads")
+
+# extensão (minúscula, sem ponto) -> nome da categoria.
+# Separado de `default_categories()` p/ consultar rápido sem acentos.
+EXT_TO_CATEGORY = {
+    # Vídeos
+    "mp4": "Vídeos", "mkv": "Vídeos", "avi": "Vídeos", "mov": "Vídeos",
+    "wmv": "Vídeos", "flv": "Vídeos", "webm": "Vídeos", "m4v": "Vídeos",
+    "mpg": "Vídeos", "mpeg": "Vídeos", "ts": "Vídeos", "m2ts": "Vídeos",
+    "vob": "Vídeos", "3gp": "Vídeos", "ogv": "Vídeos", "m3u8": "Vídeos",
+    "mpd": "Vídeos",
+    # Músicas
+    "mp3": "Músicas", "flac": "Músicas", "wav": "Músicas", "aac": "Músicas",
+    "m4a": "Músicas", "ogg": "Músicas", "opus": "Músicas", "wma": "Músicas",
+    "ape": "Músicas", "alac": "Músicas", "mid": "Músicas", "midi": "Músicas",
+    # Programas
+    "exe": "Programas", "msi": "Programas", "msix": "Programas",
+    "appx": "Programas", "appxbundle": "Programas", "dmg": "Programas",
+    "pkg": "Programas", "deb": "Programas", "rpm": "Programas",
+    "apk": "Programas", "ipa": "Programas", "bin": "Programas",
+    "run": "Programas", "setup": "Programas", "jar": "Programas",
+    # Documentos
+    "pdf": "Documentos", "doc": "Documentos", "docx": "Documentos",
+    "xls": "Documentos", "xlsx": "Documentos", "ppt": "Documentos",
+    "pptx": "Documentos", "txt": "Documentos", "rtf": "Documentos",
+    "odt": "Documentos", "ods": "Documentos", "odp": "Documentos",
+    "epub": "Documentos", "mobi": "Documentos", "csv": "Documentos",
+    "md": "Documentos", "tex": "Documentos",
+    # Imagens
+    "jpg": "Imagens", "jpeg": "Imagens", "png": "Imagens", "gif": "Imagens",
+    "bmp": "Imagens", "webp": "Imagens", "svg": "Imagens", "tif": "Imagens",
+    "tiff": "Imagens", "ico": "Imagens", "heic": "Imagens",
+    "raw": "Imagens", "psd": "Imagens", "cr2": "Imagens", "nef": "Imagens",
+    # Comprimidos
+    "zip": "Comprimidos", "rar": "Comprimidos", "7z": "Comprimidos",
+    "tar": "Comprimidos", "gz": "Comprimidos", "bz2": "Comprimidos",
+    "xz": "Comprimidos", "tgz": "Comprimidos", "iso": "Comprimidos",
+    "cab": "Comprimidos", "z": "Comprimidos", "lz": "Comprimidos",
+    "lzma": "Comprimidos",
+}
+
+
+def _extension(filename: str) -> str:
+    """Extensão minúscula sem ponto ("filme.MP4" -> "mp4"); "" se não houver."""
+    name = (filename or "").strip()
+    if "." not in name:
+        return ""
+    return name.rsplit(".", 1)[-1].lower()
+
+
+def classify_filename(filename: str) -> str:
+    """Categoria deduzida pela extensão ("", se desconhecida).
+
+    HLS/DASH (`.m3u8`/`.mpd`) caem em Vídeos; streams sem extensão útil
+    devolvem "" (o chamador decide o padrão).
+    """
+    return EXT_TO_CATEGORY.get(_extension(filename), "")
+
+
+def classify_url(url: str) -> str:
+    """Classifica pela extensão do *path* do URL (ignora query string)."""
+    from urllib.parse import urlparse
+
+    path = urlparse(url or "").path
+    return classify_filename(os.path.basename(path))
+
+
+def effective_category(task) -> str:
+    """Categoria efetiva de uma `Task`: a explícita ou a deduzida.
+
+    Tarefas antigas (criadas antes do campo `category`) e as vindas da
+    CLI/API/extensão sem categoria ficam "" — aqui deduzimos pela extensão
+    p/ a sidebar agrupar corretamente, sem reescrever a fila.
+    """
+    cat = (getattr(task, "category", "") or "").strip()
+    if cat:
+        return cat
+    return classify_filename(getattr(task, "filename", ""))
 
 
 @dataclass(frozen=True)

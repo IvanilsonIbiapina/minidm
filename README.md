@@ -26,6 +26,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Captura de vídeo (HLS/DASH/direto)** | extensão detecta vídeos e lista qualidades (abaixo) |
 | **Download de stream HLS/DASH** | `media <url>` — segmentos `.ts`/`.m4s` em paralelo, concatena e decifra AES-128 |
 | **HLS ao vivo** (playlist sem `#EXT-X-ENDLIST`) | a engine re-busca a playlist no período do `#EXT-X-TARGETDURATION` até o `ENDLIST`/limite de duração; pausa/retoma salva; segmento que sai da janela vira `lost`, não erro |
+| **Download FTP/SFTP** | `add ftp://…` / `add sftp://…` — mesma engine segmentada (retomada, retry, mirrors, throttle); FTP é nativo, SFTP precisa de `pip install paramiko` |
 | **Mux vídeo+áudio (ffmpeg)** | streams com faixa de áudio separada (DASH/HLS) baixam as duas pernas e o `ffmpeg -c copy` mescla — sem ffmpeg, segue com uma faixa |
 | **Detecção de DRM** (Widevine/FairPlay/PlayReady) | analisa e **recusa** com aviso — nunca tenta contornar (DMCA §1201) |
 | **Faixa de áudio separada** | HLS `EXT-X-MEDIA`/DASH áudio viram qualidade "áudio" (baixar música) |
@@ -41,6 +42,12 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **`--concurrent-fragments`** | `config set concurrent_fragments 4` — fragmentos simultâneos por stream |
 | **Downloader yt-dlp** (delegação) | `add --ytdlp` ou perfil `use_ytdlp_downloader` — mesma interface do scheduler |
 | **Delegação automática** | link de **página** (YouTube, Instagram…) + yt-dlp instalado → usa yt-dlp **sozinho**, sem flag |
+| **Cookies do navegador** | `add --cookies-from-browser chrome` — usa a sessão do usuário p/ sites com login; a engine própria recebe o mesmo cookie via jar exportado e cacheado (`cookies.py`) |
+| **Caminho exato do arquivo** | `--print after_move` — o yt-dlp informa o arquivo gravado; fim da adivinhação por mtime no `_finalize` |
+| **Playlists** | `add --playlist` (ou `/add` com `"playlist": true`) — expande em várias tarefas na fila (`--flat-playlist`, limite `playlist_limit`) |
+| **Trecho do vídeo** | `add --section 01:00-02:00` — baixa só o intervalo (yt-dlp `--download-sections` + keyframes) |
+| **SponsorBlock** | `config set sponsorblock all` (ou `add --sponsorblock all`) — remove trechos de patrocínio no pós-processamento |
+| **Aviso de yt-dlp velho** | `deps` mostra a versão e avisa se tem >90 dias (sites mudam; como o próprio upstream) |
 | **Descoberta de dependências** | `python -m minidm deps` — acha yt-dlp, ffmpeg e runtime JS (PATH/winget/scoop/choco) e mostra o que falta |
 | **Runtime JS automático** | acha node/deno/bun e passa `--js-runtimes` — extração completa do YouTube |
 | **Erros traduzidos** | mensagem do yt-dlp vira texto claro ("vídeo indisponível", "instale ffmpeg"…) |
@@ -54,6 +61,13 @@ também `cryptography`:
 
 ```bat
 python -m pip install requests rich cryptography
+```
+
+Opcional (mostra o que falta com `python -m minidm deps`):
+
+```bat
+python -m pip install yt-dlp paramiko     # sites complexos + SFTP
+winget install Gyan.FFmpeg                # mux, conversão, embed
 ```
 
 ## Captura de vídeos no navegador (estilo IDM)
@@ -133,6 +147,43 @@ python -m minidm config set live_poll_seconds 0    # 0 = automático (meio do ta
 python -m minidm config set live_max_seconds 3600  # 0 = sem limite
 python -m minidm config set live_playlist_retries 20
 ```
+
+### Download FTP e SFTP
+
+O IDM baixa de FTP e o `minidm` também — com **toda a engine que já
+existe**: segmentos em paralelo, `.part` pré-alocado, checkpoint,
+retomada, retry com backoff, mirrors, throttle e SHA-256. Só a camada de
+transporte muda:
+
+| | FTP (`ftp://`) | SFTP (`sftp://`) |
+|---|---|---|
+| transporte | `ftplib` (nativo do Python) | `paramiko` (`pip install paramiko`) |
+| faixa | `REST` + `RETR` | `open` + `seek` |
+| probe | `SIZE` + `MDTM` | `stat` |
+| sem `REST` | baixa em 1 segmento (sequencial) | sempre segmenta |
+| credenciais | anônimo por padrão | agent/chaves locais por padrão |
+
+```bat
+minidm add ftp://usuario:senha@host:21/pasta/arquivo.zip
+minidm add sftp://usuario@host/srv/dados.iso --segments 8
+minidm add ftp://host/arquivo.iso            # anônimo (config muda isso)
+```
+
+Precedência de credenciais: `user:pass@` no URL >
+`config set ftp_user …` / `sftp_user …` > anônimo (FTP) ou agent do
+sistema (SFTP). No SFTP, a host key do servidor é **aceita e salva** no
+`known_hosts` na primeira conexão (igual ao `ssh` com "yes"):
+
+```bat
+minidm config set sftp_accept_host_key false   # política estrita: chave nova = erro
+minidm config set sftp_known_hosts "C:\cfg\known_hosts"
+minidm config set sftp_key "C:\chaves\id_ed25519"
+```
+
+Falhas remotas (queda de conexão, `550`) herdam de `OSError` e caem no
+**retry por segmento** com backoff — mesma resiliência do HTTP. Sem
+tamanho (`SIZE`/`stat` negado) a engine **recusa com aviso claro**: sem
+tamanho não há como segmentar nem retomar.
 
 ## Perfis de download (conceito do YT-DLnis)
 
@@ -235,6 +286,70 @@ minidm habilita o solver `--remote-components ejs:github` (cacheado pelo
 yt-dlp) e, se ainda faltar, **repete automaticamente sem o cookie** — o
 download segue em vez de morrer.
 
+### Integrações herdadas do yt-dlp (conceitos, nunca código)
+
+O yt-dlp é GPL/Unlicense — o minidm só **chama a CLI dele** e lê os
+arquivos/JSON que ele emite. O que aproveitamos do projeto upstream:
+
+**Cookies do navegador** (`--cookies-from-browser`) — para sites que
+exigem login, o minidm usa a **sessão do próprio navegador do usuário**
+(chrome, edge, firefox, brave, opera…):
+
+```bat
+python -m minidm config set cookies_from_browser chrome   # global
+python -m minidm add "https://site.com/com/login" --cookies-from-browser edge
+```
+
+No yt-dlp (análise e download delegado) a flag vai direto. Na **engine
+própria** (segmentada), o `cookies.py` exporta o jar do navegador uma vez
+via CLI do yt-dlp, converte em header `Cookie:` e cacheia por 15 min em
+`~/.minidm/cookies-<nav>.txt`. Só a sessão do usuário, local — nada de
+contorno de DRM. O navegador vale **por tarefa** (`t.cookies_from_browser`
+vem do payload/flag) com fallback na config — mesmo esquema de
+`cookie`/`proxy`: o da tarefa vence o global.
+
+**Caminho exato do arquivo** — o yt-dlp recebe `--print
+after_move:MINIDM_PATH:%(filepath)s` e informa o arquivo que gravou;
+o `_finalize` usa esse caminho direto (tamanho/hash certos), com o
+heurístico antigo só como fallback. Acaba a confusão quando várias
+tarefas dividem a mesma pasta.
+
+**Playlists** — `--playlist` expande a URL em várias tarefas:
+
+```bat
+python -m minidm add "https://youtube.com/playlist?list=PL…" --playlist --start
+```
+
+Por baixo: `yt-dlp --flat-playlist -J` (extração rassem, rápida), com
+limite `playlist_limit` (padrão 50). Na API: `{"url": …, "playlist": true}`.
+
+**Trecho do vídeo** — baixar só um intervalo:
+
+```bat
+python -m minidm add "https://exemplo.com/aula.mp4" --section 01:00-02:00 --ytdlp
+```
+
+Vira `--download-sections *01:00-02:00 --force-keyframes-at-cuts` no
+yt-dlp (o `*` corta em qualquer keyframe). Requer ffmpeg.
+
+**SponsorBlock** — remove trechos de patrocínio no pós-processamento:
+
+```bat
+python -m minidm config set sponsorblock all      # ou: sponsor,selfpromo,…
+python -m minidm add "https://youtu.be/…" --sponsorblock all
+```
+
+Vira `--sponsorblock-remove all` no yt-dlp (só com ffmpeg; sem ele a
+flag é filtrada e o download segue normal).
+
+**Fragmentos concorrentes** — `config set concurrent_fragments 4` agora
+também chega ao yt-dlp como `--concurrent-fragments 4` quando o download
+é delegado (a engine própria já usava).
+
+**Aviso de versão velha** — `minidm deps` mostra a versão do yt-dlp e
+avisa se tem mais de 90 dias: sites mudam toda semana, e o upstream
+faz a mesma checagem. `python -m pip install -U yt-dlp` resolve.
+
 ## "Qualquer site, só o link" — como funciona de fábrica
 
 O minidm decide sozinho quem resolve cada link:
@@ -260,13 +375,16 @@ python -m minidm deps
 
 ### `minidm deps` — diagnóstico
 
-`python -m minidm deps` mostra se o yt-dlp e o ffmpeg foram encontrados
+`python -m minidm deps` mostra se o yt-dlp, o ffmpeg e o **paramiko**
+(SFTP) foram encontrados
 (o minidm **procura sozinho** no PATH, winget, scoop, chocolatey e
 Program Files — você não precisa configurar caminho nenhum), o que cada
 um destrava, e o comando de instalação do que faltar. Sem ffmpeg o
 download **continua funcionando**; só ficam de fora conversão (mp3),
 embed de miniatura/metadados e mux vídeo+áudio — o yt-dlp recebe os
-argumentos já filtrados e entrega o melhor formato nativo.
+argumentos já filtrados e entrega o melhor formato nativo. Sem paramiko
+os downloads **FTP seguem funcionando** (`ftplib` é nativo do Python);
+só falta o SFTP, que avisa "instale com: python -m pip install paramiko".
 
 ### DRM: detectamos, nunca contornamos
 
@@ -317,9 +435,11 @@ O que dá pra fazer na janela:
 
 | Ação | Como |
 |---|---|
-| Adicionar download | botão **+ Adicionar URL** (ou `Ctrl+N`) — URL, mirrors, pasta, SHA-256, segmentos |
+| Adicionar download | botão **+ Adicionar URL** (ou `Ctrl+N`) — URL, categoria (define a pasta), mirrors, SHA-256, segmentos |
+| **Barra lateral de categorias** | clicar numa categoria (Todas, Vídeos, Músicas…) filtra a fila e mostra a contagem — como o IDM |
 | Iniciar / Pausar / Remover | botões da barra (ou `Delete`) — pausar salva o progresso |
-| Ver detalhes | **duplo clique** na tarefa (segmentos, hash, assinatura, erro) |
+| **Visualizar mídia** | botão **▶ Visualizar** — player embutido (via ffmpeg), lista as qualidades (HLS/DASH) e deixa escolher; recusa DRM |
+| Ver **propriedades ricas** | **duplo clique** na tarefa (página, origem, qualidade, categoria, perfil, segmentos, hash, assinatura, erro) |
 | Abrir pasta do arquivo | selecionar e **Abrir pasta** |
 | Capturar links copiados | marcar **Área de transferência** |
 | Aceitar links do navegador | marcar **API do navegador** (a extensão manda pra `127.0.0.1:9742`) |
@@ -359,11 +479,30 @@ python -m minidm verify C:\Downloads\app.exe --url https://exemplo.com/app.exe
 
 ### Extensão do navegador
 
-`browser_ext/` é uma extensão MV3. Em `chrome://extensions`, ative **Modo de
-desenvolvedor** → **Carregar descompactada** → aponte para a pasta
-`browser_ext`. Com o `minidm daemon`/`serve` rodando (ou **API do navegador**
-marcado na GUI), a extensão captura vídeos da navegação e o painel (ícone)
-mostra as qualidades. Botão direito → **Enviar para o minidm**.
+`browser_ext/` é uma extensão MV3. O `minidm` ajuda a instalar de duas
+formas (`minidm ext …`) — híbrido, porque o Chrome barra CRX local e não abre
+`chrome://` por linha de comando:
+
+```
+python -m minidm ext status      # onde a extensão já está (Chrome/Edge, por perfil)
+python -m minidm ext guided      # copia a pasta e orienta o "Carregar expandida"
+python -m minidm ext install     # tenta automático: política HKCU + CRX3 na API
+python -m minidm ext uninstall   # remove a política escrita por `install`
+```
+
+- **`guided` (garantido)** — copia o caminho de `browser_ext/` para a área de
+  transferência e abre o Explorador. Em `chrome://extensions`, ative **Modo de
+  desenvolvedor** → **Carregar expandida** → Ctrl+V. É o caminho que funciona
+  sempre (é como a extensão está carregada hoje).
+- **`install` (automático)** — gera um pacote **CRX3 assinado** (RSA-PSS, id
+  estável por chave), hospeda `update.xml` + `.crx` na API local e escreve a
+  política `ExtensionInstallForcelist` no HKCU (sem admin). Requer
+  `minidm daemon`/`serve` rodando para o navegador baixar o CRX; a extensão
+  entra como "gerenciada" (remova com `ext uninstall`).
+
+Com o `minidm daemon`/`serve` rodando (ou **API do navegador** marcado na
+GUI), a extensão captura vídeos da navegação e o painel (ícone) mostra as
+qualidades. Botão direito → **Enviar para o minidm**.
 
 ## API local (127.0.0.1:9742)
 
@@ -373,7 +512,12 @@ GET  /config                  -> configuração efetiva
 GET  /profiles                -> perfis + templates de comando (popup)
 POST /add      {url, filename?, dir?, kind?, referer?, page_title?,
                 quality?|quality_url?, profile?, ytdlp?, mirrors?, sha256?,
-                proxy?, cookie?, user_agent?, start?}
+                proxy?, cookie?, user_agent?, start?,
+                playlist?, limit?,                # yt-dlp: expande playlist
+                section?,                         # yt-dlp: trecho INI-FIM
+                sponsorblock?,                    # yt-dlp: all/sponsor,…
+                cookies_from_browser?}            # yt-dlp: chrome, edge,…
+                # playlist=true -> {ok, count, ids:[…]} (uma resposta só)
 POST /start    {id|ids|all}
 POST /pause    {id}
 POST /remove   {id, delete?}
@@ -383,6 +527,8 @@ POST /media/analyze {url, referer?, page_title?, cookie?, user_agent?,
                        resolution,height,estimated_size,audio_only}],
                        duration, encrypted, drm, filename}
                    -> {ok:false, error, drm?}   # DRM recusado com aviso
+GET  /update.xml              -> manifest da extensão (política forcelist)
+GET  /minidm.crx              -> pacote CRX3 assinado da extensão
 ```
 
 `/add` com `kind:"auto"` faz o servidor **analisar e escolher** (como o
@@ -419,22 +565,25 @@ minidm-gui.bat         duplo clique -> interface gráfica
 minidm-gui-debug.bat   idem, com terminal (depuração)
 docs/analise-idm.md    análise reversa do IDM que embasa este projeto
 minidm/
-  gui.py         interface gráfica (tkinter, roda o scheduler em processo)
+  gui.py         interface gráfica (tkinter, sidebar de categorias, visualizador, roda o scheduler em processo)
+  player.py      visualizador de mídia embutido (ffmpeg -> rawvideo em tk.Canvas)
   cli.py         argparse + comandos (gui, add, media, profiles, daemon, …)
   config.py      AppConfig (arquivo + flags)
-  meta.py        Task/Segment + persistência (kind/referer/stream/profile)
+  meta.py        Task/Segment + persistência (kind/referer/stream/profile/category/section)
   store.py       fila JSON multi-processo (trava de arquivo, merge, tombstones)
   categories.py  categorias estilo IDM (pasta + perfil por tipo de arquivo)
   remote.py      sondagem do servidor
   downloader.py  engine de arquivo: segmentos, retry, mirrors, throttle
+  ftpdl.py       downloads FTP/SFTP (mesma engine segmentada; ftplib + paramiko)
   stream.py      engine de stream: HLS/DASH, AES-128, ao vivo (re-fetch até ENDLIST), retomada, recusa DRM, mux (MuxDownloader)
   media.py       parsing/análise de mídia (m3u8, MPD, DRM, nome, áudio)
   profiles.py    perfis + CommandTemplate (conceito YTDLnis)
   nametpl.py     motor de template de nome {title} [{id}].{ext}
   archive.py     download-archive (não rebaixar URLs concluídas)
-  ytdlp.py       integração opcional com a CLI do yt-dlp (GPL-3.0, externa)
+  ytdlp.py       integração opcional com a CLI do yt-dlp (GPL-3.0, externa: describe, playlist, versão)
   ytdlpdl.py     downloader que delega ao yt-dlp (mesma interface)
-  deps.py        descoberta de yt-dlp/ffmpeg/runtime JS (PATH/winget/scoop/choco) + `deps`
+  cookies.py     cookies do navegador do usuário (export via yt-dlp -> jar -> header p/ engine própria)
+  deps.py        descoberta de yt-dlp/ffmpeg/paramiko/runtime JS (PATH/winget/scoop/choco) + `deps`
   scheduler.py   pool global: N tarefas, semáforo, bucket, archive
   throttle.py    token bucket
   verify.py      SHA-256, checksums remotos, Authenticode
@@ -443,9 +592,10 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           212 testes (engine, stream, mídia, DRM, yt-dlp, perfis, categorias, deps, fila multi-processo, mux, HLS ao vivo, API)
+tests/           311 testes (engine, stream, mídia, DRM, yt-dlp, integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo, mux, HLS ao vivo, FTP/SFTP, API, GUI/player, extensão do navegador)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
+e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)
 ```
 
 ## Testes
@@ -454,6 +604,7 @@ e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 python -m unittest discover -s tests -v
 python e2e_mux_real.py        # E2E real: mídia gerada + ffmpeg mesclando
 python e2e_live_real.py       # E2E real: playlist AO VIVO + mux ao vivo
+python e2e_ftp_real.py        # E2E real: FTP/SFTP + retry 550 pelo scheduler
 ```
 
 Cobrem: engine de arquivo (segmentação/retomada/retry/mirrors/throttle),
@@ -465,25 +616,50 @@ m3u8+MPD, detecção de DRM (HLS SESSION-KEY/KEY e DASH ContentProtection),
 nome de arquivo (Content-Disposition/título/genérico), faixas de áudio,
 integração yt-dlp (stub), **perfis + templates de nome + archive**,
 **YtdlpDownloader** (stub), **descoberta de deps + filtro ffmpeg +
-link direto × página**, e a API (`/media/analyze`, `/add` kind=auto e
+link direto × página**, **FTP/SFTP** (servidor FTP mínimo em Python puro
+que registra os offsets de `REST` + servidor SFTP em processo com paramiko:
+segmentação, retomada, retry de 550, credenciais URL > config > anônimo,
+`known_hosts` estrita × auto-add, paramiko ausente) e a API
+(`/media/analyze`, `/add` kind=auto e
 `/profiles`) de ponta a ponta.
 
 ## Limitações conhecidas
 
-- Sem suporte a `sftp`/`ftp`, sem segmentação por `multipart/form-data`.
+- Sem segmentação por `multipart/form-data` (upload).
 - Fila em JSON único com **trava entre processos**: escrita atômica sob
   lock exclusivo (`tasks.json.lock`), merge de criações e tombstones de
   remoção — GUI + CLI podem abrir a mesma fila ao mesmo tempo. Mutação do
   mesmo campo segue "último escritor vence" (com o daemon rodando, prefira
   a API: `/pause`, `/remove`).
-- A extensão do navegador é um exemplo mínimo — não há auto-instalação.
+- A extensão do navegador usa instalação **híbrida** (limitação superada, ver
+  `minidm ext`): `minidm ext guided` copia a pasta e orienta o "Carregar
+  expandida" (caminho garantido), e `minidm ext install` tenta automação via
+  política `ExtensionInstallForcelist` (HKCU, sem admin) + CRX3 auto-hospedado
+  na API. O Chrome barra CRX local e ignora `chrome://` na CLI, por isso o
+  modo guiado continua sendo o garantido.
 - `verify` usa `Get-AuthenticodeSignature` (só Windows).
 - **DRM (Widevine/FairPlay/PlayReady) não é suportado de propósito** —
   apenas detectado e recusado (contornar viola DMCA §1201 / Lei 9.610).
 - DASH `SegmentTemplate` assume período único e timeline contínua.
+- A **sidebar de categorias agrupa pela extensão** do arquivo
+  (`categories.effective_category`): tarefas antigas (criadas antes do campo
+  `category`) e as vindas da CLI/API/extensão sem categoria explícita são
+  deduzidas sob demanda, sem reescrever a fila. Extensão desconhecida cai
+  fora de qualquer categoria (visível só em "Todas").
 
 Limitações **superadas** nesta versão (antes eram limitações):
 
+- ~~"sem suporte a `ftp`/`sftp`"~~ → a engine própria agora baixa dos
+  dois protocolos (`minidm/ftpdl.py`), reaproveitando **tudo** o que a
+  engine de HTTP já faz: segmentação, `.part` pré-alocado, checkpoint,
+  retomada (validada por tamanho + mtime), retry, mirrors, throttle e
+  verify. Só a camada de transporte muda: FTP usa `REST` + `RETR`
+  (`ftplib`, sem dependência), SFTP usa `open` + `seek` (`paramiko`,
+  instalado com `pip install paramiko` — `minidm deps` mostra se falta).
+  Credenciais: `user:pass@` no URL > config (`ftp_user`…/`sftp_user`…) >
+  anônimo (FTP) ou agent/chaves locais (SFTP); a host key do SSH é aceita
+  e salva no `known_hosts` na primeira conexão (use
+  `sftp_accept_host_key = false` para política estrita).
 - ~~Fila JSON sem trava entre processos~~ → trava de arquivo + merge +
   tombstones (acima, mantida na lista só pelo detalhe do "último
   escritor vence").

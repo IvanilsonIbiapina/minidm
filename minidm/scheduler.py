@@ -19,6 +19,7 @@ import time
 from typing import Callable, Optional
 
 from minidm.archive import Archive
+from minidm.categories import effective_category
 from minidm.config import AppConfig
 from minidm.downloader import DownloadError
 from minidm.meta import Task, TaskState
@@ -138,6 +139,13 @@ class Scheduler:
                 "filename": t.filename,
                 "kind": t.kind,
                 "profile": t.profile,
+                "category": t.category,
+                # categoria p/ agrupar na sidebar: a explícita ou a deduzida
+                # pela extensão (tarefas antigas têm category="")
+                "effective_category": effective_category(t),
+                "quality_label": t.quality_label,
+                "page_title": t.page_title,
+                "origin_url": t.origin_url,
                 "state": t.state,
                 "progress": t.progress,
                 "received": t.received,

@@ -35,6 +35,13 @@ _FFMPEG_FLAGS = {
     "--embed-thumbnail", "--embed-metadata", "--embed-chapters",
     "--embed-subs", "--sub-format", "--recode-video", "--remux-video",
     "--merge-output-format", "--postprocessor-args", "--exec",
+    "--sponsorblock-remove", "--download-sections", "--force-keyframes-at-cuts",
+}
+# flags com valor no argumento seguinte (para o filtro pular o valor)
+_FFMPEG_VALUE_FLAGS = {
+    "--audio-format", "--audio-quality", "--sub-format", "--recode-video",
+    "--remux-video", "--merge-output-format", "--postprocessor-args", "--exec",
+    "--sponsorblock-remove", "--download-sections",
 }
 # formatos que o yt-dlp só entrega convertendo com ffmpeg
 _CONVERSION_EXTS = {"mp3", "m4a", "opus", "flac", "wav", "aac", "ogg"}
@@ -57,10 +64,7 @@ def _filter_ffmpeg_args(args: list[str], ffmpeg: Optional[str]) -> list[str]:
             continue
         if a in _FFMPEG_FLAGS:
             # flags com valor no próximo argumento
-            skip = a in ("--audio-format", "--audio-quality", "--sub-format",
-                         "--recode-video", "--remux-video",
-                         "--merge-output-format", "--postprocessor-args",
-                         "--exec")
+            skip = a in _FFMPEG_VALUE_FLAGS
             continue
         out.append(a)
     return out
@@ -124,6 +128,7 @@ class YtdlpDownloader:
         self._ytdlp_named = False   # yt-dlp escolheu o nome (título real)
         self._drop_cookie = False   # retry sem cookie (cookie zerou formatos)
         self._rc = 0                # código de saída da última execução
+        self._final_path: Optional[str] = None   # caminho real do arquivo (B)
 
     # ------------------------------------------------------------- interface
     def run(self) -> Task:
@@ -167,6 +172,10 @@ class YtdlpDownloader:
             for line in self._proc.stdout:
                 if self._stop.is_set():
                     break
+                # (B) caminho real do arquivo final (linha --print after_move)
+                if line.startswith("MINIDM_PATH:"):
+                    self._final_path = line[len("MINIDM_PATH:"):].strip()
+                    continue
                 self._parse_line(line)
                 tail.append(line.rstrip())
                 if len(tail) > 30:
@@ -184,7 +193,10 @@ class YtdlpDownloader:
         """Este erro some se rodarmos sem o cookie do navegador?"""
         if self._drop_cookie:
             return False
-        if not (self.task.cookie or self.config.cookie):
+        has_cookie = bool(self.task.cookie or self.config.cookie)
+        has_browser = bool(getattr(self.task, "cookies_from_browser", "")
+                           or getattr(self.config, "cookies_from_browser", ""))
+        if not (has_cookie or has_browser):
             return False
         text = "\n".join(tail).lower()
         return ("requested format is not available" in text
@@ -212,6 +224,10 @@ class YtdlpDownloader:
         t = self.task
         args = list(cmd)
         args += ["--newline", "--no-playlist", "--no-mtime"]
+        # (B) caminho exato do arquivo final: o yt-dlp imprime a linha
+        # "MINIDM_PATH:<caminho>" depois de gravar/mover — elimina a
+        # adivinhação do `_finalize` (frágil com várias tarefas na pasta).
+        args += ["--print", "after_move:MINIDM_PATH:%(filepath)s"]
         # ffmpeg: se existe, aponta o yt-dlp para ele (conversão/embed/mux);
         # se não, remove os argumentos que exigiriam pós-processamento —
         # o download continua no melhor formato nativo em vez de falhar.
@@ -231,6 +247,16 @@ class YtdlpDownloader:
 
             if supports_remote_components():
                 args += ["--remote-components", "ejs:github"]
+        # (E) fragmentos concorrentes em HLS/DASH delegados (0 = não passa;
+        # a engine própria já usa `concurrent_fragments` do config).
+        cf = getattr(self.config, "concurrent_fragments", 0)
+        if cf and cf > 0:
+            args += ["--concurrent-fragments", str(cf)]
+        # (F) SponsorBlock: remove trechos de patrocínio no pós-processamento.
+        sb = (getattr(t, "sponsorblock", "") or
+              getattr(self.config, "sponsorblock", ""))
+        if sb and ff:       # requer ffmpeg p/ cortar
+            args += ["--sponsorblock-remove", sb]
         # saída: se o nome ainda é o id bruto do URL (sem título real),
         # deixa o yt-dlp nomear com o título de verdade. Se o usuário/perfil
         # definiu um nome, respeita (usa o stem como prefixo).
@@ -248,8 +274,20 @@ class YtdlpDownloader:
         if not self._drop_cookie and (t.cookie or self.config.cookie):
             args += ["--add-header",
                      f"Cookie:{t.cookie or self.config.cookie}"]
+        else:
+            cfb = (getattr(t, "cookies_from_browser", "") or
+                   getattr(self.config, "cookies_from_browser", ""))
+            if not self._drop_cookie and cfb:
+                # (A) sessão do navegador do usuário (flag nativa do yt-dlp)
+                args += ["--cookies-from-browser", cfb]
         if t.proxy or self.config.proxy:
             args += ["--proxy", t.proxy or self.config.proxy]
+        # (D) trecho do vídeo: delega ao yt-dlp --download-sections
+        sec = (getattr(t, "section", "") or "").strip()
+        if sec:
+            if not sec.startswith("*"):
+                sec = "*" + sec      # "*" = cortar em qualquer keyframe
+            args += ["--download-sections", sec, "--force-keyframes-at-cuts"]
         args += self.extra_args
         args += _filter_ffmpeg_args(getattr(t, "ytdlp_args", []) or [], ff)
         args.append(t.url)
@@ -295,7 +333,17 @@ class YtdlpDownloader:
     # ------------------------------------------------------------ finalizar
     def _finalize(self) -> None:
         t = self.task
-        # acha o arquivo real que o yt-dlp gravou (extensão escolhida por ele)
+        # (B) o yt-dlp informou o caminho exato do arquivo? Usa direto —
+        # elimina a adivinhação por mtime (frágil com várias tarefas na pasta).
+        if self._final_path and os.path.exists(self._final_path):
+            t.filename = os.path.basename(self._final_path)
+            try:
+                t.total_size = os.path.getsize(self._final_path)
+            except OSError:
+                pass
+            self._hash_and_done()
+            return
+        # fallback (sem --print, versão antiga): acha o arquivo gravado
         base = os.path.splitext(t.filename)[0]
         found = None
         try:
@@ -337,6 +385,11 @@ class YtdlpDownloader:
             t.filename = found
             t.total_size = os.path.getsize(
                 os.path.join(t.dest_dir or ".", found))
+        self._hash_and_done()
+
+    def _hash_and_done(self) -> None:
+        """Confere sha-256 e marca a tarefa como concluída."""
+        t = self.task
         # sha-256 do arquivo (mesmo contrato dos outros downloaders)
         try:
             from minidm.verify import sha256_file

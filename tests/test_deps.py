@@ -175,14 +175,27 @@ class TestDeps(unittest.TestCase):
 
     def test_status_tem_chaves_esperadas(self):
         st = status()
-        for chave in ("ytdlp", "ffmpeg", "features"):
+        for chave in ("ytdlp", "ffmpeg", "paramiko", "features"):
             self.assertIn(chave, st)
-        for info in (st["ytdlp"], st["ffmpeg"]):
+        for info in (st["ytdlp"], st["ffmpeg"], st["paramiko"]):
             self.assertIn("available", info)
             self.assertIn("install", info)
         # features sempre tem a engine própria (nunca depende de externo)
         self.assertTrue(st["features"]["HLS/DASH e arquivos diretos "
                                        "(engine própria)"])
+        # FTP é nativo (ftplib); SFTP depende do paramiko
+        self.assertTrue(st["features"]["FTP (engine própria, sem "
+                                       "dependência)"])
+        self.assertEqual(st["features"]["SFTP (servidores SSH)"],
+                         st["paramiko"]["available"])
+
+    def test_paramiko_available_reflete_a_instalacao(self):
+        from minidm.deps import paramiko_available
+
+        self.assertIsInstance(paramiko_available(), bool)
+        # com o módulo presente, status deve bater
+        self.assertEqual(status()["paramiko"]["available"],
+                         paramiko_available())
 
     def test_ffmpeg_env_aponta_pra_diretorio(self):
         tmp = tempfile.mkdtemp(prefix="minidm-ff-")

@@ -94,6 +94,8 @@ def auto_delegate(task) -> bool:
         return True                       # pedido explícito já veio
     if getattr(task, "kind", "file") in ("hls", "dash"):
         return False                      # stream: engine própria
+    if urlparse(task.url).scheme.lower() in ("ftp", "sftp"):
+        return False                      # remoto: engine própria (ftpdl)
     if looks_direct_media(task.url):
         return False                      # arquivo direto: engine própria
     # é uma página; delega se o yt-dlp existir

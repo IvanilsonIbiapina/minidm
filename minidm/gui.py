@@ -58,12 +58,15 @@ class MinidmApp(tk.Tk):
         self._api_server = None
         self._clipboard_stop = threading.Event()
         self._clipboard_on = False
+        self._filter_category = ""      # "" = Todas (sidebar)
+        self._rows_by_id: dict[str, dict] = {}   # cache p/ seleção pós-refresh
 
         self.sched = Scheduler(self.store, self.config_app,
                                on_event=self._on_event)
         self.sched.start()
 
         self._build_styles()
+        self._build_sidebar()
         self._build_toolbar()
         self._build_table()
         self._build_statusbar()
@@ -102,6 +105,14 @@ class MinidmApp(tk.Tk):
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                    padx=10)
 
+        ttk.Button(bar, text="▶ Visualizar", command=self._dlg_preview
+                   ).pack(side="left", padx=(0, 4))
+        ttk.Button(bar, text="Propriedades", command=self._dlg_details
+                   ).pack(side="left", padx=4)
+
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
+                                                   padx=10)
+
         self.var_clip = tk.BooleanVar(value=self._clipboard_on)
         ttk.Checkbutton(bar, text="Área de transferência",
                         variable=self.var_clip,
@@ -121,20 +132,22 @@ class MinidmApp(tk.Tk):
         frame = ttk.Frame(self)
         frame.pack(fill="both", expand=True, padx=8)
 
-        cols = ("id", "arquivo", "estado", "barra", "pct", "recebido",
-                "vel", "eta", "segs")
+        cols = ("id", "arquivo", "estado", "badge", "barra", "pct", "recebido",
+                "vel", "eta", "segs", "perfil")
         self.tree = ttk.Treeview(frame, columns=cols, show="headings",
                                  selectmode="extended")
         heads = {
             "id": ("ID", 80, "center"),
-            "arquivo": ("Arquivo", 320, "w"),
-            "estado": ("Estado", 100, "center"),
-            "barra": ("Progresso", 230, "w"),
-            "pct": ("%", 56, "e"),
-            "recebido": ("Recebido", 96, "e"),
-            "vel": ("Velocidade", 100, "e"),
-            "eta": ("ETA", 76, "e"),
-            "segs": ("Segs", 60, "center"),
+            "arquivo": ("Arquivo", 300, "w"),
+            "estado": ("Estado", 96, "center"),
+            "badge": ("Tipo", 84, "center"),
+            "barra": ("Progresso", 200, "w"),
+            "pct": ("%", 52, "e"),
+            "recebido": ("Recebido", 92, "e"),
+            "vel": ("Velocidade", 96, "e"),
+            "eta": ("ETA", 72, "e"),
+            "segs": ("Segs", 56, "center"),
+            "perfil": ("Perfil", 84, "center"),
         }
         for c, (txt, w, anchor) in heads.items():
             self.tree.heading(c, text=txt)
@@ -176,6 +189,70 @@ class MinidmApp(tk.Tk):
         self.config(menu=menubar)
         self.bind("<Control-n>", lambda e: self._dlg_add())
 
+    def _build_sidebar(self):
+        """Barra lateral de categorias estilo IDM (Todas + categorias + contagem)."""
+        from minidm.categories import default_categories
+
+        side = ttk.Frame(self, padding=(8, 8, 0, 8))
+        side.pack(side="left", fill="y")
+        self._side = side
+
+        ttk.Label(side, text="Categorias",
+                  font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+
+        self._cat_items: dict[str, str] = {}   # nome -> iid no Listbox
+        self._cat_counts: dict[str, int] = {}
+
+        # lista de categorias: primeiro "Todas", depois as do IDM
+        names = ["Todas"] + [c.name for c in default_categories()]
+        self._cat_list = tk.Listbox(side, exportselection=False, height=len(names),
+                                    activestyle="dotbox", font=("Segoe UI", 10),
+                                    relief="flat", bd=0, highlightthickness=0)
+        self._cat_list.pack(fill="x")
+        for n in names:
+            self._cat_list.insert("end", f"{n}")
+        self._cat_list.selection_set(0)
+        self._cat_list.bind("<<ListboxSelect>>", self._on_category)
+
+        # rótulo de contagem p/ a categoria selecionada
+        self._var_cat_info = tk.StringVar(value="")
+        ttk.Label(side, textvariable=self._var_cat_info, foreground="#777",
+                  font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+
+    def _on_category(self, _event=None):
+        sel = self._cat_list.curselection()
+        idx = sel[0] if sel else 0
+        from minidm.categories import default_categories
+
+        names = ["Todas"] + [c.name for c in default_categories()]
+        name = names[idx]
+        self._filter_category = "" if name == "Todas" else name
+        self._refresh()
+
+    def _update_sidebar(self, rows: list[dict]):
+        """Reconta por categoria e destaca a selecionada."""
+        from minidm.categories import default_categories
+
+        counts: dict[str, int] = {}
+        for r in rows:
+            key = r.get("effective_category") or ""
+            counts[key] = counts.get(key, 0) + 1
+        self._cat_counts = counts
+        names = ["Todas"] + [c.name for c in default_categories()]
+        self._cat_list.delete(0, "end")
+        for n in names:
+            key = "" if n == "Todas" else n
+            c = counts.get(key, 0) if n != "Todas" else len(rows)
+            self._cat_list.insert("end", f"{n}  ({c})")
+        # re-seleciona a atual
+        cur = "Todas" if not self._filter_category else self._filter_category
+        idx = names.index(cur) if cur in names else 0
+        self._cat_list.selection_clear(0, "end")
+        self._cat_list.selection_set(idx)
+        sel = self._filter_category
+        c = counts.get(sel, 0) if sel else len(rows)
+        self._var_cat_info.set(f"{c} tarefa(s) nesta categoria")
+
     # ------------------------------------------------------- loop principal
     def _tick(self):
         """Drena eventos vindos dos workers (thread-safe)."""
@@ -197,6 +274,15 @@ class MinidmApp(tk.Tk):
 
     def _refresh(self):
         rows = self.sched.snapshot()
+        self._update_sidebar(rows)
+
+        # filtro da sidebar (categoria estilo IDM) — usa a categoria efetiva
+        # (explícita ou deduzida pela extensão), p/ agrupar tarefas antigas
+        if self._filter_category:
+            rows = [r for r in rows
+                    if (r.get("effective_category") or "") == self._filter_category]
+
+        self._rows_by_id = {r["id"]: r for r in rows}
         selected = set(self.tree.selection())
         existing = set(self.tree.get_children())
         seen = set()
@@ -220,10 +306,13 @@ class MinidmApp(tk.Tk):
                 bar = "#" * filled + "-" * (18 - filled)
                 pct = f"{r['progress']*100:.1f}"
             state = STATE_PT.get(r["state"], r["state"])
+            # badge de tipo/qualidade (estilo IDM): HLS/DASH/áudio + qualidade
+            badge = self._kind_badge(r)
             vals = (
                 r["id"],
                 r["filename"],
                 state,
+                badge,
                 bar,
                 pct,
                 f"{human(r['received'])} / {human(r['total'])}",
@@ -231,6 +320,7 @@ class MinidmApp(tk.Tk):
                 eta(r["received"], r["total"], r.get("speed") or 0.0),
                 f"{r['segments_done']}/{r['segments_total']}"
                 if r["segments_total"] else "",
+                r.get("profile") or "",
             )
             tags = ()
             if r["state"] == TaskState.DONE:
@@ -249,8 +339,13 @@ class MinidmApp(tk.Tk):
 
         cfg = self.config_app
         lim = f" · limite {human(cfg.throttle_bps)}/s" if cfg.throttle_bps else ""
+        total_all = sum((r.get("total") or 0) for r in rows)
+        recv_all = sum((r.get("received") or 0) for r in rows)
+        done_all = sum(1 for r in rows if r["state"] == TaskState.DONE)
         self.var_speed.set(
-            f"{active} ativo(s) · {cfg.max_concurrent} simultâneos"
+            f"{active} ativo(s) · {done_all}/{len(rows)} concluídos"
+            f" · {human(recv_all)}/{human(total_all)}"
+            f" · {cfg.max_concurrent} simultâneos"
             f" · {cfg.max_connections} conexões{lim}"
             f" · total {human(int(total_speed))}/s")
 
@@ -258,6 +353,9 @@ class MinidmApp(tk.Tk):
 
     def _status(self, msg: str):
         self.var_status.set(msg)
+
+    def _kind_badge(self, r: dict) -> str:
+        return kind_badge(r)
 
     # ------------------------------------------------------------- ações
     def _selected_ids(self) -> list[str]:
@@ -316,6 +414,7 @@ class MinidmApp(tk.Tk):
             url=spec["url"],
             dest_dir=spec["dir"],
             filename=spec["filename"],
+            category=spec.get("category", ""),
             mirrors=spec["mirrors"],
             expected_sha256=spec["sha256"] or None,
             proxy=spec["proxy"],
@@ -348,7 +447,41 @@ class MinidmApp(tk.Tk):
             return
         t = self.store.get(ids[0])
         if t:
-            DetailsDialog(self, t)
+            DetailsDialog(self, t, row=self._rows_by_id.get(ids[0]))
+
+    def _dlg_preview(self, _event=None):
+        """Abre o visualizador com a URL da tarefa selecionada (ou pede uma)."""
+        ids = self._selected_ids()
+        url = ""
+        if ids:
+            t = self.store.get(ids[0])
+            if t:
+                url = t.url
+
+        def _add(u, q, res):
+            self._enqueue_media(u, q, res)
+
+        dlg = MediaPreviewDialog(self, url, self.config_app, on_add=_add)
+        self.wait_window(dlg)
+
+    def _enqueue_media(self, url: str, q: dict, res: dict):
+        """Cria uma tarefa a partir de uma escolha do visualizador."""
+        task = Task(
+            url=q.get("url") or url,
+            dest_dir=self._last_dir,
+            filename=res.get("filename") or filename_from(q.get("url") or url),
+            kind="hls" if "hls" in (q.get("kind", ""), res.get("kind", "")) else
+                 ("dash" if "dash" in (q.get("kind", ""),
+                                       res.get("kind", "")) else "file"),
+            referer=url,
+            page_title=res.get("page_title", ""),
+            quality_label=q.get("label", ""),
+            user_agent=self.config_app.user_agent,
+        )
+        auto_delegate(task)
+        self.store.add(task)
+        self.sched.submit([task.id])
+        self._status(f"[{task.id}] {task.filename} — {q.get('label', '')} na fila.")
 
     def _dlg_about(self):
         messagebox.showinfo(
@@ -421,6 +554,13 @@ class MinidmApp(tk.Tk):
 
 
 # --------------------------------------------------------------- AddDialog
+class _CfgForDialog:
+    """Mini-adaptador: `category_folder` espera um objeto com `download_base`."""
+
+    def __init__(self, download_base: str):
+        self.download_base = download_base
+
+
 class AddDialog(tk.Toplevel):
     def __init__(self, parent, last_dir: str):
         super().__init__(parent)
@@ -429,12 +569,22 @@ class AddDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.result = None
+        self._last_dir = last_dir
+        self._base = resolve_base(AppConfig.load())   # pasta base das categorias
 
         body = ttk.Frame(self, padding=14)
         body.pack(fill="both", expand=True)
 
         self.var_url = tk.StringVar()
-        self.var_dir = tk.StringVar(value=last_dir)
+        from minidm.categories import default_categories, category_folder, \
+            ensure_folder, resolve_base
+
+        self._cfg_base = resolve_base(AppConfig.load())
+        self._cats = default_categories()
+        self.var_cat = tk.StringVar(value=self._cats[0].name)   # Vídeos
+        default_dir = ensure_folder(
+            category_folder(self._cats[0], _CfgForDialog(self._cfg_base)))
+        self.var_dir = tk.StringVar(value=default_dir)
         self.var_name = tk.StringVar()
         self.var_mirrors = tk.StringVar()
         self.var_sha = tk.StringVar()
@@ -450,18 +600,30 @@ class AddDialog(tk.Toplevel):
         row("URL:", e, 0)
         e.focus_set()
 
+        # categoria estilo IDM: define a pasta automaticamente
+        catframe = ttk.Frame(body)
+        self.var_cat_cb = ttk.Combobox(
+            catframe, state="readonly", width=22,
+            values=[c.name for c in self._cats],
+            textvariable=self.var_cat)
+        self.var_cat_cb.pack(side="left")
+        self.var_cat_cb.bind("<<ComboboxSelected>>", self._on_category)
+        ttk.Label(catframe, text="(define a pasta de destino)"
+                  ).pack(side="left", padx=(8, 0))
+        row("Categoria:", catframe, 1)
+
         dirframe = ttk.Frame(body)
         ttk.Entry(dirframe, textvariable=self.var_dir).pack(
             side="left", fill="x", expand=True)
         ttk.Button(dirframe, text="…", width=3,
                    command=self._pick_dir).pack(side="left", padx=(6, 0))
-        row("Pasta de destino:", dirframe, 1)
+        row("Pasta de destino:", dirframe, 2)
         row("Nome do arquivo:", ttk.Entry(body, textvariable=self.var_name,
-                                          width=64), 2)
+                                          width=64), 3)
         row("Mirrors (um por linha):",
-            ttk.Entry(body, textvariable=self.var_mirrors, width=64), 3)
+            ttk.Entry(body, textvariable=self.var_mirrors, width=64), 4)
         row("SHA-256 esperado (opcional):",
-            ttk.Entry(body, textvariable=self.var_sha, width=64), 4)
+            ttk.Entry(body, textvariable=self.var_sha, width=64), 5)
 
         segframe = ttk.Frame(body)
         ttk.Label(segframe, text="Segmentos:").pack(side="left")
@@ -472,10 +634,10 @@ class AddDialog(tk.Toplevel):
         ttk.Checkbutton(segframe, text="Começar agora",
                         variable=self.var_start).pack(side="left",
                                                       padx=(20, 0))
-        row("", segframe, 5)
+        row("", segframe, 6)
 
         btns = ttk.Frame(body)
-        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        btns.grid(row=7, column=0, columnspan=2, sticky="e", pady=(8, 0))
         ttk.Button(btns, text="Cancelar",
                    command=self.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(btns, text="Adicionar",
@@ -489,6 +651,16 @@ class AddDialog(tk.Toplevel):
         d = filedialog.askdirectory(parent=self, initialdir=self.var_dir.get())
         if d:
             self.var_dir.set(d)
+
+    def _on_category(self, _event=None):
+        """Trocar a categoria move a pasta de destino (estilo IDM)."""
+        from minidm.categories import category_folder, ensure_folder, \
+            get_category
+
+        cat = get_category(self.var_cat.get())
+        if cat:
+            self.var_dir.set(ensure_folder(
+                category_folder(cat, _CfgForDialog(self._cfg_base))))
 
     def _ok(self):
         url = self.var_url.get().strip()
@@ -512,6 +684,7 @@ class AddDialog(tk.Toplevel):
             "url": url,
             "dir": d,
             "filename": name,
+            "category": self.var_cat.get().strip(),
             "mirrors": mirrors,
             "sha256": sha,
             "segments": self.var_segments.get(),
@@ -619,10 +792,18 @@ class SettingsDialog(tk.Toplevel):
 
 # ------------------------------------------------------------- DetailsDialog
 class DetailsDialog(tk.Toplevel):
-    def __init__(self, parent, task: Task):
+    """Propriedades ricas de uma tarefa (estilo IDM).
+
+    Aceita um dict do `snapshot()` (rico) e/ou a `Task` (para os segmentos).
+    Campos ausentes são simplesmente omitidos.
+    """
+
+    def __init__(self, parent, task: Task, row: dict | None = None):
         super().__init__(parent)
-        self.title(f"Detalhes — {task.filename}")
-        self.geometry("620x460")
+        row = row or {}
+        title = row.get("page_title") or task.page_title or task.filename
+        self.title(f"Propriedades — {title}")
+        self.geometry("660x520")
         self.transient(parent)
 
         body = ttk.Frame(self, padding=14)
@@ -630,9 +811,19 @@ class DetailsDialog(tk.Toplevel):
 
         info = ttk.LabelFrame(body, text="Tarefa", padding=10)
         info.pack(fill="x")
+
+        kind = row.get("kind", task.kind)
+        kind_pt = {"hls": "vídeo (HLS)", "dash": "vídeo (DASH)",
+                   "file": "arquivo"}.get(kind, kind)
         lines = [
             ("ID", task.id),
+            ("Página", row.get("page_title") or task.page_title or "—"),
+            ("Categoria", row.get("category", task.category) or "—"),
+            ("Qualidade", row.get("quality_label") or task.quality_label or "—"),
+            ("Perfil", row.get("profile") or task.profile or "—"),
+            ("Tipo", kind_pt),
             ("URL", task.url),
+            ("Origem", row.get("origin_url") or task.origin_url or "—"),
             ("Mirrors", "\n".join(task.mirrors) or "—"),
             ("Destino", task.final_path),
             ("Estado", STATE_PT.get(task.state, task.state)),
@@ -650,11 +841,17 @@ class DetailsDialog(tk.Toplevel):
                               if task.signature_signer else "")),
             ("Erro", task.error or "—"),
         ]
-        for i, (k, v) in enumerate(lines):
+        r = 0
+        for k, v in lines:
+            if v in (None, "", "—") and k in ("Página", "Categoria",
+                                              "Qualidade", "Perfil", "Origem"):
+                continue      # não polui com campos vazios
             ttk.Label(info, text=f"{k}:", foreground="#555").grid(
-                row=i, column=0, sticky="nw", pady=(0, 4))
-            lbl = ttk.Label(info, text=str(v), wraplength=460)
-            lbl.grid(row=i, column=1, sticky="w", pady=(0, 4), padx=(10, 0))
+                row=r, column=0, sticky="nw", pady=(0, 4))
+            lbl = ttk.Label(info, text=str(v), wraplength=500)
+            lbl.grid(row=r, column=1, sticky="w", pady=(0, 4), padx=(10, 0))
+            r += 1
+        info.columnconfigure(1, weight=1)
 
         if task.segments:
             segf = ttk.LabelFrame(body, text="Segmentos", padding=10)
@@ -672,6 +869,210 @@ class DetailsDialog(tk.Toplevel):
 
         ttk.Button(body, text="Fechar", command=self.destroy).pack(
             anchor="e", pady=(10, 0))
+
+
+def kind_badge(r: dict) -> str:
+    """Rótulo curto de tipo/qualidade (estilo IDM): 1080p, HLS, DASH, mp3…"""
+    q = (r.get("quality_label") or "").strip()
+    kind = (r.get("kind") or "file").lower()
+    prefix = {"hls": "HLS", "dash": "DASH"}.get(kind, "")
+    if q:
+        return f"{prefix} {q}".strip()
+    if kind in ("hls", "dash"):
+        return prefix
+    # arquivo direto: acha o tipo pela extensão
+    name = (r.get("filename") or "").lower()
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    return ext.upper() if ext else "arq"
+
+
+def _best_playable(res: dict) -> tuple[str, dict] | None:
+    """Escolhe a melhor qualidade reproduzível para o preview.
+
+    Prefere a de maior resolução/banda. Para HLS/DASH devolve o próprio
+    manifesto (o media source do navegador/ffmpeg resolve); para arquivo
+    direto, o URL. Ignora faixas de áudio puro se houver vídeo.
+    """
+    quals = res.get("qualities") or []
+    if not quals:
+        return None
+
+    def score(q):
+        r = q.get("resolution") or ""
+        if isinstance(r, str) and "x" in r:
+            try:
+                w, h = r.split("x", 1)
+                px = int(w) * int(h)
+            except ValueError:
+                px = 0
+        elif isinstance(r, (list, tuple)) and len(r) == 2:
+            px = r[0] * r[1]
+        else:
+            px = q.get("height") or 0
+        b = q.get("bandwidth") or 0
+        pen = -1 if q.get("audio_only") else 0
+        return (pen, px, b)
+
+    q = max(quals, key=score)
+    return q.get("url", ""), q
+
+
+class MediaPreviewDialog(tk.Toplevel):
+    """Visualizador de mídia embutido (estilo IDM "Play").
+
+    Mostra um player, lista as qualidades e deixa escolher. Conteúdo com
+    DRM (Widevine/FairPlay/PlayReady) é apenas detectado e recusado — não
+    é possível baixar (DMCA §1201 / Lei 9.610).
+    """
+
+    def __init__(self, parent, url: str, config: AppConfig,
+                 on_add=None):
+        super().__init__(parent)
+        self.title("Visualizador de mídia")
+        self.geometry("720x560")
+        self.transient(parent)
+        self._url = url
+        self._cfg = config
+        self._on_add = on_add
+        self._res = None
+
+        body = ttk.Frame(self, padding=10)
+        body.pack(fill="both", expand=True)
+
+        # ---- barra de URL + analisar
+        top = ttk.Frame(body)
+        top.pack(fill="x")
+        self.var_url = tk.StringVar(value=url)
+        ttk.Entry(top, textvariable=self.var_url).pack(
+            side="left", fill="x", expand=True)
+        self.btn_analyze = ttk.Button(top, text="Analisar",
+                                      command=self._analyze)
+        self.btn_analyze.pack(side="left", padx=(6, 0))
+
+        # ---- área do player (container p/ o tkvideo/ffmpeg)
+        self.player_host = tk.Frame(body, bg="#000", height=300)
+        self.player_host.pack(fill="both", expand=False, pady=(10, 6))
+        self.player_host.pack_propagate(False)
+        self._player = None
+
+        # ---- informativo (duração, tipo, criptografia)
+        self.var_info = tk.StringVar(value="Clique em Analisar p/ carregar.")
+        ttk.Label(body, textvariable=self.var_info, foreground="#555"
+                  ).pack(anchor="w")
+
+        # ---- lista de qualidades
+        qf = ttk.LabelFrame(body, text="Qualidades", padding=6)
+        qf.pack(fill="both", expand=True, pady=(8, 0))
+        self.q_list = tk.Listbox(qf, exportselection=False, height=6,
+                                 font=("Segoe UI", 10))
+        self.q_list.pack(side="left", fill="both", expand=True)
+        qs = ttk.Scrollbar(qf, orient="vertical", command=self.q_list.yview)
+        self.q_list.configure(yscrollcommand=qs.set)
+        qs.pack(side="right", fill="y")
+
+        # ---- botões
+        btns = ttk.Frame(body)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="Fechar", command=self.destroy).pack(
+            side="right", padx=(6, 0))
+        self.btn_add = ttk.Button(btns, text="Baixar…", state="disabled",
+                                  command=self._add)
+        self.btn_add.pack(side="right")
+
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    # ------------------------------------------------------------------ ações
+    def _analyze(self):
+        url = self.var_url.get().strip()
+        if not url:
+            return
+        self.btn_analyze.configure(state="disabled")
+        self.var_info.set("analisando…")
+        self.update_idletasks()
+
+        def _worker():
+            from minidm.media import analyze
+
+            try:
+                res = analyze(url, user_agent=self._cfg.user_agent,
+                              cookie=self._cfg.cookie, proxy=self._cfg.proxy,
+                              use_ytdlp=True)
+            except Exception as e:      # rede/parser: mostra o erro
+                res = {"ok": False, "error": str(e)}
+            self.after(0, lambda: self._finish_analyze(res))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _finish_analyze(self, res: dict):
+        self.btn_analyze.configure(state="normal")
+        self._res = res
+        if not res.get("ok"):
+            if res.get("drm"):
+                self.var_info.set(
+                    f"DRM ({res['drm']}): conteúdo protegido — "
+                    "não é possível baixar.")
+                self.btn_add.configure(state="disabled")
+            else:
+                self.var_info.set(f"falha: {res.get('error')}")
+            self._clear_quality()
+            return
+
+        dur = res.get("duration")
+        kind = res.get("kind", "file")
+        enc = "  ·  criptografado (AES-128)" if res.get("encrypted") else ""
+        live = "  ·  AO VIVO" if res.get("live") else ""
+        dur_s = f"{int(dur//60)}:{int(dur%60):02d}" if dur else "—"
+        self.var_info.set(f"tipo {kind}  ·  duração {dur_s}{enc}{live}")
+
+        # preenche a lista de qualidades
+        self._clear_quality()
+        for q in res.get("qualities") or []:
+            lbl = q.get("label") or "—"
+            bw = (f"  {q['bandwidth']/1e6:.1f} Mbps"
+                  if q.get("bandwidth") else "")
+            self.q_list.insert("end", f"{lbl}{bw}")
+        if res.get("qualities"):
+            self.q_list.selection_set(0)
+        self.btn_add.configure(state="normal")
+        self._start_preview(res)
+
+    def _clear_quality(self):
+        self.q_list.delete(0, "end")
+
+    def _start_preview(self, res: dict):
+        """Tenta reproduzir a melhor qualidade; se não der, só lista."""
+        best = _best_playable(res)
+        if not best:
+            return
+        play_url, q = best
+        try:
+            from minidm.player import play_in_frame
+
+            self._player = play_in_frame(self.player_host, play_url,
+                                         referer=self._url,
+                                         user_agent=self._cfg.user_agent,
+                                         proxy=self._cfg.proxy)
+        except Exception as e:      # player indisponível: segue sem preview
+            self._show_placeholder(f"preview indisponível ({e})")
+
+    def _show_placeholder(self, msg: str):
+        for w in self.player_host.winfo_children():
+            w.destroy()
+        ttk.Label(self.player_host, text=msg, foreground="#aaa",
+                  background="#000", wraplength=600).pack(
+            expand=True)
+
+    def _add(self):
+        if not (self._res and self._res.get("ok")):
+            return
+        idx = self.q_list.curselection()
+        idx = idx[0] if idx else 0
+        quals = self._res.get("qualities") or []
+        if not (0 <= idx < len(quals)):
+            return
+        if self._on_add:
+            self._on_add(self.var_url.get().strip(), quals[idx], self._res)
+        self.destroy()
 
 
 def main() -> int:
