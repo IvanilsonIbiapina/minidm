@@ -451,11 +451,62 @@ O que dá pra fazer na janela:
 | Abrir pasta do arquivo | selecionar e **Abrir pasta** |
 | Capturar links copiados | marcar **Área de transferência** |
 | Aceitar links do navegador | **API do navegador** já vem marcada (ligada por padrão; a extensão manda pra `127.0.0.1:9742`) |
+| **Menu de contexto** | **botão direito** na lista: iniciar, pausar, copiar URL, abrir pasta, subir/descer na fila, propriedades, remover, selecionar tudo |
+| **Arrastar e soltar** | solte URLs/atalhos `.url` na janela (via `tkinterdnd2`) — sem ele, **Ctrl+V** faz a mesma coisa (mesmo parsing) |
+| **Buscar na lista** | `Ctrl+F` → caixa na barra lateral filtra por arquivo, URL, título ou ID em tempo real (`Esc` limpa) |
+| **Fila por arrasto** | arraste as linhas para escolher qual baixa primeiro (ou ↑/↓ no menu) — reordena quem é o próximo (`queue_pos`); desligado enquanto uma coluna estiver ordenada |
+| **Tema claro/escuro** | botão **Tema** na barra (persiste em `theme`); ícones desenhados em tempo de execução (PIL) |
+| **Onboarding** | na 1ª execução, janela com as dicas rápidas (uma vez; `onboarding_done`) |
+| **Toasts + som** | cartão flutuante ao concluir/erro/novo download + "ding" (`notify_sound`) |
+| **Detalhes ao vivo** | as propriedades abertas atualizam sozinhas (estado, velocidade, ETA, segmentos) a cada 500 ms |
 | Ajustar tudo | **Configurações…** — concorrência, banda, retries, proxy, cookies, verificação |
 
 `minidm-gui-debug.bat` abre o mesmo com janela de terminal, para ver mensagens.
 
 Via terminal (se preferir): `python -m minidm gui`
+
+---
+
+## executáveis (Windows, Linux, macOS, Android)
+
+Sem Python instalado na máquina alvo? Gere binários com **PyInstaller**:
+
+```bat
+:: Windows
+build\windows.bat
+```
+
+```bash
+# Linux / macOS
+bash build/unix.sh
+```
+
+Saída em `dist/`:
+
+| Arquivo | O que é |
+|---|---|
+| `minidm-gui[.exe]` | interface gráfica (sem console, ícone próprio — duplo clique) |
+| `minidm[.exe]` | CLI completa (terminal) |
+
+A **CI no GitHub Actions** (`.github/workflows/build.yml`) roda os testes e
+compila nos três sistemas a cada push — baixe os artefatos da aba *Actions*
+sem buildar localmente. Cada runner compila o próprio alvo (sem
+cross-compile).
+
+Notas do empacotamento (`packaging/`):
+
+* **onedir** (não onefile): inicia mais rápido e antivírus reclama menos;
+* **yt-dlp e ffmpeg NÃO são embutidos** — continuam programas externos
+  (yt-dlp é GPL-3.0; o minidm só chama a CLI). Sem eles a engine própria
+  segue funcionando para arquivos diretos; `minidm deps` mostra o que falta;
+* `browser_ext/` vai dentro do bundle (a API local serve a extensão);
+* ícone gerado por código: `python packaging/make_icon.py` (PIL, sem asset);
+* dependências: `pip install -r packaging/requirements.txt`.
+
+**Android**: não há binário nativo (a GUI precisa de display). O caminho
+suportado é **Termux** — CLI + fila + daemon completos no celular; ver
+[`packaging/android/README.md`](packaging/android/README.md) (Kivy/Chaquopy
+ficam no backlog).
 
 ---
 
@@ -572,13 +623,26 @@ Se a URL tiver DRM, o `/add` responde `400 {ok:false, drm, error}`.
 minidm-gui.bat         duplo clique -> interface gráfica
 minidm-gui-debug.bat   idem, com terminal (depuração)
 docs/analise-idm.md    análise reversa do IDM que embasa este projeto
+build/
+  windows.bat          build Windows (PyInstaller -> dist/)
+  unix.sh              build Linux/macOS
+packaging/
+  minidm.spec          spec PyInstaller (GUI windowed + CLI console)
+  requirements.txt     dependências de runtime + build
+  make_icon.py         gera minidm.ico/.png com PIL (sem asset)
+  android/README.md    minidm no Android via Termux (GUI: ver backlog)
+.github/workflows/
+  build.yml            CI: testes + executáveis em Win/Linux/macOS
 minidm/
-  gui.py         interface gráfica (tkinter, sidebar de categorias, ordenação por coluna, ETA/barras ao vivo, visualizador, API ligada por padrão, roda o scheduler em processo)
+  gui.py         interface gráfica (tkinter, tema claro/escuro, menu de contexto, busca, DnD, fila por arrasto, toasts, onboarding, sidebar, ordenação, ETA/barras ao vivo, visualizador, API ligada por padrão, roda o scheduler em processo)
+  theme.py       paletas de tema (LIGHT/DARK) + resolve/next_theme
+  dnd.py         drop/colagem de URLs (parsing puro, tkinterdnd2 opcional)
+  icons.py       ícones da toolbar desenhados com PIL em runtime
   player.py      visualizador de mídia embutido (ffmpeg -> rawvideo em tk.Canvas)
   cli.py         argparse + comandos (gui, add, media, profiles, daemon, …)
-  config.py      AppConfig (arquivo + flags)
-  meta.py        Task/Segment + persistência (kind/referer/stream/profile/category/section)
-  store.py       fila JSON multi-processo (trava de arquivo, merge, tombstones)
+  config.py      AppConfig (arquivo + flags; theme/notify_sound/onboarding_done)
+  meta.py        Task/Segment + persistência (kind/referer/stream/profile/category/section/queue_pos)
+  store.py       fila JSON multi-processo (trava de arquivo, merge, tombstones, reorder)
   categories.py  categorias estilo IDM (pasta + perfil por tipo de arquivo)
   remote.py      sondagem do servidor
   downloader.py  engine de arquivo: segmentos, retry, mirrors, throttle
@@ -600,7 +664,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           332 testes (engine, stream, mídia, DRM, yt-dlp, integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/player, extensão do navegador)
+tests/           349 testes (engine, stream, mídia, DRM, yt-dlp, integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

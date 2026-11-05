@@ -47,6 +47,61 @@ class StoreBase(unittest.TestCase):
                     filename=f"{name}.bin")
 
 
+class TestReorderFila(StoreBase):
+    """Fila por arrasto na GUI: `queue_pos` + `reorder()` (v9)."""
+
+    def test_ordem_padrao_e_created_at(self):
+        s = self.make()
+        t1, t2, t3 = self.task("a"), self.task("b"), self.task("c")
+        s.add(t1)
+        s.add(t2)
+        s.add(t3)
+        self.assertEqual([t.id for t in s.all()],
+                         [t1.id, t2.id, t3.id])
+
+    def test_reorder_ranqueia_e_preserva_o_resto(self):
+        s = self.make()
+        ts = [self.task(n) for n in "abcd"]
+        for t in ts:
+            s.add(t)
+        # 1º = próxima: c vem primeiro, depois a; b e d ficam p/ depois
+        out = s.reorder([ts[2].id, ts[0].id])
+        self.assertEqual(out[:2], [ts[2].id, ts[0].id])
+        self.assertEqual(len(out), 4)
+        self.assertEqual([t.id for t in s.all()], out)
+
+    def test_reorder_persiste_em_outra_instancia(self):
+        s = self.make()
+        ts = [self.task(n) for n in "abc"]
+        for t in ts:
+            s.add(t)
+        s.reorder([ts[1].id])
+        # outra instância (CLI abrindo o mesmo arquivo)
+        s2 = self.make()
+        self.assertEqual([t.id for t in s2.all()][0], ts[1].id)
+
+    def test_reorder_ignora_ids_desconhecidos(self):
+        s = self.make()
+        ts = [self.task(n) for n in "ab"]
+        for t in ts:
+            s.add(t)
+        out = s.reorder(["nao-existe", ts[1].id])
+        self.assertEqual(out[0], ts[1].id)
+        self.assertEqual(len(out), 2)
+
+    def test_tarefas_novas_vao_depois_das_ranqueadas(self):
+        s = self.make()
+        ts = [self.task(n) for n in "ab"]
+        for t in ts:
+            s.add(t)
+        s.reorder([ts[1].id])           # b ranqueada p/ 1º
+        novo = self.task("n")
+        s.add(novo)                      # nova: sem ranking -> depois
+        ids = [t.id for t in s.all()]
+        self.assertEqual(ids[0], ts[1].id)
+        self.assertEqual(ids[-1], novo.id)
+
+
 class TestTravaBasica(StoreBase):
     def test_salva_sem_deixar_tmp_para_tras(self):
         s = self.make()

@@ -1,7 +1,18 @@
 """Interface gráfica do minidm (tkinter — padrão do Python, sem dependências).
 
 Roda o scheduler **no mesmo processo** (funciona com duplo clique, sem
-terminal), com clipboard e API local opcionais.
+terminal), com clipboard e API local **ligada por padrão**.
+
+Recursos de interface:
+* tema claro/escuro (`theme.py`, botão na toolbar, persiste na config);
+* menu de contexto (botão direito), atalhos de teclado e busca na lista;
+* **arrastar e soltar** URLs na janela (tkinterdnd2, opcional) ou
+  colar com Ctrl+V — mesmo parsing (`minidm.dnd`);
+* **fila por arrasto**: arrumar as linhas reordena quem é o próximo
+  (`store.reorder` + `queue_pos`); ↑/↓ no menu de contexto também;
+* ícones gerados em tempo de execução (PIL, `minidm.icons`);
+* detalhes ao vivo (atualizam enquanto abertos), toasts de conclusão e
+  tela de boas-vindas na primeira execução.
 
 Regras de threading:
 * só a thread principal toca no tkinter;
@@ -18,12 +29,23 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from minidm import __version__, clipboard as clipboard_mod
+from minidm import theme as theme_mod
 from minidm.config import AppConfig
 from minidm.dashboard import eta, eta_seconds, human
+from minidm.dnd import bind_drop, urls_from_clipboard, urls_from_drop
 from minidm.meta import Task, TaskState
 from minidm.remote import auto_delegate, filename_from
 from minidm.scheduler import Scheduler
 from minidm.store import TaskStore
+
+# DnD nativo do sistema de arquivos: opcional (tkinterdnd2). Sem ele a
+# GUI funciona igual, só perde "soltar arquivo" (Ctrl+V faz o mesmo).
+try:
+    from tkinterdnd2 import TkinterDnD
+
+    _Root = TkinterDnD.Tk
+except Exception:                                # pragma: no cover
+    _Root = tk.Tk
 
 REFRESH_MS = 500
 
@@ -98,7 +120,18 @@ def sort_rows(rows: list[dict], col: str, asc: bool = True) -> list[dict]:
     return sorted(rows, key=key, reverse=not asc)
 
 
-class MinidmApp(tk.Tk):
+def state_colors(pal) -> dict:
+    """Cores de estado no tema atual (tags da lista, detalhes, toasts)."""
+    return {
+        TaskState.QUEUED: pal.text_dim,
+        TaskState.DOWNLOADING: pal.accent_dark,
+        TaskState.PAUSED: pal.warn,
+        TaskState.DONE: pal.success,
+        TaskState.ERROR: pal.error,
+    }
+
+
+class MinidmApp(_Root):
     def __init__(self):
         super().__init__()
         self.title(f"minidm {__version__} — gerenciador de downloads")
@@ -106,6 +139,7 @@ class MinidmApp(tk.Tk):
         self.minsize(860, 440)
 
         self.config_app = AppConfig.load()
+        self.pal = theme_mod.resolve(self.config_app.theme)
         self.store = TaskStore(self.config_app.data_dir)
         self.events: queue.Queue = queue.Queue()
         self._last_dir = self.config_app.data_dir
@@ -113,8 +147,13 @@ class MinidmApp(tk.Tk):
         self._clipboard_stop = threading.Event()
         self._clipboard_on = False
         self._filter_category = ""      # "" = Todas (sidebar)
+        self._search = ""               # busca na lista (Ctrl+F)
         self._rows_by_id: dict[str, dict] = {}   # cache p/ seleção pós-refresh
         self._speed_smooth: dict[str, float] = {}  # p/ ETA não dançar
+        self._drag_iid: str | None = None   # linha pressionada (arrasto)
+        self._drag_moved = False
+        self._toasts: list[tk.Toplevel] = []
+        self._timers: set[str] = set()      # `after` p/ cancelar ao fechar
 
         self.sched = Scheduler(self.store, self.config_app,
                                on_event=self._on_event)
@@ -126,7 +165,14 @@ class MinidmApp(tk.Tk):
         self._build_table()
         self._build_statusbar()
         self._build_menu()
+        self._build_context_menu()
+        self._bind_shortcuts()
+        self._apply_theme()          # tema depois de todos os widgets
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # DnD do sistema de arquivos (opcional): soltar URLs/atalhos .url
+        # na janela adiciona direto; sem tkinterdnd2, Ctrl+V faz o mesmo.
+        self._dnd_ok = bind_drop(self, self, self._on_drop)
 
         # API local ligada por padrão (config `api_enabled`): a extensão do
         # navegador funciona logo ao abrir, sem clicar em nada.
@@ -140,45 +186,144 @@ class MinidmApp(tk.Tk):
                              f"{self.config_app.api_port}): {e}")
         self._update_toolbar_state()
 
+        # primeira execução: dicas rápidas (uma vez; config onboarding_done)
+        if not getattr(self.config_app, "onboarding_done", False):
+            self._schedule(350, self._dlg_welcome)
+
         self._tick()
         self._refresh()
 
     # ------------------------------------------------------------------ UI
     def _build_styles(self):
-        style = ttk.Style(self)
+        self._style = ttk.Style(self)
+
+    def _apply_theme(self, save: bool = False):
+        """(Re)aplica o tema atual em toda a janela — claro <-> escuro.
+
+        Pode ser chamada antes de todos os widgets existirem (só a parte
+        de style roda; tags/fundos entram quando os widgets existem).
+        """
+        pal = self.pal
+        style = self._style
+        base = "clam" if pal.name == "dark" else "vista"
         try:
-            style.theme_use("vista")
+            style.theme_use(base)
         except tk.TclError:
-            pass
-        style.configure("Treeview", rowheight=26, font=("Segoe UI", 10))
-        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
-        style.configure("TButton", font=("Segoe UI", 10), padding=(10, 6))
-        style.configure("TLabel", font=("Segoe UI", 10))
-        style.configure("Status.TLabel", font=("Segoe UI", 9))
+            try:
+                style.theme_use("clam")
+            except tk.TclError:
+                pass
+
+        # janela/fundos (ttk usam style; tk puros usam bg direto)
+        self.configure(bg=pal.window)
+        style.configure("TFrame", background=pal.frame)
+        style.configure("TLabel", font=("Segoe UI", 10),
+                        background=pal.frame, foreground=pal.text)
+        style.configure("Dim.TLabel", foreground=pal.text_dim)
+        style.configure("Status.TLabel", font=("Segoe UI", 9),
+                        foreground=pal.text_dim, background=pal.frame)
+        style.configure("TButton", font=("Segoe UI", 10), padding=(10, 6),
+                        foreground=pal.text)
+        if pal.name == "dark":
+            # tema escuro: sem fundo explícito o botão fica invisível
+            style.configure("TButton", background=pal.surface)
+            style.map("TButton",
+                      background=[("active", pal.accent),
+                                  ("disabled", pal.frame)],
+                      foreground=[("disabled", pal.text_dim)])
+        else:
+            style.map("TButton",
+                      foreground=[("disabled", pal.text_dim)])
+        style.configure("TCheckbutton", background=pal.frame,
+                        foreground=pal.text)
+        style.configure("TSeparator", background=pal.border)
+
+        # lista (Treeview): fundo de campo + cabeçalho + linhas
+        style.configure("Treeview", rowheight=26, font=("Segoe UI", 10),
+                        background=pal.surface, fieldbackground=pal.surface,
+                        foreground=pal.text)
+        style.map("Treeview",
+                  background=[("selected", pal.select_bg)],
+                  foreground=[("selected", pal.text)])
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"),
+                        background=pal.heading_bg, foreground=pal.heading_fg,
+                        relief="flat")
+
+        # barra de progresso (agregada) com as cores do tema
+        style.configure("TProgressbar", troughcolor=pal.progress_trough,
+                        background=pal.accent, bordercolor=pal.border,
+                        lightcolor=pal.accent, darkcolor=pal.accent)
+
+        # ---- daqui pra baixo dependem dos widgets (guardados)
+        if hasattr(self, "tree"):
+            colors = state_colors(pal)
+            self.tree.tag_configure("odd", background=pal.row_odd,
+                                    foreground=pal.text)
+            self.tree.tag_configure("even", background=pal.row_even,
+                                    foreground=pal.text)
+            for st, tag in STATE_TAG.items():
+                self.tree.tag_configure(tag, foreground=colors[st])
+        if hasattr(self, "_cat_list"):
+            self._cat_list.configure(bg=pal.list_bg, fg=pal.list_fg,
+                                     selectbackground=pal.select_bg,
+                                     selectforeground=pal.text,
+                                     highlightthickness=0)
+        if hasattr(self, "_lbl_speed"):
+            self._lbl_speed.configure(foreground=pal.accent_dark)
+            self._lbl_eta.configure(foreground=pal.warn)
+        if hasattr(self, "_search_entry"):
+            self._search_entry.configure(bg=pal.entry_bg, fg=pal.entry_fg,
+                                         insertbackground=pal.text)
+        self._refresh_icons()
+        if save:
+            try:
+                self.config_app.save()
+            except OSError:
+                pass
+
+    def _toggle_theme(self):
+        """Botão da toolbar: alterna claro/escuro e persiste."""
+        self.config_app.theme = theme_mod.next_theme(self.config_app.theme)
+        self.pal = theme_mod.resolve(self.config_app.theme)
+        self._apply_theme(save=True)
+        self._status(f"Tema {'escuro' if self.pal.name == 'dark' else 'claro'}.")
+
+    def _refresh_icons(self):
+        """(Re)gera os ícones dos botões na cor do tema (PIL)."""
+        from minidm.icons import toolbar_icon
+
+        for btn, name in getattr(self, "_icon_btns", []):
+            img = toolbar_icon(name, self, self.pal)
+            if img is not None:
+                btn.configure(image=img, compound="left")
+                btn._icon = img       # segura a referência p/ o GC do tk
+            else:
+                btn.configure(image="", compound="none")
 
     def _build_toolbar(self):
         bar = ttk.Frame(self, padding=(8, 8, 8, 6))
         bar.pack(fill="x")
 
-        ttk.Button(bar, text="+ Adicionar URL", command=self._dlg_add
-                   ).pack(side="left", padx=(0, 4))
-        self.btn_start = ttk.Button(bar, text="Iniciar", command=self._do_start)
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_pause = ttk.Button(bar, text="Pausar", command=self._do_pause)
-        self.btn_pause.pack(side="left", padx=4)
-        self.btn_remove = ttk.Button(bar, text="Remover",
-                                     command=self._do_remove)
-        self.btn_remove.pack(side="left", padx=4)
+        self._icon_btns = []          # (botão, glyph) p/ regenerar no tema
+        def icon_btn(parent, text, glyph, cmd, side="left", padx=4):
+            b = ttk.Button(parent, text=text, command=cmd)
+            b.pack(side=side, padx=padx)
+            self._icon_btns.append((b, glyph))
+            return b
+
+        icon_btn(bar, "+ Adicionar URL", "add", self._dlg_add,
+                 padx=(0, 4))
+        self.btn_start = icon_btn(bar, "Iniciar", "start", self._do_start)
+        self.btn_pause = icon_btn(bar, "Pausar", "pause", self._do_pause)
+        self.btn_remove = icon_btn(bar, "Remover", "remove", self._do_remove)
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                    padx=10)
 
-        self.btn_preview = ttk.Button(bar, text="▶ Visualizar",
-                                      command=self._dlg_preview)
-        self.btn_preview.pack(side="left", padx=(0, 4))
-        self.btn_details = ttk.Button(bar, text="Propriedades",
-                                      command=self._dlg_details)
-        self.btn_details.pack(side="left", padx=4)
+        self.btn_preview = icon_btn(bar, "▶ Visualizar", "eye",
+                                    self._dlg_preview, padx=(0, 4))
+        self.btn_details = icon_btn(bar, "Propriedades", "gear",
+                                    self._dlg_details)
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y",
                                                    padx=10)
@@ -194,6 +339,10 @@ class MinidmApp(tk.Tk):
         ttk.Checkbutton(bar, text="API do navegador",
                         variable=self.var_api,
                         command=self._toggle_api).pack(side="left", padx=4)
+
+        # tema claro/escuro (persiste em `theme`)
+        ttk.Button(bar, text="Tema", command=self._toggle_theme
+                   ).pack(side="right", padx=(6, 0))
 
         ttk.Button(bar, text="Configurações…", command=self._dlg_settings
                    ).pack(side="right")
@@ -246,6 +395,7 @@ class MinidmApp(tk.Tk):
         self.tree.bind("<Delete>", lambda e: self._do_remove())
         self.tree.bind("<<TreeviewSelect>>", lambda e:
                        self._update_toolbar_state())
+        self._bind_row_drag()     # arrastar linhas reordena a fila
 
     def _build_statusbar(self):
         self.var_status = tk.StringVar(value="pronto")
@@ -261,11 +411,14 @@ class MinidmApp(tk.Tk):
         self.pbar.pack(side="right", padx=(10, 0))
         # tempo restante total (soma do que falta / soma das velocidades)
         self.var_eta_total = tk.StringVar(value="")
-        ttk.Label(bar, textvariable=self.var_eta_total, style="Status.TLabel",
-                  foreground="#c07a00").pack(side="right", padx=(0, 10))
+        self._lbl_eta = ttk.Label(bar, textvariable=self.var_eta_total,
+                                  style="Status.TLabel", foreground="#c07a00")
+        self._lbl_eta.pack(side="right", padx=(0, 10))
         self.var_speed = tk.StringVar(value="")
-        ttk.Label(bar, textvariable=self.var_speed, style="Status.TLabel",
-                  foreground="#0a7bd8").pack(side="right")
+        self._lbl_speed = ttk.Label(bar, textvariable=self.var_speed,
+                                    style="Status.TLabel",
+                                    foreground="#0a7bd8")
+        self._lbl_speed.pack(side="right")
 
     def _build_menu(self):
         menubar = tk.Menu(self)
@@ -292,6 +445,18 @@ class MinidmApp(tk.Tk):
 
         ttk.Label(side, text="Categorias",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+
+        # busca na lista (Ctrl+F): filtra arquivo/URL/título em tempo real
+        self._search_entry = tk.Entry(side, relief="flat", bd=4,
+                                      font=("Segoe UI", 10))
+        self._search_entry.pack(fill="x", pady=(0, 6))
+        self._search_entry.insert(0, "")
+        self._search_entry.bind("<KeyRelease>", self._on_search)
+        self._search_entry.bind("<Escape>",
+                                lambda e: (self._search_entry.delete(0, "end"),
+                                           self._on_search()))
+        ttk.Label(side, text="Buscar:  Ctrl+F", foreground="#777",
+                  font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 8))
 
         self._cat_items: dict[str, str] = {}   # nome -> iid no Listbox
         self._cat_counts: dict[str, int] = {}
@@ -320,7 +485,12 @@ class MinidmApp(tk.Tk):
         names = ["Todas"] + [c.name for c in default_categories()]
         name = names[idx]
         self._filter_category = "" if name == "Todas" else name
-        self._refresh()
+        self._refresh(reschedule=False)
+
+    def _on_search(self, _event=None):
+        """Digitação na caixa de busca: filtra a lista em tempo real."""
+        self._search = self._search_entry.get().strip()
+        self._refresh(reschedule=False)
 
     def _update_sidebar(self, rows: list[dict]):
         """Reconta por categoria e destaca a selecionada."""
@@ -347,19 +517,29 @@ class MinidmApp(tk.Tk):
         self._var_cat_info.set(f"{c} tarefa(s) nesta categoria")
 
     # ------------------------------------------------------- loop principal
+    def _schedule(self, ms: int, fn) -> str:
+        """`after` registrado p/ ser cancelado no fechamento (sem lixo)."""
+        iid = self.after(ms, fn)
+        self._timers.add(iid)
+        return iid
+
     def _tick(self):
-        """Drena eventos vindos dos workers (thread-safe)."""
+        """Drena eventos vindos dos workers (thread-safe) e avisa a UI."""
         try:
             while True:
                 ev, task = self.events.get_nowait()
                 if ev == "done":
                     self._status(f"Concluído: {task.filename}  "
                                  f"sha256={task.sha256}")
+                    self._toast(f"Concluído: {task.filename}", kind="done")
+                    self._beep()
                 elif ev == "error":
                     self._status(f"Erro: {task.filename} — {task.error}")
+                    self._toast(f"Erro: {task.filename}", kind="error")
+                    self._beep()
         except queue.Empty:
             pass
-        self.after(REFRESH_MS, self._tick)
+        self._schedule(REFRESH_MS, self._tick)
 
     def _on_event(self, event, task):
         """Chamado por threads do scheduler — só enfileira."""
@@ -374,6 +554,15 @@ class MinidmApp(tk.Tk):
         if self._filter_category:
             rows = [r for r in rows
                     if (r.get("effective_category") or "") == self._filter_category]
+
+        # busca textual (Ctrl+F): arquivo, URL, título ou ID
+        if self._search:
+            q = self._search.lower()
+            rows = [r for r in rows
+                    if q in (r.get("filename") or "").lower()
+                    or q in (r.get("url") or "").lower()
+                    or q in (r.get("page_title") or "").lower()
+                    or q in r["id"].lower()]
 
         # ordenação por clique no cabeçalho ("" = ordem natural da fila)
         if self._sort_col:
@@ -470,7 +659,7 @@ class MinidmApp(tk.Tk):
             f" · total {human(int(total_speed))}/s")
 
         if reschedule:
-            self.after(REFRESH_MS, self._refresh)
+            self._schedule(REFRESH_MS, self._refresh)
 
     def _status(self, msg: str):
         self.var_status.set(msg)
@@ -550,6 +739,214 @@ class MinidmApp(tk.Tk):
                 path = t.dest_dir
         if os.path.isdir(path):
             os.startfile(path)  # noqa: S606 — intencional no Windows
+
+    # ------------------------------------- menu de contexto / atalhos
+    def _build_context_menu(self):
+        """Botão direito na lista (estilo IDM)."""
+        self._ctx = tk.Menu(self, tearoff=0)
+        self._ctx.add_command(label="Iniciar", command=self._do_start,
+                              accelerator="F5")
+        self._ctx.add_command(label="Pausar", command=self._do_pause)
+        self._ctx.add_separator()
+        self._ctx.add_command(label="Copiar URL", command=self._copy_urls)
+        self._ctx.add_command(label="Abrir pasta", command=self._open_folder)
+        self._ctx.add_separator()
+        self._ctx.add_command(label="Subir na fila", command=lambda:
+                              self._move_sel(-1), accelerator="↑")
+        self._ctx.add_command(label="Descer na fila", command=lambda:
+                              self._move_sel(1), accelerator="↓")
+        self._ctx.add_separator()
+        self._ctx.add_command(label="Propriedades", command=self._dlg_details)
+        self._ctx.add_command(label="Remover", command=self._do_remove,
+                              accelerator="Del")
+        self._ctx.add_separator()
+        self._ctx.add_command(label="Selecionar tudo",
+                              command=self._select_all,
+                              accelerator="Ctrl+A")
+
+        def popup(event):
+            # garante que a linha sob o cursor está selecionada
+            row = self.tree.identify_row(event.y)
+            if row and row not in self.tree.selection():
+                self.tree.selection_set(row)
+            try:
+                self._ctx.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._ctx.grab_release()
+
+        self.tree.bind("<Button-3>", popup)
+        self.tree.bind("<Button-2>", popup)   # macOS/botão central
+
+    def _bind_shortcuts(self):
+        """Atalhos globais da janela (IDM-like)."""
+        self.bind("<Control-n>", lambda e: self._dlg_add())
+        self.bind("<Control-f>", lambda e: (self._search_entry.focus_set(),
+                                            self._search_entry.select_range(
+                                                0, "end")))
+        self.bind("<F5>", lambda e: self._do_start())
+        self.bind("<Delete>", lambda e: self._do_remove())
+        self.bind("<Control-a>", lambda e: (
+            self.tree.selection_set(self.tree.get_children()), "break")[1])
+        self.bind("<Control-c>", lambda e: self._copy_urls())
+        self.bind("<Control-v>", lambda e: self._paste_urls())
+
+    def _copy_urls(self):
+        ids = self._selected_ids()
+        urls = [u for u in (self.store.get(i).url if self.store.get(i) else ""
+                            for i in ids) if u]
+        if not urls:
+            self._status("Nenhuma URL para copiar.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(urls))
+        self._status(f"{len(urls)} URL(s) copiada(s).")
+
+    def _paste_urls(self):
+        """Ctrl+V: mesma coisa que soltar na janela (sem DnD)."""
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            return
+        self._enqueue_urls(urls_from_clipboard(text))
+
+    def _on_drop(self, urls: list[str]):
+        """Soltou algo na janela: adiciona as URLs encontradas."""
+        self._enqueue_urls(urls)
+
+    def _enqueue_urls(self, urls: list[str]):
+        """Adiciona várias URLs à fila (drop, colagem, arquivo .txt)."""
+        if not urls:
+            self._status("Nenhuma URL válida no item soltado/colado.")
+            return
+        from minidm.categories import classify_url
+
+        added = 0
+        for u in urls:
+            try:
+                task = Task(url=u, dest_dir=self._last_dir,
+                            filename=filename_from(u))
+                task.category = classify_url(u)
+                auto_delegate(task)
+                self.store.add(task)
+                added += 1
+            except Exception as e:               # noqa: BLE001 — UI
+                self._status(f"Falha ao adicionar {u}: {e}")
+        if added:
+            self._status(f"{added} URL(s) adicionada(s) à fila.")
+            self._toast(f"{added} download(s) adicionado(s)", kind="info")
+
+    # --------------------------------------------------------- fila/arrasto
+    def _move_sel(self, delta: int):
+        """Sobe/desce a seleção na fila (menu ↑/↓) — só com ordem natural."""
+        ids = self._selected_ids()
+        if not ids:
+            return
+        if self._sort_col:
+            # ordenada: arrasto/menu mudariam a ordem exibida, não a fila
+            self._status("Volte à ordem da fila (3º clique) p/ reordenar.")
+            return
+        order = [i for i in self.tree.get_children()]
+        # move a seleção uma posição. A varredura é no sentido oposto ao
+        # movimento p/ o bloco de itens selecionados não se partir:
+        # descer = varrer de baixo p/ cima; subir = de cima p/ baixo.
+        sel = set(ids)
+        if delta > 0:
+            for i in range(len(order) - 2, -1, -1):
+                a, b = order[i], order[i + 1]
+                if a in sel and b not in sel:
+                    order[i], order[i + 1] = b, a
+        else:
+            for i in range(len(order) - 1):
+                a, b = order[i], order[i + 1]
+                if b in sel and a not in sel:
+                    order[i], order[i + 1] = b, a
+        self.store.reorder(order)
+        self._refresh_now()
+        self.tree.selection_set(ids)
+        self._status(f"Fila reordenada ({len(ids)} tarefa(s)).")
+
+    def _bind_row_drag(self):
+        """Arrastar linhas reordena a fila (desligado com ordenação ativa)."""
+        self.tree.bind("<ButtonPress-1>", self._on_row_press, add="+")
+        self.tree.bind("<B1-Motion>", self._on_row_motion, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._on_row_release, add="+")
+
+    def _on_row_press(self, event):
+        self._drag_iid = self.tree.identify_row(event.y)
+        self._drag_moved = False
+
+    def _on_row_motion(self, event):
+        if not self._drag_iid or self._sort_col:
+            return
+        row = self.tree.identify_row(event.y)
+        if row and row != self._drag_iid and not self._drag_moved:
+            self._drag_moved = True
+
+    def _on_row_release(self, event):
+        if not self._drag_iid or not self._drag_moved:
+            self._drag_iid = None
+            return
+        src, self._drag_iid = self._drag_iid, None
+        if self._sort_col:           # ordenada: arrasto não reordena
+            self._status("Volte à ordem da fila (3º clique) p/ arrastar.")
+            return
+        target = self.tree.identify_row(event.y)
+        order = [i for i in self.tree.get_children() if i != src]
+        if not target:
+            order.append(src)
+        else:
+            order.insert(order.index(target), src)
+        self.store.reorder(order)
+        self._refresh_now()
+        self.tree.selection_set(src)
+        self._status("Fila reordenada por arrasto.")
+
+    # ------------------------------------------------------------- toasts
+    def _toast(self, msg: str, *, kind: str = "info", u: str = "",
+               ms: int = 4000):
+        """Cartão flutuante de feedback (concluído/erro/novo download)."""
+        pal = self.pal
+        colors = {"info": pal.accent, "done": pal.success,
+                  "error": pal.error, "warn": pal.warn}
+        top = tk.Toplevel(self)
+        top.wm_overrideredirect(True)
+        w, h = 340, 54
+        x = self.winfo_rootx() + self.winfo_width() - w - 16
+        y = self.winfo_rooty() + self.winfo_height() - h - 46
+        top.geometry(f"{w}x{h}+{x}+{y}")
+        top.configure(bg=colors.get(kind, pal.accent))
+        lbl = tk.Label(top, text=msg, bg=colors.get(kind, pal.accent),
+                       fg="#ffffff", font=("Segoe UI", 10), anchor="w",
+                       justify="left", padx=12, pady=8, wraplength=w - 24)
+        lbl.pack(fill="both", expand=True)
+        if u:
+            lbl.bind("<Button-1>", lambda e: os.startfile(u))  # noqa: S606
+        top.attributes("-topmost", True)
+        self._toasts.append(top)
+
+        def _close():
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+            if top in self._toasts:
+                self._toasts.remove(top)
+
+        self._schedule(ms, _close)
+
+    def _beep(self):
+        """Som curto de conclusão (config `notify_sound`)."""
+        if not getattr(self.config_app, "notify_sound", True):
+            return
+        try:
+            import winsound
+
+            winsound.MessageSound(winsound.MB_OK, winsound.SND_ASYNC)
+        except Exception:                     # pragma: no cover
+            try:
+                self.bell()
+            except tk.TclError:
+                pass
 
     # ---------------------------------------------------------- diálogos
     def _dlg_add(self):
@@ -640,6 +1037,31 @@ class MinidmApp(tk.Tk):
             "documentados na análise de arquitetura em docs/analise-idm.md.",
             parent=self)
 
+    def _dlg_welcome(self):
+        """Onboarding: dicas rápidas na primeira execução (uma vez)."""
+        if getattr(self.config_app, "onboarding_done", False):
+            return
+        tips = (
+            "Bem-vindo ao minidm!\n\n"
+            "• Arraste URLs (ou arquivos .url) para esta janela — ou use "
+            "Ctrl+V\n"
+            "• Ctrl+F busca na lista; clique nos cabeçalhos para ordenar\n"
+            "• Botão direito: iniciar, pausar, copiar URL, reordenar a "
+            "fila\n"
+            "• Arraste as linhas para escolher qual baixa primeiro\n"
+            "• A API do navegador já vem ligada: instale a extensão em "
+            "browser_ext/\n"
+            "• Tema claro/escuro no botão «Tema» da barra\n\n"
+            "Dica: use `python -m minidm add <url>` no terminal para "
+            "enfileirar sem abrir a janela."
+        )
+        messagebox.showinfo("Boas-vindas", tips, parent=self)
+        self.config_app.onboarding_done = True
+        try:
+            self.config_app.save()
+        except OSError:
+            pass
+
     # ------------------------------------------------------------ extras
     def _toggle_clipboard(self):
         if self.var_clip.get():
@@ -711,6 +1133,13 @@ class MinidmApp(tk.Tk):
     def _on_close(self):
         self._clipboard_stop.set()
         self._stop_api()
+        # cancela os `after` periódicos (tick/refresh/welcome/toasts)
+        for iid in list(self._timers):
+            try:
+                self.after_cancel(iid)
+            except tk.TclError:
+                pass
+        self._timers.clear()
         busy = any(r["state"] == TaskState.DOWNLOADING
                    for r in self.sched.snapshot())
         if busy and not messagebox.askyesno(
@@ -970,6 +1399,9 @@ class DetailsDialog(tk.Toplevel):
     def __init__(self, parent, task: Task, row: dict | None = None):
         super().__init__(parent)
         row = row or {}
+        self._parent_app = parent      # p/ consultar o snapshot ao vivo
+        self._task_id = task.id
+        self._live: dict[str, ttk.Label] = {}   # campos que mudam sozinhos
         title = row.get("page_title") or task.page_title or task.filename
         self.title(f"Propriedades — {title}")
         self.geometry("660x520")
@@ -1016,6 +1448,8 @@ class DetailsDialog(tk.Toplevel):
             ("Erro", task.error or "—"),
         ]
         r = 0
+        live_keys = ("Estado", "Tamanho", "Recebido", "Velocidade",
+                     "Tempo restante", "Segmentos")
         for k, v in lines:
             if v in (None, "", "—") and k in ("Página", "Categoria",
                                               "Qualidade", "Perfil", "Origem"):
@@ -1024,6 +1458,8 @@ class DetailsDialog(tk.Toplevel):
                 row=r, column=0, sticky="nw", pady=(0, 4))
             lbl = ttk.Label(info, text=str(v), wraplength=500)
             lbl.grid(row=r, column=1, sticky="w", pady=(0, 4), padx=(10, 0))
+            if k in live_keys:
+                self._live[k] = lbl
             r += 1
         info.columnconfigure(1, weight=1)
 
@@ -1043,6 +1479,61 @@ class DetailsDialog(tk.Toplevel):
 
         ttk.Button(body, text="Fechar", command=self.destroy).pack(
             anchor="e", pady=(10, 0))
+
+        # ---- atualização AO VIVO: estado/velocidade/ETA mudam sozinhos
+        self._live_timer = self.after(500, self._live_tick)
+
+    def destroy(self):
+        """Fecha cancelando o timer ao vivo (sem lixo no Tcl)."""
+        tid = getattr(self, "_live_timer", None)
+        if tid:
+            try:
+                self.after_cancel(tid)
+            except tk.TclError:
+                pass
+        super().destroy()
+
+    def _live_tick(self):
+        """Repinta os campos dinâmicos a cada 500 ms enquanto aberto."""
+        if not self.winfo_exists():
+            return
+        app = self._parent_app
+        row = None
+        try:
+            for r in app.sched.snapshot():
+                if r["id"] == self._task_id:
+                    row = r
+                    break
+        except Exception:                      # noqa: BLE001 — janela viva
+            row = None
+        if row is None:
+            # tarefa saiu da fila: para o loop (ou atualiza como removida)
+            if "Estado" in self._live:
+                self._live["Estado"].configure(text="removida")
+            self._live_timer = self.after(1000, self._live_tick)
+            return
+        speed = row.get("speed") or 0.0
+        total, recv = row.get("total"), row.get("received") or 0
+        if "Estado" in self._live:
+            self._live["Estado"].configure(
+                text=STATE_PT.get(row["state"], row["state"]))
+        if "Tamanho" in self._live:
+            self._live["Tamanho"].configure(text=human(total))
+        if "Recebido" in self._live:
+            pct = (row.get("progress") or 0.0) * 100
+            self._live["Recebido"].configure(
+                text=f"{human(recv)} ({pct:.1f}%)")
+        if "Velocidade" in self._live:
+            self._live["Velocidade"].configure(
+                text=f"{human(int(speed))}/s" if speed else "—")
+        if "Tempo restante" in self._live:
+            self._live["Tempo restante"].configure(
+                text=eta(recv, total, speed))
+        if "Segmentos" in self._live and row.get("segments_total"):
+            self._live["Segmentos"].configure(
+                text=f"{row.get('segments_done') or 0} / "
+                     f"{row['segments_total']}")
+        self._live_timer = self.after(500, self._live_tick)
 
 
 def kind_badge(r: dict) -> str:
@@ -1253,3 +1744,7 @@ def main() -> int:
     app = MinidmApp()
     app.mainloop()
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

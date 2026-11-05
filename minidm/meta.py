@@ -86,6 +86,12 @@ class Task:
     # navegador cuja sessão (cookies) esta tarefa deve usar ("chrome"…);
     # "" = usa o `cookies_from_browser` da config. Só a sessão do usuário.
     cookies_from_browser: str = ""
+    # ---- v9 (fila por arrasto na GUI)
+    # posição na fila (>0 = ranqueada explicitamente pelo usuário; 0 =
+    # sem posição definida -> vai depois das ranqueadas, por created_at).
+    # O scheduler (_claim) pega a próxima QUEUED em `store.all()`, que
+    # ordena por (ranqueada, queue_pos, created_at).
+    queue_pos: float = 0.0
     # ---- v6 (fila multi-processo + mux)
     # último instante em que a ESTRUTURA da tarefa mudou (estado, erro…).
     # Progresso NÃO marca — serve só p/ dois processos concorrentes

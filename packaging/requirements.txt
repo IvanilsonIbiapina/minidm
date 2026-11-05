@@ -1,0 +1,12 @@
+# Dependências de runtime do minidm (também usadas pelo build PyInstaller).
+# Instalar:  pip install -r packaging/requirements.txt
+requests>=2.31          # HTTP (engine, mirrors, yt-dlp, mídia)
+rich>=13.0              # dashboard TUI
+Pillow>=10.0            # ícones da GUI, miniaturas, player
+cryptography>=41.0      # HLS AES-128 + extensão do navegador (assinaturas)
+# opcionais (o código degrada sem eles; entram no bundle se instalados):
+paramiko>=3.0           # SFTP
+tkinterdnd2>=0.3        # arrastar URLs na janela da GUI (Ctrl+V é o fallback)
+
+# ferramenta de build (só no CI/máquina de build):
+pyinstaller>=6.0

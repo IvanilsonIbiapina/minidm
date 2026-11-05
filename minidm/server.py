@@ -161,6 +161,16 @@ def make_handler(app: App):
                 ok = app.scheduler.remove(payload.get("id", ""),
                                           delete_files=bool(payload.get("delete")))
                 self._json({"ok": ok}, 200 if ok else 404)
+            elif path == "/reorder":
+                # fila por arrasto: {ids: [..]} na nova ordem (1º = próximo)
+                ids = payload.get("ids")
+                if not (isinstance(ids, list) and
+                        all(isinstance(i, str) for i in ids)):
+                    self._json({"error": "ids: lista de strings obrigatória"},
+                               400)
+                    return
+                order = app.store.reorder(ids)
+                self._json({"ok": True, "order": order})
             else:
                 self._json({"error": "not found"}, 404)
 

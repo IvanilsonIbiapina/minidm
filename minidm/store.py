@@ -281,5 +281,29 @@ class TaskStore:
             return True
 
     def all(self) -> list[Task]:
-        # snapshot: a GUI adiciona de outra thread enquanto iteramos
-        return sorted(list(self.tasks.values()), key=lambda t: t.created_at)
+        # snapshot: a GUI adiciona de outra thread enquanto iteramos.
+        # Ordem da FILA: tarefas ranqueadas (queue_pos > 0, ex.: arrasto
+        # na GUI) vêm primeiro na ordem da ranking; as demais mantêm a
+        # ordem de criação. `Scheduler._claim` usa esta ordem.
+        return sorted(list(self.tasks.values()),
+                      key=lambda t: (0 if t.queue_pos > 0 else 1,
+                                     t.queue_pos or 0.0, t.created_at))
+
+    def reorder(self, ordered_ids: list[str]) -> list[str]:
+        """Reordena a fila: `ordered_ids` (1º = próxima a ser baixada).
+
+        Ranqueia as listadas em 1..N e as que ficaram de fora seguindo
+        depois, na ordem atual. Devolve a ordem efetiva gravada.
+        Compatível com outros processos: muda a estrutura -> `updated_at`
+        marca a mudança e o merge distribui a nova ordem.
+        """
+        with self._lock:
+            ranked = [i for i in ordered_ids if i in self.tasks]
+            ranked_set = set(ranked)
+            current = [t.id for t in self.all()]     # ordem efetiva agora
+            final = ranked + [i for i in current if i not in ranked_set]
+            for rank, tid in enumerate(final, start=1):
+                self.tasks[tid].queue_pos = float(rank)
+            result = final
+        self.save()
+        return result

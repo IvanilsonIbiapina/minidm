@@ -1,0 +1,105 @@
+name: build
+
+# Build dos executáveis do minidm em Windows, Linux e macOS.
+# Não faz cross-compile: cada runner nativo compila o próprio alvo.
+# (Android fica de fora de propósito — ver packaging/android/README.md.)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: testes (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r packaging/requirements.txt
+
+      - name: suíte de testes
+        shell: bash
+        run: |
+          export PYTHONIOENCODING=utf-8
+          python -m unittest discover -s tests
+
+  build:
+    name: executáveis (${{ matrix.os }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            dist: dist/minidm-gui/minidm-gui.exe
+            cli: dist/minidm/minidm.exe
+            extra: |
+              mv dist/minidm-gui/minidm-gui.exe minidm-gui-win64.exe
+              mv dist/minidm/minidm.exe minidm-win64.exe
+          - os: ubuntu-latest
+            dist: dist/minidm-gui/minidm-gui
+            cli: dist/minidm/minidm
+            extra: |
+              mv dist/minidm-gui/minidm-gui minidm-gui-linux-x86_64
+              mv dist/minidm/minidm minidm-linux-x86_64
+          - os: macos-latest
+            dist: dist/minidm-gui/minidm-gui
+            cli: dist/minidm/minidm
+            extra: |
+              mv dist/minidm-gui/minidm-gui minidm-gui-macos
+              mv dist/minidm/minidm minidm-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: build (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build\windows.bat
+
+      - name: build (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash build/unix.sh
+
+      - name: smoke (CLI abre)
+        shell: bash
+        run: |
+          CLI="${{ matrix.cli }}"
+          "$CLI" --version
+          "$CLI" config show >/dev/null
+
+      - name: pacota
+        shell: bash
+        run: |
+          ${{ matrix.extra }}
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a minidm-win64.zip minidm-win64.exe minidm-gui-win64.exe || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minidm-${{ matrix.os }}
+          path: |
+            minidm-*
+          if-no-files-found: error
+          retention-days: 14

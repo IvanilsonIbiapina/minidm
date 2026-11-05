@@ -192,7 +192,11 @@ class Scheduler:
         return out
 
     def _claim(self) -> Optional[Task]:
-        """Retira a próxima tarefa `queued` da fila (ordem de criação)."""
+        """Retira a próxima tarefa `queued` da fila.
+
+        Ordem = `store.all()` (ranqueadas por arrasto primeiro, depois por
+        `created_at`) — reordenar a fila na GUI muda quem é o próximo.
+        """
         with self._cv:
             for t in self.store.all():
                 if t.state == TaskState.QUEUED:

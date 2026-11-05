@@ -67,6 +67,10 @@ class AppConfig:
     # interface gráfica. A checkbox da toolbar altera e persiste este campo.
     api_enabled: bool = True
     clipboard_interval: float = 2.0
+    # interface
+    theme: str = "light"             # "light" | "dark" (botão da toolbar)
+    notify_sound: bool = True        # "ding" ao concluir (Windows)
+    onboarding_done: bool = False    # tela de boas-vindas já mostrada
     # verificação
     verify_signatures: bool = True     # Authenticode em .exe/.dll/.msi
     remote_checksums: bool = True      # busca <arquivo>.sha256 / .md5

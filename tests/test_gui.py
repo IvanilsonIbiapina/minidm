@@ -7,6 +7,8 @@ Só a lógica pura e o construtor de comando do player — sem abrir janelas
 * `_kind_badge` monta o rótulo de tipo/qualidade;
 * `progress_bar`/`sort_rows` desenham e ordenam a lista (lógica pura);
 * `dashboard.eta` calcula o tempo restante (casos-limite);
+* `dnd.urls_from_*` convertem drop/colagem em URLs (formato Windows);
+* `theme.resolve`/`next_theme` alternam claro/escuro;
 * API local vem **ligada por padrão** (`api_enabled`);
 * `player._fit_box` escala mantendo proporção e pares;
 * `player.play_in_frame` monta o comando do ffmpeg e sobe sem ffmpeg.
@@ -27,7 +29,9 @@ from unittest import mock
 from minidm import player
 from minidm.config import AppConfig
 from minidm.dashboard import eta, eta_seconds
+from minidm.dnd import read_url_file, urls_from_clipboard, urls_from_drop
 from minidm.gui import _best_playable, kind_badge, progress_bar, sort_rows
+from minidm.theme import LIGHT, next_theme, resolve
 
 
 def _q(**kw):
@@ -224,6 +228,77 @@ class TestEta(unittest.TestCase):
 
     def test_parado_mostra_tracos(self):
         self.assertEqual(eta(50, 100, 0.0), "--:--")
+
+
+class TestDndParsing(unittest.TestCase):
+    """Drop/colagem de URLs (minidm.dnd) — puro, sem GUI."""
+
+    def test_urls_diretas_no_drop(self):
+        self.assertEqual(
+            urls_from_drop("https://a.com/v http://b.com/x"),
+            ["https://a.com/v", "http://b.com/x"])
+
+    def test_caminho_com_espaco_entre_chaves(self):
+        # formato do Windows: {C:\Users\a\meu video.url} — mas o arquivo
+        # não existe aqui -> sem URL (não quebra)
+        self.assertEqual(urls_from_drop("{C:\\Users\\a\\meu video.url}"), [])
+
+    def test_ignora_lixo_e_arquivos_de_midia(self):
+        self.assertEqual(urls_from_drop("ola mundo.txt"), [])
+        self.assertEqual(urls_from_drop(""), [])
+        self.assertEqual(urls_from_drop("   "), [])
+
+    def test_colagem_multiplas_linhas(self):
+        text = "veja\nhttps://c.com/y\nftp://no\nhttp://d.com/z"
+        self.assertEqual(urls_from_clipboard(text),
+                         ["https://c.com/y", "http://d.com/z"])
+
+    def test_colagem_com_aspas(self):
+        self.assertEqual(urls_from_clipboard('"https://a.com/v"'),
+                         ["https://a.com/v"])
+
+    def test_colagem_vazia(self):
+        self.assertEqual(urls_from_clipboard(None), [])
+        self.assertEqual(urls_from_clipboard(""), [])
+
+    def test_atalho_url_lê_o_interno(self):
+        tmp = tempfile.mkdtemp(prefix="minidm-dnd-")
+        p = os.path.join(tmp, "video.url")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("[InternetShortcut]\nURL=https://site.com/filme\n")
+        self.assertEqual(read_url_file(p), "https://site.com/filme")
+        # o drop lê o atalho e devolve a URL
+        self.assertEqual(urls_from_drop("{" + p + "}"),
+                         ["https://site.com/filme"])
+
+    def test_atalho_inexistente_vazio(self):
+        self.assertEqual(read_url_file("/nao/existe.url"), "")
+
+
+class TestTema(unittest.TestCase):
+    """Paletas claro/escuro (minidm.theme)."""
+
+    def test_resolve_por_nome(self):
+        self.assertEqual(resolve("dark").name, "dark")
+        self.assertEqual(resolve("light").name, "light")
+
+    def test_auto_e_desconhecido_caem_no_claro(self):
+        self.assertIs(resolve("auto"), LIGHT)
+        self.assertIs(resolve(""), LIGHT)
+        self.assertIs(resolve("qualquer-coisa"), LIGHT)
+
+    def test_next_theme_alterna(self):
+        self.assertEqual(next_theme("light"), "dark")
+        self.assertEqual(next_theme("dark"), "light")
+        # config antiga/quebrada -> primeiro clique já dá escuro
+        self.assertEqual(next_theme("auto"), "dark")
+
+    def test_paletas_têm_todas_as_cores(self):
+        for pal in (resolve("light"), resolve("dark")):
+            for field in ("window", "frame", "surface", "text", "accent",
+                          "row_even", "row_odd", "select_bg", "entry_bg"):
+                self.assertTrue(getattr(pal, field).startswith("#"),
+                                f"{pal.name}.{field}")
 
 
 class TestApiDefault(unittest.TestCase):

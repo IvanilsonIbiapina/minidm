@@ -322,7 +322,16 @@ def cmd_serve(args) -> int:
 
 def cmd_gui(args) -> int:
     # a GUI carrega a própria configuração ao construir o app
-    from minidm import gui
+    try:
+        from minidm import gui
+    except ImportError as e:
+        # build mínimo / distro sem python3-tk: instrução em vez de traceback
+        print(f"interface gráfica indisponível: {e}", file=sys.stderr)
+        print("instale o tkinter (Debian/Ubuntu: `sudo apt install "
+              "python3-tk`; Windows/macOS: o instalador oficial do Python "
+              "já traz) ou use a CLI: `minidm add <url>`.",
+              file=sys.stderr)
+        return 2
 
     print("Abrindo a interface gráfica…")
     return gui.main()
