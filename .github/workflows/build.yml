@@ -3,10 +3,10 @@ name: build
 # Build dos executáveis do minidm em Windows, Linux e macOS.
 # Não faz cross-compile: cada runner nativo compila o próprio alvo.
 #
-# Releases: ao pushar uma TAG `v*`, o job `release` junta os pacotes dos
-# três sistemas e publica uma GitHub Release com eles anexados.
+# Releases: ao pushar uma TAG `v*`, o job `release` junta os pacotes
+# (Windows/Linux/macOS) + o APK Android e publica uma GitHub Release.
 #   git tag v1.1.0 && git push origin v1.1.0
-# (Android fica de fora — ver packaging/android/README.md e ROADMAP.md.)
+# O APK (android/, Chaquopy + WebView) é buildado pelo job `apk`.
 
 on:
   push:
@@ -103,11 +103,49 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  apk:
+    # APK Android (android/): Chaquopy embute a engine Python + webui num
+    # WebView. Sem cross-compile: roda no ubuntu (SDK Android pré-instalado).
+    name: apk Android (Chaquopy)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # buildPython do Chaquopy exige Python do MESMO major.minor do APK
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"      # mínimo do AGP 8.7
+
+      - name: build APK (debug)
+        run: gradle -p android assembleDebug --stacktrace
+
+      - name: pacota (nome estável p/ release)
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk minidm-android.apk
+          ls -lh minidm-android.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minidm-android
+          path: minidm-android.apk
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: publica release
     # só em tag v* (ex.: v1.1.0) — em push normal não roda
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build]
+    needs: [test, build, apk]
     runs-on: ubuntu-latest
     permissions:
       contents: write      # cria a Release com o GITHUB_TOKEN
@@ -133,7 +171,10 @@ jobs:
             | `minidm-win64.zip` | Windows x64 |
             | `minidm-linux-x86_64.tar.gz` | Linux x86_64 |
             | `minidm-macos-arm64.tar.gz` | macOS Apple Silicon |
+            | `minidm-android.apk` | Android (arm64-v8a + x86_64) |
 
             Cada zip traz `minidm/` (CLI) + `minidm-gui/` (interface) —
             extraia e rode. Sem Python instalado na máquina.
             yt-dlp e ffmpeg continuam externos (`minidm deps` mostra o que falta).
+            O `minidm-android.apk` instala direto no celular: engine Python
+            embutida (Chaquopy) + webui em WebView.

@@ -1,16 +1,90 @@
-# minidm no Android (Termux)
+# minidm no Android (APK + Termux)
 
-**Não há binário nativo do minidm para Android** — a GUI usa tkinter, que
-não roda em Android (não existe X11/Display). O caminho realista e testado
-da comunidade é o **Termux**: um terminal Linux completo dentro do Android,
-onde o minidm roda inteiro (CLI + fila + downloads em segundo plano).
+O Android tem **dois caminhos oficiais**:
 
-> Por que não Kivy/Chaquopy agora: exigiria reescrever a interface (ou
-> empacotar um Python inteiro por APK). Fica no backlog; o Termux dá o
-> mesmo resultado hoje — "qualquer site, só o link" — com a CLI que já
-> existe.
+| Caminho | Interface | Bom para |
+|---|---|---|
+| **APK** (`android/`, Chaquopy + WebView) | webui touch (a mesma do navegador) | instalar como app e tocar |
+| **Termux** (CLI + daemon) | terminal / TUI | automação, `curl`, scripts |
 
-## Instalar (5 minutos)
+---
+
+## APK (Chaquopy + WebView + webui)
+
+O APK embute a **engine Python inteira** com o [Chaquopy 17.2]
+(<https://chaquo.com/chaquopy/>) (Python 3.11, minSdk 24, arm64-v8a +
+x86_64) e exibe a **`webui/`** — a página que o próprio `minidm/server.py`
+serve em `http://127.0.0.1:9742/` — dentro de um `WebView`. Não há UI
+duplicada: desktop, navegador e celular falam com a mesma API.
+
+```
+MainActivity (WebView)
+   └── http://127.0.0.1:9742/  ←  server.py (API + webui)
+                    └── scheduler → downloader/stream (requests)
+```
+
+### Instalar
+
+1. Baixe `minidm-android.apk` da **GitHub Release** (ou do artefato
+   `minidm-android` na aba *Actions* do repositório).
+2. Instale no aparelho (aceite "fontes desconhecidas" para arquivos
+   baixados pelo navegador).
+3. Abra o **miniDM** — a tela já é a fila; cole um link e toque em
+   *Baixar*.
+
+### Onde ficam os arquivos
+
+| O quê | Caminho (armazenamento interno do app) |
+|---|---|
+| Downloads | `/data/data/br.com.minidm.app/files/Downloads/<categoria>/` |
+| Fila + config | `/data/data/br.com.minidm.app/files/.minidm/` |
+
+Sem permissão de armazenamento (é espaço interno do app); para exportar
+um arquivo, use o compartilhamento do gerenciador de arquivos ou rode a
+versão Termux com `~/storage/shared`.
+
+### Webui como controle remoto
+
+A mesma página funciona fora do celular: com o daemon rodando no desktop
+(`minidm daemon`), abra <http://127.0.0.1:9742/> no navegador — a fila é
+a mesma API, a UI é o mesmo `webui/`.
+
+### Build
+
+```bash
+# pré-requisitos: JDK 17, Android SDK, Python 3.11 (buildPython),
+# Gradle 8.9+ (AGP 8.7.3)
+gradle -p android assembleDebug
+# saída: android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+A CI (`.github/workflows/build.yml`, job `apk`) já builda e publica o
+APK a cada push (artefato `minidm-android`) e o anexa à Release em tag
+`v*`. O código Python **não é copiado no repo**: a task `stagePython`
+sincroniza `minidm/` e `webui/` para dentro do build.
+
+### O que funciona no APK
+
+| Recurso | APK |
+|---|---|
+| Fila, retomada, segmentos, mirrors, throttle | ✅ (engine pura: `requests` + stdlib) |
+| HLS/DASH (AES-128 via `cryptography`) | ✅ |
+| Categorias estilo IDM (pasta + perfil) | ✅ |
+| webui (tema claro/escuro, polling ao vivo) | ✅ |
+| yt-dlp (sites complexos) | ❌ sem binário p/ Android — a engine própria cobre links diretos/HLS/DASH |
+| ffmpeg (mux DASH/HLS, mp3) | ❌ não empacotado — vídeo HLS/DASH com faixa separada fica mudo |
+| FTP/SFTP | ⚠️ `ftplib` ok; SFTP sem `paramiko` (não empacotado) |
+| Extensão de navegador / clipboard | ❌ (desktop only) |
+| DRM | ❌ fora de propósito permanente — detecta e recusa |
+
+---
+
+## Termux (CLI completa)
+
+O Termux é um terminal Linux completo dentro do Android, onde o minidm
+roda inteiro (CLI + fila + downloads em segundo plano).
+
+### Instalar (5 minutos)
 
 1. **Instale o Termux** — F-Droid (recomendado; a versão da Play Store está
    desatualizada): <https://f-droid.org/packages/com.termux/>
@@ -47,7 +121,7 @@ onde o minidm roda inteiro (CLI + fila + downloads em segundo plano).
    minidm list         # acompanha
    ```
 
-## Uso em segundo plano
+### Uso em segundo plano
 
 O Termux continua baixando com a tela desligada enquanto o processo não
 morrer. Para não perder a fila ao fechar o app:
@@ -61,10 +135,11 @@ minidm daemon --no-clipboard
 * `termux-wake-lock` — evita o Android matar o processo (bateria).
 * `minidm daemon` — roda a fila + **API local** (`127.0.0.1:9742`), igual
   ao desktop; a extensão do navegador **não existe no Android**, mas a API
-  continua útil p/ automação (`curl -X POST .../add`).
+  continua útil p/ automação (`curl -X POST .../add`) e p/ abrir a webui
+  num navegador do celular.
 * A fila fica em `~/.minidm/tasks.json` — sobrevive a fechar o app.
 
-## O que funciona / o que não
+### O que funciona / o que não (Termux)
 
 | Recurso | Android (Termux) |
 |---|---|
@@ -74,26 +149,28 @@ minidm daemon --no-clipboard
 | yt-dlp (delegação p/ sites complexos) | ✅ `pkg install yt-dlp` |
 | FTP/SFTP | ✅ (`pip install paramiko`) |
 | API local + automação por curl | ✅ |
+| webui no navegador do celular | ✅ (`minidm daemon` + abrir a porta) |
 | **GUI (janela)** | ❌ sem display — use a CLI/TUI |
 | Dashboard TUI (`minidm daemon --dashboard`) | ✅ (precisa de `termux-open` p/ cores 256) |
 | Extensão de navegador | ❌ (não há extensões no Chrome mobile) |
 | Notificação ao concluir | ⚠️ use `termux-notification` no `--exec` |
 
-## Alternativa: TUI bonita no celular
+### TUI bonita no celular
 
 ```bash
 pkg install python rich
 minidm daemon --dashboard    # barras, velocidade e ETA ao vivo
 ```
 
-## Backlog (Android nativo)
+---
 
-1. **Kivy + Buildozer** — GUI touch sobre a mesma engine (reuso total de
-   `minidm/*`); gera APK via CI (Linux-only).
-2. **Chaquopy** — Python dentro de um app Android Studio com UI nativa
-   (Kotlin) chamando a engine.
-3. **Servidor + PWA** — `minidm daemon` + página web no celular
-   (a API já existe; faltaria um `webui/` servido por ela).
+## Backlog (Android)
 
-Nenhum dos três toca no escopo de DRM (fora de propósito permanente) nem
-em bypass de licença — ver `docs/analise-idm.md`.
+1. **yt-dlp no APK** — empacotar o yt-dlp (binário Termux) ou delegar p/
+   um servidor Termux na LAN.
+2. **ffmpeg no APK** — binário estático por ABI + mux DASH/HLS.
+3. **Notificações** — `NotificationManager` na conclusão de downloads.
+4. **Kivy/UI nativa** — só se a webui não bastar (a engine já roda).
+
+Nenhum item toca no escopo de DRM (fora de propósito permanente) nem em
+bypass de licença — ver `docs/analise-idm.md`.

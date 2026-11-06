@@ -527,10 +527,27 @@ Notas do empacotamento (`packaging/`):
 * ícone gerado por código: `python packaging/make_icon.py` (PIL, sem asset);
 * dependências: `pip install -r packaging/requirements.txt`.
 
-**Android**: não há binário nativo (a GUI precisa de display). O caminho
-suportado é **Termux** — CLI + fila + daemon completos no celular; ver
-[`packaging/android/README.md`](packaging/android/README.md) (Kivy/Chaquopy
-ficam no backlog).
+### Android (APK + Termux)
+
+O Android tem dois caminhos:
+
+**APK (`android/`, Chaquopy + WebView)** — a engine Python roda embutida
+no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
+**`webui/`** servido pela API local, exibido num WebView:
+
+* baixe o `minidm-android.apk` da **GitHub Release** (ou do artefato
+  `minidm-android` da aba *Actions*) e instale;
+* arquivos caem no armazenamento interno do app
+  (`/data/data/br.com.minidm.app/files/Downloads/<categoria>`, sem
+  permissão especial); a fila fica em `~/.minidm` (HOME do app);
+* a mesma webui serve de **controle remoto** no desktop: com o daemon
+  rodando, abra `http://127.0.0.1:9742/` no navegador;
+* build local: `gradle -p android assembleDebug` (a CI — job `apk` em
+  `.github/workflows/build.yml` — já gera o APK a cada push); detalhes em
+  [`packaging/android/README.md`](packaging/android/README.md).
+
+**Termux** — CLI + fila + daemon completos no celular (sem interface
+gráfica); ver [`packaging/android/README.md`](packaging/android/README.md).
 
 ---
 
@@ -591,6 +608,8 @@ qualidades. Botão direito → **Enviar para o minidm**.
 
 ```
 GET  /status                  -> tarefas + config resumida
+GET  /                        -> webui (UI no navegador/WebView do APK)
+GET  /webui/<arquivo>         -> assets da webui (style.css, app.js, …)
 GET  /config                  -> configuração efetiva
 GET  /profiles                -> perfis + templates de comando (popup)
 POST /add      {url, filename?, dir?, kind?, referer?, page_title?,

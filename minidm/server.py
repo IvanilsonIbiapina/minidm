@@ -3,6 +3,7 @@
 Endpoints:
 
     GET  /status                  -> tarefas + config resumida
+    GET  /                        -> webui (UI no navegador/WebView)
     POST /add      {url, ...}     -> adiciona (aceita mirrors/checksum/kind)
     POST /start    {id|all}       -> inicia/pausadas
     POST /pause    {id}           -> pausa uma tarefa ativa
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -34,6 +36,37 @@ class App:
         self.store = store
         self.scheduler = scheduler
         self.config = config
+
+
+# ----------------------------------------------------------------- webui
+# UI web da API local: página do APK (WebView) e controle remoto no
+# desktop pelo navegador (http://127.0.0.1:9742/).
+_WEBUI_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+}
+
+
+def webui_dir() -> str:
+    """Diretório do `webui/` em cada modo de execução.
+
+    * dev: raiz do repositório (`minidm/server.py` -> `../webui`);
+    * bundle PyInstaller (onedir): `sys._MEIPASS` = `_internal/` (o `webui`
+      vai para lá como `datas` na spec);
+    * APK Chaquopy: raiz do sistema de arquivos Python (o Gradle copia
+      `minidm/` e `webui/` para o mesmo diretório).
+    """
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "webui")
 
 
 def make_handler(app: App):
@@ -65,6 +98,33 @@ def make_handler(app: App):
                 self._json({"error": "arquivo de extensão ausente — "
                                      "rode `minidm ext install`"}, 404)
                 return
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _webui(self, rel: str):
+            """Serve um arquivo do `webui/` (com trava contra traversal)."""
+            root = os.path.realpath(webui_dir())
+            try:
+                target = os.path.realpath(os.path.join(root, rel))
+                inside = os.path.normcase(
+                    os.path.commonpath([root, target])) == os.path.normcase(root)
+            except (OSError, ValueError):
+                inside = False
+            if not inside or not os.path.isfile(target):
+                self._json({"error": "not found"}, 404)
+                return
+            try:
+                with open(target, "rb") as f:
+                    body = f.read()
+            except OSError:
+                self._json({"error": "not found"}, 404)
+                return
+            ctype = _WEBUI_TYPES.get(os.path.splitext(target)[1].lower(),
+                                     "application/octet-stream")
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", ctype)
@@ -135,6 +195,12 @@ def make_handler(app: App):
                 # pacote CRX3 assinado da extensão (auto-hospedado)
                 self._file(os.path.join(app.store.data_dir, "ext", CRX_NAME),
                            "application/x-chrome-extension")
+            elif path in ("/", "/index.html"):
+                # webui: a própria UI servida pela API (WebView do APK e
+                # controle remoto no navegador)
+                self._webui("index.html")
+            elif path.startswith("/webui/"):
+                self._webui(path[len("/webui/"):])
             else:
                 self._json({"error": "not found"}, 404)
 

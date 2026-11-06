@@ -1,0 +1,8 @@
+// Raiz do projeto Android do minidm.
+//
+// AGP 8.7.3 está na faixa suportada pelo Chaquopy 17.2 (AGP 7.3–9.5).
+// O plugin Chaquopy é declarado aqui (apply false) e aplicado no :app.
+plugins {
+    id "com.android.application" version "8.7.3" apply false
+    id "com.chaquo.python" version "17.2.0" apply false
+}

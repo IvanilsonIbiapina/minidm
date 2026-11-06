@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .smoke/
 docs
+
+# Android (Gradle/Chaquopy)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

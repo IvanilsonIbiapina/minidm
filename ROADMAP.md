@@ -4,19 +4,7 @@ Ideias fora da rodada atual — nada aqui é promessa de data; a ordem pode muda
 
 ## Backlog
 
-### 1. APK nativo para Android (depois)
-Hoje o Android só tem o caminho **Termux** (CLI completa; ver
-`packaging/android/README.md`). Um **APK de verdade** fica no backlog:
-
-* **Kivy + Buildozer** — GUI touch reusando a engine `minidm/*` inteira
-  (é o caminho mais direto: a mesma Python vira APK); build via CI Linux.
-* **Chaquopy** — app Android Studio (Kotlin) com Python embutido.
-* **PWA** — `minidm daemon` + página web servida pela API local (a API já
-  existe; faltaria um `webui/`).
-
-Restrições permanentes continuam valendo: sem DRM, sem bypass de licença.
-
-### 2. Rust (se o projeto crescer)
+### 1. Rust (se o projeto crescer)
 Hoje o gargalo do minidm é **rede (I/O)**, não CPU — Python já entrega o
 necessário, e o yt-dlp continua externo. Se um dia for reescrever:
 
@@ -27,8 +15,9 @@ necessário, e o yt-dlp continua externo. Se um dia for reescrever:
   `unsafe` isolado — não "ficar mais rápido" por princípio.
 * Custo: build cruzado para Win/Linux/macOS no CI + integração com o
   PyInstaller (extensão nativa precisa entrar no bundle).
-* **Sinergia com o item 1**: um core em Rust pode ser exposto por FFI
-  (uniFFI) e reusado no APK, evitando levar o Python p/ o celular.
+* **Sinergia com o APK**: um core em Rust pode ser exposto por FFI
+  (uniFFI) e reusado no Android — hoje o APK leva o Python embutido
+  (Chaquopy); um core nativo permitiria um app sem Python.
 
 Não reescrever "porque sim": só se o core Python virar o gargalo medido.
 
@@ -39,3 +28,6 @@ Não reescrever "porque sim": só se o core Python virar o gargalo medido.
   arrasto, toasts, onboarding, detalhes ao vivo.
 * Empacotamento: PyInstaller onedir (GUI+CLI), CI Win/Linux/macOS,
   bundle sem yt-dlp e sem numpy (57 MB), Termux p/ Android.
+* **APK Android** (`android/`): Chaquopy 17.2 + WebView + `webui/`
+  (página servida pela própria API); job `apk` na CI e anexo
+  `minidm-android.apk` na Release por tag.

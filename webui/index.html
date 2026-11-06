@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1419">
+<title>miniDM</title>
+<link rel="stylesheet" href="/webui/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo">&#8595;</span>
+    <span>miniDM</span>
+    <span id="conn" class="conn" title="conexão com a API local">&#9679;</span>
+  </div>
+  <button id="theme-btn" class="icon-btn" type="button" aria-label="Alternar tema">&#9684;</button>
+</header>
+
+<section class="add">
+  <form id="add-form" autocomplete="off">
+    <div class="row">
+      <input id="url" name="url" type="url" inputmode="url" required
+             placeholder="Cole o link do arquivo ou vídeo…" spellcheck="false">
+      <button type="submit" class="primary">Baixar</button>
+    </div>
+    <div class="row sub">
+      <select id="category" aria-label="Categoria">
+        <option value="">Automático</option>
+      </select>
+      <label class="chk" title="Analisa a página no servidor e escolhe a melhor qualidade (HLS/DASH)">
+        <input type="checkbox" id="analyze" checked>
+        <span>Analisar mídia</span>
+      </label>
+    </div>
+  </form>
+</section>
+
+<div class="toolbar">
+  <span id="counts" class="counts">&nbsp;</span>
+  <span class="acts">
+    <button id="start-all" class="ghost" type="button" title="Iniciar toda a fila">&#9654; Tudo</button>
+  </span>
+</div>
+
+<main id="list" class="list" aria-live="polite"></main>
+
+<div id="empty" class="empty">Nada na fila ainda — cole um link acima.</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="/webui/app.js"></script>
+</body>
+</html>

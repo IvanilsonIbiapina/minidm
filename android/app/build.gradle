@@ -1,0 +1,83 @@
+// APK do minidm: engine Python (Chaquopy) + UI web (webui) em WebView.
+//
+// O código-fonte Python NÃO é duplicado no repo: a task `stagePython`
+// copia `minidm/` e `webui/` da raiz do repositório para `build/python`,
+// que é declarado como srcDir extra do Chaquopy. A raiz do sistema de
+// arquivos Python fica, portanto, igual à do dev:
+//
+//     <python-root>/minidm/*.py   (pacote importado como `minidm.*`)
+//     <python-root>/webui/*       (servido pelo server.py em `/`)
+//
+plugins {
+    id "com.android.application"
+    id "com.chaquo.python"
+}
+
+android {
+    namespace "br.com.minidm.app"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "br.com.minidm.app"
+        minSdk 24                     // mínimo do Chaquopy 17
+        targetSdk 35
+        versionCode 1
+        versionName "1.0.0"
+        ndk {
+            // 64-bit: arm64-v8a p/ aparelho, x86_64 p/ emulador.
+            // (sem NDK instalado: as libs nativas do Chaquopy já vêm prontas)
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        // mesmo major.minor do Python de dev/CI (buildPython tem que bater)
+        version = "3.11"
+        pip {
+            install("requests")
+            // HLS AES (minidm/stream.py, importado sob demanda); vem do
+            // índice nativo do Chaquopy (wheels android arm64/x86_64)
+            install("cryptography")
+        }
+    }
+    sourceSets {
+        // src/main/python (bootstrap `main.py`) continua valendo; este
+        // srcDir extra recebe o código copiado da raiz do repositório
+        getByName("main") {
+            srcDir("build/python")
+        }
+    }
+}
+
+// Copia minidm/ (só *.py) e webui/ para dentro do srcDir Python.
+// Não dá para apontar direto p/ a raiz do repo: ela conteria tests/,
+// docs/ etc. no APK; e apontar para `minidm/` faria os módulos virarem
+// top-level (perderia o import `minidm.*`).
+def stagePython = tasks.register("stagePython", Sync) {
+    into(layout.buildDirectory.dir("python"))
+    from("${project.rootDir}/../minidm") {
+        include "**/*.py"
+        into "minidm"
+    }
+    from("${project.rootDir}/../webui") {
+        into "webui"
+    }
+}
+
+// O stage tem de rodar antes de qualquer task que processe fontes Python
+// (compilação de .pyc, pip install, empacotamento no APK).
+tasks.named("preBuild").dependsOn(stagePython)
+tasks.configureEach { t ->
+    if (t.name != "stagePython"
+            && (t.class.name.contains("chaquo")
+                || t.name.toLowerCase().contains("python"))) {
+        t.dependsOn(stagePython)
+    }
+}

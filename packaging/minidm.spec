@@ -54,10 +54,13 @@ EXCLUDES = [
     "unittest",
 ]
 
-# dados: browser_ext/ p/ a extensão do navegador servida pela API local
+# dados: browser_ext/ p/ a extensão do navegador servida pela API local;
+# webui/ p/ a UI web (página do APK e controle remoto no navegador)
 datas = [
     (os.path.join(ROOT, "browser_ext"),
      "browser_ext"),
+    (os.path.join(ROOT, "webui"),
+     "webui"),
 ]
 
 common = dict(
