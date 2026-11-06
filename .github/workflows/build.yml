@@ -40,7 +40,24 @@ jobs:
         shell: bash
         run: |
           export PYTHONIOENCODING=utf-8
-          python -m unittest discover -s tests
+          # -e/-o pipefail já vêm do shell padrão do Actions: captura o
+          # código do unittest sem abortar antes de publicar as falhas
+          status=0
+          python -m unittest discover -s tests 2>&1 | tee suite.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            # anota as falhas como ANOTAÇÕES do check-run — visíveis na
+            # API pública (/check-runs/{id}/annotations) sem login
+            grep -E '^(FAIL|ERROR): ' suite.log | head -n 10 | while IFS= read -r linha; do
+              linha=${linha//%/%25}
+              echo "::error title=falha no teste::${linha}"
+            done
+            resumo=$(tail -n 30 suite.log)
+            resumo=${resumo//%/%25}
+            resumo=${resumo//$'\r'/%0D}
+            resumo=${resumo//$'\n'/%0A}
+            echo "::error title=últimas linhas da suíte::${resumo}"
+            exit "$status"
+          fi
 
   build:
     name: executáveis (${{ matrix.os }})
