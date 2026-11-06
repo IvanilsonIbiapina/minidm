@@ -774,7 +774,21 @@ def run_tui(args) -> int:
                       dashboard=True)
 
 
+def _safe_stdio() -> None:
+    """Console cp1252 (Windows sem UTF-8) não tem ✓/✗/— e derrubava o CLI.
+
+    Reconfigura stdout/stderr p/ não explodir com UnicodeEncodeError;
+    caracteres fora do conjunto viram `?` (saída legível, sem traceback).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")     # type: ignore[union-attr]
+        except (AttributeError, OSError, ValueError):
+            pass                    # stream sem reconfigure (teste, StringIO)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _safe_stdio()
     args = build_parser().parse_args(argv)
     if args.cmd == "config" and args.action == "set" and not (args.key and args.value):
         print("uso: minidm config set <chave> <valor>", file=sys.stderr)

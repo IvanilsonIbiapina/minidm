@@ -785,10 +785,15 @@ class MinidmApp(_Root):
                                                 0, "end")))
         self.bind("<F5>", lambda e: self._do_start())
         self.bind("<Delete>", lambda e: self._do_remove())
-        self.bind("<Control-a>", lambda e: (
-            self.tree.selection_set(self.tree.get_children()), "break")[1])
+        self.bind("<Control-a>", lambda e: (self._select_all(), "break")[1])
         self.bind("<Control-c>", lambda e: self._copy_urls())
         self.bind("<Control-v>", lambda e: self._paste_urls())
+
+    def _select_all(self):
+        """Ctrl+A / menu: seleciona todas as linhas (vazio = nada)."""
+        rows = self.tree.get_children()
+        if rows:
+            self.tree.selection_set(rows)
 
     def _copy_urls(self):
         ids = self._selected_ids()

@@ -39,9 +39,16 @@ VERSION = "6.42.63.3"   # só p/ info de arquivo; a real está em minidm.__versi
 # faz `import yt_dlp` como último fallback — o PyInstaller seguiria o import
 # estático e traria o pacote GPL inteiro + deps (numpy, curl_cffi…)).
 # Com o exclude, o bundle acha yt-dlp só no PATH/MINIDM_YTDLP, como sempre.
+#
+# numpy (26 MB: numpy + numpy.libs/OpenBLAS) também fica de fora: nenhum
+# código do minidm importa numpy; quem o puxa é o grafo do PyInstaller
+# (hook-numpy roda só porque ele aparece), e o PIL já o trata como opcional
+# (hook-PIL.ImageFilter o exclui). Só pesava o bundle.
 EXCLUDES = [
     "yt_dlp",
     "youtube_dl",
+    "numpy",
+    "numpy.typing",
     "tkinter.test",
     "test",
     "unittest",
