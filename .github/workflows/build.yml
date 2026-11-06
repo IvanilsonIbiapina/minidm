@@ -2,11 +2,16 @@ name: build
 
 # Build dos executáveis do minidm em Windows, Linux e macOS.
 # Não faz cross-compile: cada runner nativo compila o próprio alvo.
-# (Android fica de fora de propósito — ver packaging/android/README.md.)
+#
+# Releases: ao pushar uma TAG `v*`, o job `release` junta os pacotes dos
+# três sistemas e publica uma GitHub Release com eles anexados.
+#   git tag v1.1.0 && git push origin v1.1.0
+# (Android fica de fora — ver packaging/android/README.md e ROADMAP.md.)
 
 on:
   push:
     branches: [main, master]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -45,23 +50,14 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            dist: dist/minidm-gui/minidm-gui.exe
             cli: dist/minidm/minidm.exe
-            extra: |
-              mv dist/minidm-gui/minidm-gui.exe minidm-gui-win64.exe
-              mv dist/minidm/minidm.exe minidm-win64.exe
+            pkg: minidm-win64.zip
           - os: ubuntu-latest
-            dist: dist/minidm-gui/minidm-gui
             cli: dist/minidm/minidm
-            extra: |
-              mv dist/minidm-gui/minidm-gui minidm-gui-linux-x86_64
-              mv dist/minidm/minidm minidm-linux-x86_64
+            pkg: minidm-linux-x86_64.tar.gz
           - os: macos-latest
-            dist: dist/minidm-gui/minidm-gui
             cli: dist/minidm/minidm
-            extra: |
-              mv dist/minidm-gui/minidm-gui minidm-gui-macos
-              mv dist/minidm/minidm minidm-macos
+            pkg: minidm-macos-arm64.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -88,18 +84,56 @@ jobs:
           "$CLI" --version
           "$CLI" config show >/dev/null
 
-      - name: pacota
+      # onedir = exe + _internal/: o PACOTE leva a pasta inteira
+      # (um .exe solto não roda — precisa do _internal ao lado)
+      - name: pacota (bundle completo)
         shell: bash
         run: |
-          ${{ matrix.extra }}
           if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a minidm-win64.zip minidm-win64.exe minidm-gui-win64.exe || true
+            7z a "${{ matrix.pkg }}" ./dist/minidm ./dist/minidm-gui
+          else
+            tar -czf "${{ matrix.pkg }}" -C dist minidm minidm-gui
           fi
+          ls -lh "${{ matrix.pkg }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: minidm-${{ matrix.os }}
-          path: |
-            minidm-*
+          path: ${{ matrix.pkg }}
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: publica release
+    # só em tag v* (ex.: v1.1.0) — em push normal não roda
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # cria a Release com o GITHUB_TOKEN
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: minidm-*
+          path: pacotes
+          merge-multiple: true
+
+      - name: lista pacotes
+        run: ls -lh pacotes/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: pacotes/*
+          generate_release_notes: true
+          body: |
+            ### minidm ${{ github.ref_name }}
+
+            | Pacote | Sistema |
+            |---|---|
+            | `minidm-win64.zip` | Windows x64 |
+            | `minidm-linux-x86_64.tar.gz` | Linux x86_64 |
+            | `minidm-macos-arm64.tar.gz` | macOS Apple Silicon |
+
+            Cada zip traz `minidm/` (CLI) + `minidm-gui/` (interface) —
+            extraia e rode. Sem Python instalado na máquina.
+            yt-dlp e ffmpeg continuam externos (`minidm deps` mostra o que falta).

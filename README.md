@@ -493,6 +493,30 @@ compila nos três sistemas a cada push — baixe os artefatos da aba *Actions*
 sem buildar localmente. Cada runner compila o próprio alvo (sem
 cross-compile).
 
+### Releases (pacote por sistema)
+
+Para publicar uma versão com os binários anexados (estilo repos que já vêm
+buildados), é só mandar uma **tag**:
+
+```bat
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+A CI roda testes + build nos três sistemas e cria uma **GitHub Release**
+(`softprops/action-gh-release`) com:
+
+| Pacote | Sistema |
+|---|---|
+| `minidm-win64.zip` | Windows x64 |
+| `minidm-linux-x86_64.tar.gz` | Linux x86_64 |
+| `minidm-macos-arm64.tar.gz` | macOS Apple Silicon |
+
+Cada pacote leva o **bundle completo** (`minidm/` + `minidm-gui/` — o
+`.exe` solto não roda sem o `_internal/` ao lado). Quem baixa extrai e
+roda, sem Python na máquina. Em push normal (sem tag) só roda
+teste+build, sem release.
+
 Notas do empacotamento (`packaging/`):
 
 * **onedir** (não onefile): inicia mais rápido e antivírus reclama menos;
@@ -622,6 +646,7 @@ Se a URL tiver DRM, o `/add` responde `400 {ok:false, drm, error}`.
 ```
 minidm-gui.bat         duplo clique -> interface gráfica
 minidm-gui-debug.bat   idem, com terminal (depuração)
+ROADMAP.md             backlog (APK Android, Rust) + o que já foi feito
 docs/analise-idm.md    análise reversa do IDM que embasa este projeto
 build/
   windows.bat          build Windows (PyInstaller -> dist/)
