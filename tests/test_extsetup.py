@@ -17,6 +17,7 @@ import io
 import json
 import os
 import struct
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -222,6 +223,8 @@ class TestStatus(unittest.TestCase):
 
 
 # ============================================================== política
+@unittest.skipUnless(sys.platform == "win32",
+                     "política de registro é exclusiva do Windows")
 class TestPolicy(unittest.TestCase):
     def setUp(self):
         self.ext_id = "aabbccddeeffgghhiijjkkllmmnnpp"

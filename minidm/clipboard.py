@@ -6,8 +6,7 @@ http(s) novo, a função `callback` é chamada.
 
 from __future__ import annotations
 
-import ctypes
-import ctypes.wintypes
+import os
 import re
 import threading
 from typing import Callable
@@ -15,25 +14,36 @@ from typing import Callable
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+if os.name == "nt":
+    # API Win32 do clipboard — fora do Windows (CLI/daemon/server em
+    # Linux ou macOS) o módulo importa sem quebrar e o observador
+    # apenas não enxerga nada (`read_clipboard_text` devolve None).
+    import ctypes
+    import ctypes.wintypes
 
-user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
-user32.OpenClipboard.restype = ctypes.c_bool
-user32.CloseClipboard.restype = ctypes.c_bool
-user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
-user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
-user32.GetClipboardData.argtypes = [ctypes.c_uint]
-user32.GetClipboardData.restype = ctypes.c_void_p
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
 
-kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-kernel32.GlobalLock.restype = ctypes.c_void_p
-kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+    user32.OpenClipboard.restype = ctypes.c_bool
+    user32.CloseClipboard.restype = ctypes.c_bool
+    user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
+    user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+else:
+    user32 = kernel32 = None
 
 URL_RE = re.compile(r"https?://[^\s\"'<>()]+")
 
 
 def read_clipboard_text() -> str | None:
+    if user32 is None:
+        return None
     if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
         return None
     if not user32.OpenClipboard(None):

@@ -89,6 +89,25 @@ class TestCookieJar(unittest.TestCase):
 class TestBuildCmdFlags(unittest.TestCase):
     """(A/B/D/E/F) flags novas no comando do YtdlpDownloader."""
 
+    def setUp(self):
+        # a CI não tem yt-dlp instalado: aponta MINIDM_YTDLP p/ um
+        # arquivo existente (find() só checa existência — aqui só
+        # montamos o comando, nunca executamos).
+        self.tmp = tempfile.mkdtemp(prefix="minidm-cmd-")
+        self._old = os.environ.get("MINIDM_YTDLP")
+        fake = os.path.join(self.tmp, "yt-dlp")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write("")
+        os.environ["MINIDM_YTDLP"] = fake
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("MINIDM_YTDLP", None)
+        else:
+            os.environ["MINIDM_YTDLP"] = self._old
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
     def _cmd(self, cfg, task):
         dl = YtdlpDownloader(task, cfg)
         return " ".join(dl._build_cmd())

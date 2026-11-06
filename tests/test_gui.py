@@ -26,6 +26,12 @@ import tempfile
 import unittest
 from unittest import mock
 
+try:
+    import tkinter  # noqa: F401
+except ImportError:
+    # GUI precisa de tkinter; ambiente headless da CI sem ele pula o módulo
+    raise unittest.SkipTest("tkinter indisponível neste ambiente")
+
 from minidm import player
 from minidm.config import AppConfig
 from minidm.dashboard import eta, eta_seconds

@@ -59,6 +59,7 @@ def write_stub(directory: str, info: dict, returncode: int = 0) -> str:
     payload = json.dumps(info)
     with open(stub, "w", encoding="utf-8") as f:
         f.write(
+            f"#!{sys.executable}\n"
             "import json, sys\n"
             f"INFO = json.loads({payload!r})\n"
             f"RC = {returncode}\n"
@@ -80,6 +81,7 @@ def write_cookie_stub(directory: str, info_with: dict,
     stub = os.path.join(directory, "yt-dlp_stub.py")
     with open(stub, "w", encoding="utf-8") as f:
         f.write(
+            f"#!{sys.executable}\n"
             "import json, sys\n"
             f"WITH = json.loads({json.dumps(info_with)!r})\n"
             f"WITHOUT = json.loads({json.dumps(info_without)!r})\n"
@@ -234,6 +236,7 @@ def write_dl_stub(directory: str, content: bytes = b"conteudo do video",
     stub = os.path.join(directory, "yt-dlp_dl.py")
     with open(stub, "w", encoding="utf-8") as f:
         f.write(
+            f"#!{sys.executable}\n"
             "import sys, os\n"
             f"CONTENT = {content!r}\n"
             f"RC = {rc}\n"
@@ -318,6 +321,7 @@ class TestYtdlpDownloader(YtdlpBase):
         stub = os.path.join(self.tmp, "yt-dlp_ck.py")
         with open(stub, "w", encoding="utf-8") as f:
             f.write(
+                f"#!{sys.executable}\n"
                 "import sys, os\n"
                 "args = sys.argv[1:]\n"
                 "ck = any(a.lower().startswith('cookie:') for a in args)\n"

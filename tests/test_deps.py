@@ -280,10 +280,21 @@ class TestAutoDelegation(unittest.TestCase):
         # CLI, GUI, daemon e servidor usam a mesma função central
         import minidm.cli as cli
         import minidm.daemon as daemon
-        import minidm.gui as gui
         import minidm.server as server
 
-        for mod in (cli, daemon, gui, server):
+        interfaces = [cli, daemon, server]
+        try:
+            import minidm.gui as gui
+        except ImportError as e:
+            if "tkinter" not in str(e):
+                raise
+            # GUI exige tkinter; ambiente CI sem ele — as outras
+            # interfaces continuam validadas
+            gui = None
+        if gui is not None:
+            interfaces.append(gui)
+
+        for mod in interfaces:
             self.assertIn("auto_delegate", dir(mod), mod.__name__)
 
 
