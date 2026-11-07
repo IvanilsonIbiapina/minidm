@@ -170,7 +170,12 @@ jobs:
           status=0
           gradle -p android assembleDebug --stacktrace 2>&1 | tee gradle.log || status=$?
           if [ "$status" -ne 0 ]; then
-            bash .github/ci/annotate-fail.sh "falha no build do APK" gradle.log 50
+            # primeiro a CAUSA RAIZ (no Gradle ela fica depois dos frames
+            # de stack trace): seções "What went wrong" + linhas "Caused by"
+            grep -A 6 "What went wrong" gradle.log > raiz.txt || true
+            grep -E "Caused by:|Execution failed for task|error:|FAILURE:" gradle.log >> raiz.txt || true
+            bash .github/ci/annotate-fail.sh "causa raiz do APK" raiz.txt 40
+            bash .github/ci/annotate-fail.sh "falha no build do APK" gradle.log 40
             exit "$status"
           fi
 

@@ -12,4 +12,11 @@ resumo=$(tail -n "$n" "$arquivo" 2>/dev/null || echo "(sem log)")
 resumo=${resumo//%/%25}
 resumo=${resumo//$'\r'/%0D}
 resumo=${resumo//$'\n'/%0A}
+# A API do GitHub corta a mensagem em 4096 chars mantendo o INÍCIO; a
+# causa raiz dos stack traces (Gradle/PyInstaller) fica no FIM — se
+# passar do limite, corta mantendo o final, com marcador no começo.
+max=4000
+if [ "${#resumo}" -gt "$max" ]; then
+  resumo="...(trecho inicial omitido)...${resumo: -$max}"
+fi
 echo "::error title=${titulo}::${resumo}"
