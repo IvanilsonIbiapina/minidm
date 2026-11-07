@@ -21,6 +21,44 @@ necessário, e o yt-dlp continua externo. Se um dia for reescrever:
 
 Não reescrever "porque sim": só se o core Python virar o gargalo medido.
 
+### 2. Android: downloads visíveis no sistema
+Hoje os arquivos ficam no **armazenamento interno** do app
+(`/data/data/br.com.minidm.app/files/Downloads/<categoria>`) — invisíveis
+para o app "Downloads" do sistema e para file managers. Evolução:
+
+* API 29+: gravar via **MediaStore.Downloads** (API Java exposta pelo
+  Chaquopy) — sem permissão, arquivo aparece em `Download/` do sistema;
+* API 24–28: `WRITE_EXTERNAL_STORAGE` (permissão em runtime) +
+  `Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)`;
+* a fila/config continua no armazenamento interno (só o arquivo final
+  muda de lugar).
+
+### 3. "Programa de verdade" estilo IDM (desktop)
+O IDM é sempre-presente: bandeja, inicializar com o Windows, captura do
+navegador. O miolo do minidm já existe (daemon, `extsetup` com registro,
+clipboard watch, scheduler, extensão do navegador) — falta a camada de
+integração com o sistema:
+
+* **duplo clique → GUI** (feito: `minidm.exe` sem args abre a janela);
+* **LEIA-ME.txt** no zip com instruções + aviso do SmartScreen (feito);
+* **bandeja (tray)** + fechar-para-bandeja na GUI;
+* **autostart** (chave `Run` do registro — o `extsetup` já escreve
+  registro) + atalhos no Menu Iniciar;
+* **extensão do navegador instalada por padrão** no primeiro uso
+  (`minidm ext guided` automatizado, com consentimento);
+* **SmartScreen/assinatura**: exe sem assinatura é bloqueado uma vez;
+  certificado de código assinatura é caro — manter a instrução no
+  LEIA-ME e reavaliar se o projeto crescer.
+
+### 4. Versões portable
+O onedir já é quase portátil (extraia e rode). Falta o modo completo:
+
+* arquivo `portable.flag` ao lado do exe → config/fila **ao lado do
+  exe** (em vez de `~/.minidm`);
+* empacotar um zip "portable" distinto (sem atalhos/inicialização);
+* candidato opcional: build `onefile` p/ uso avulso (inicia mais lento
+  que onedir — medir antes de trocar).
+
 ## Já feito (referência)
 
 * Rodadas A–F do yt-dlp (CLI/subprocesso, nunca embutido).
