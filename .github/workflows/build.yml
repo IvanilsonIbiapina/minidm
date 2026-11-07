@@ -230,4 +230,6 @@ jobs:
             Se o SmartScreen bloquear: "Mais informações" → "Executar assim".
             yt-dlp e ffmpeg continuam externos (`minidm deps` mostra o que falta).
             O `minidm-android.apk` instala direto no celular: engine Python
-            embutida (Chaquopy) + webui em WebView.
+            embutida (Chaquopy) + webui em WebView — os arquivos baixados
+            aparecem em `Download/<categoria>` do sistema (MediaStore;
+            Android 7–9 pede a permissão de armazenamento na 1ª abertura).

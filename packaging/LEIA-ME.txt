@@ -33,7 +33,10 @@ DEPENDÊNCIAS EXTERNAS (baixe por conta própria — licenças próprias)
 ANDROID
 -------
 Instale o minidm-android.apk (engine Python embutida). Os arquivos
-ficam em Downloads/<categoria> dentro do armazenamento do app.
+baixados aparecem em  Download/<categoria>  da pasta pública do
+Android (visíveis no app "Downloads" do sistema). Android 10+ não
+pede permissão; Android 7-9 pede a permissão de armazenamento na
+primeira abertura do app.
 
 DOWNLOADS
 ---------

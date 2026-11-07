@@ -537,9 +537,13 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
 
 * baixe o `minidm-android.apk` da **GitHub Release** (ou do artefato
   `minidm-android` da aba *Actions*) e instale;
-* arquivos caem no armazenamento interno do app
-  (`/data/data/br.com.minidm.app/files/Downloads/<categoria>`, sem
-  permissão especial); a fila fica em `~/.minidm` (HOME do app);
+* os arquivos concluídos aparecem em **`Download/<categoria>/` da pasta
+  pública do Android** (visíveis no app *Downloads* do sistema e em file
+  managers): a engine grava no armazenamento interno e o arquivo é movido
+  via **MediaStore** (API 29+, sem permissão) ou escrita direta +
+  `WRITE_EXTERNAL_STORAGE` (API 24–28, pedida na primeira abertura);
+  desligar: `android_public_downloads false`; a fila fica em `~/.minidm`
+  (HOME do app);
 * a mesma webui serve de **controle remoto** no desktop: com o daemon
   rodando, abra `http://127.0.0.1:9742/` no navegador;
 * build local: `gradle -p android assembleDebug` (a CI — job `apk` em

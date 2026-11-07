@@ -21,19 +21,7 @@ necessário, e o yt-dlp continua externo. Se um dia for reescrever:
 
 Não reescrever "porque sim": só se o core Python virar o gargalo medido.
 
-### 2. Android: downloads visíveis no sistema
-Hoje os arquivos ficam no **armazenamento interno** do app
-(`/data/data/br.com.minidm.app/files/Downloads/<categoria>`) — invisíveis
-para o app "Downloads" do sistema e para file managers. Evolução:
-
-* API 29+: gravar via **MediaStore.Downloads** (API Java exposta pelo
-  Chaquopy) — sem permissão, arquivo aparece em `Download/` do sistema;
-* API 24–28: `WRITE_EXTERNAL_STORAGE` (permissão em runtime) +
-  `Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)`;
-* a fila/config continua no armazenamento interno (só o arquivo final
-  muda de lugar).
-
-### 3. "Programa de verdade" estilo IDM (desktop)
+### 2. "Programa de verdade" estilo IDM (desktop)
 O IDM é sempre-presente: bandeja, inicializar com o Windows, captura do
 navegador. O miolo do minidm já existe (daemon, `extsetup` com registro,
 clipboard watch, scheduler, extensão do navegador) — falta a camada de
@@ -50,7 +38,7 @@ integração com o sistema:
   certificado de código assinatura é caro — manter a instrução no
   LEIA-ME e reavaliar se o projeto crescer.
 
-### 4. Versões portable
+### 3. Versões portable
 O onedir já é quase portátil (extraia e rode). Falta o modo completo:
 
 * arquivo `portable.flag` ao lado do exe → config/fila **ao lado do
@@ -62,6 +50,11 @@ O onedir já é quase portátil (extraia e rode). Falta o modo completo:
 ## Já feito (referência)
 
 * Rodadas A–F do yt-dlp (CLI/subprocesso, nunca embutido).
+* **Downloads Android visíveis no sistema**: arquivo concluído é movido
+  para `Download/<categoria>/` via MediaStore (API 29+, sem permissão) ou
+  escrita direta + `WRITE_EXTERNAL_STORAGE` (24–28, pedido em runtime) —
+  `minidm/androidpub.py` + `MainActivity.publish`, registrado em
+  `task.published_path`; flag `android_public_downloads` (padrão ligado).
 * UI completa: tema, ícones, busca, DnD, menu de contexto, fila por
   arrasto, toasts, onboarding, detalhes ao vivo.
 * Empacotamento: PyInstaller onedir (GUI+CLI), CI Win/Linux/macOS,

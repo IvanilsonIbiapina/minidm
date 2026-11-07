@@ -10,7 +10,10 @@ Notas Android:
   no daemon, então fica de fora do APK;
 * saída do `print` vai para o Logcat (tags `python.stdout`/`python.stderr`);
 * dados em `os.environ["HOME"]` (armazenamento interno do app):
-  `~/.minidm` (fila/config) e `~/Downloads/<categoria>` (arquivos).
+  `~/.minidm` (fila/config) e `~/Downloads/<categoria>` (arquivos);
+* downloads concluídos são MOVIDOS para `Download/<categoria>/` da
+  pasta pública do sistema (visíveis no app Downloads) — ver
+  `minidm/androidpub.py` + `MainActivity.publish` (MediaStore).
 """
 
 from __future__ import annotations
