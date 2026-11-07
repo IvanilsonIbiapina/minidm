@@ -90,20 +90,37 @@ jobs:
 
       - name: build (Windows)
         if: runner.os == 'Windows'
-        shell: cmd
-        run: build\windows.bat
+        shell: bash
+        run: |
+          status=0
+          cmd //c "build\windows.bat" 2>&1 | tee build.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            bash .github/ci/annotate-fail.sh "falha no build (Windows)" build.log 40
+            exit "$status"
+          fi
 
       - name: build (Unix)
         if: runner.os != 'Windows'
         shell: bash
-        run: bash build/unix.sh
+        run: |
+          status=0
+          bash build/unix.sh 2>&1 | tee build.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            bash .github/ci/annotate-fail.sh "falha no build (${{ runner.os }})" build.log 40
+            exit "$status"
+          fi
 
       - name: smoke (CLI abre)
         shell: bash
         run: |
           CLI="${{ matrix.cli }}"
-          "$CLI" --version
-          "$CLI" config show >/dev/null
+          status=0
+          "$CLI" --version 2>&1 | tee smoke.log || status=$?
+          "$CLI" config show >>smoke.log 2>&1 || status=$?
+          if [ "$status" -ne 0 ]; then
+            bash .github/ci/annotate-fail.sh "smoke do CLI falhou" smoke.log 20
+            exit "$status"
+          fi
 
       # onedir = exe + _internal/: o PACOTE leva a pasta inteira
       # (um .exe solto não roda — precisa do _internal ao lado)
@@ -148,7 +165,14 @@ jobs:
           gradle-version: "8.9"      # mínimo do AGP 8.7
 
       - name: build APK (debug)
-        run: gradle -p android assembleDebug --stacktrace
+        shell: bash
+        run: |
+          status=0
+          gradle -p android assembleDebug --stacktrace 2>&1 | tee gradle.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            bash .github/ci/annotate-fail.sh "falha no build do APK" gradle.log 50
+            exit "$status"
+          fi
 
       - name: pacota (nome estável p/ release)
         run: |
