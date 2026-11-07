@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- fundo do adaptive icon (API 26+): azul da marca -->
+    <color name="ic_launcher_background">#0a7bd8</color>
+</resources>
