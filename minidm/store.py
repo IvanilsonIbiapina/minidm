@@ -209,7 +209,17 @@ class TaskStore:
                        "removed": self._removed}, f, indent=1)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, self.path)
+        # Windows: antivirus/índice pode segurar o destino por instantes
+        # e o rename falha com "Access is denied" (WinError 5) — re-tenta
+        # com backoff curto antes de desistir.
+        for tentativa in range(5):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                if tentativa == 4:
+                    raise
+                time.sleep(0.05 * (tentativa + 1))
 
     def save(self) -> None:
         with self._lock:
