@@ -789,6 +789,14 @@ def _safe_stdio() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _safe_stdio()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        # Duplo clique no executável sem argumentos: abre a GUI — o minidm
+        # se comporta como programa (IDM), não como ferramenta de terminal
+        # (antes o argparse exigia subcomando, a janela abria o erro e
+        # fechava: dava a impressão de que "não abriu"). Ajuda em
+        # `minidm --help`.
+        return cmd_gui(None)
     args = build_parser().parse_args(argv)
     if args.cmd == "config" and args.action == "set" and not (args.key and args.value):
         print("uso: minidm config set <chave> <valor>", file=sys.stderr)

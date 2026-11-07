@@ -1,0 +1,42 @@
+minidm — gerenciador de downloads estilo IDM
+=============================================
+
+WINDOWS
+-------
+1. Extraia TODO o conteúdo do zip para uma pasta (ex.: C:\minidm).
+2. Duplo clique em  minidm-gui\minidm-gui.exe  → abre a interface.
+3. Se o Windows bloquear (SmartScreen — programa sem assinatura):
+   "Mais informações" → "Executar assim". É seguro: é o mesmo código
+   publicado no GitHub.
+
+LINUX / macOS
+-------------
+Extraia o .tar.gz e rode:
+   ./minidm-gui/minidm-gui     (interface)
+   ./minidm/minidm --help      (terminal)
+
+LINHA DE COMANDO (minidm.exe / minidm)
+---------------------------------------
+   minidm --help          ajuda
+   minidm add <url>       adiciona link(s) à fila
+   minidm start           processa a fila
+   minidm list            mostra a fila
+   minidm deps            o que falta (yt-dlp, ffmpeg...)
+   minidm gui             abre a interface (idem duplo clique)
+
+DEPENDÊNCIAS EXTERNAS (baixe por conta própria — licenças próprias)
+-------------------------------------------------------------------
+   yt-dlp   vídeos (YouTube etc.)   https://yt-dlp.org
+   ffmpeg   HLS/DASH/conversão      https://ffmpeg.org
+`minidm deps` mostra o que está faltando. O yt-dlp NÃO vem no zip.
+
+ANDROID
+-------
+Instale o minidm-android.apk (engine Python embutida). Os arquivos
+ficam em Downloads/<categoria> dentro do armazenamento do app.
+
+DOWNLOADS
+---------
+Por padrão em ~/Downloads/<categoria> (Vídeos, Músicas, Programas,
+Documentos, Imagens, Comprimidos). Trocar a pasta base:
+   minidm config set download_base D:\Baixadas

@@ -127,10 +127,11 @@ jobs:
       - name: pacota (bundle completo)
         shell: bash
         run: |
+          cp packaging/LEIA-ME.txt dist/
           if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "${{ matrix.pkg }}" ./dist/minidm ./dist/minidm-gui
+            (cd dist && 7z a "../${{ matrix.pkg }}" minidm minidm-gui LEIA-ME.txt)
           else
-            tar -czf "${{ matrix.pkg }}" -C dist minidm minidm-gui
+            tar -czf "${{ matrix.pkg }}" -C dist minidm minidm-gui LEIA-ME.txt
           fi
           ls -lh "${{ matrix.pkg }}"
 
@@ -223,8 +224,10 @@ jobs:
             | `minidm-macos-arm64.tar.gz` | macOS Apple Silicon |
             | `minidm-android.apk` | Android (arm64-v8a + x86_64) |
 
-            Cada zip traz `minidm/` (CLI) + `minidm-gui/` (interface) —
-            extraia e rode. Sem Python instalado na máquina.
+            Cada zip traz `minidm/` (CLI) + `minidm-gui/` (interface) +
+            `LEIA-ME.txt` — extraia e duplo clique em
+            `minidm-gui/minidm-gui.exe`. Sem Python instalado na máquina.
+            Se o SmartScreen bloquear: "Mais informações" → "Executar assim".
             yt-dlp e ffmpeg continuam externos (`minidm deps` mostra o que falta).
             O `minidm-android.apk` instala direto no celular: engine Python
             embutida (Chaquopy) + webui em WebView.
