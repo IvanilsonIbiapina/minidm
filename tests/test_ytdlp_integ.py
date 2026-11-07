@@ -149,7 +149,12 @@ class TestBuildCmdFlags(unittest.TestCase):
 
     def test_f_sponsorblock(self):
         t = Task(url="https://youtu.be/a", dest_dir="/tmp", filename="a.mp4")
-        c = self._cmd(AppConfig(sponsorblock="all"), t)
+        # sponsorblock requer ffmpeg (gate em _build_cmd): simula um
+        # ffmpeg presente p/ validar a montagem da flag — a CI não tem
+        # ffmpeg instalado e a flag corretamente não entraria.
+        with mock.patch("minidm.ytdlpdl.ffmpeg_dir",
+                        return_value="/fake/ffmpeg"):
+            c = self._cmd(AppConfig(sponsorblock="all"), t)
         self.assertIn("--sponsorblock-remove all", c)
 
 
@@ -283,7 +288,9 @@ class TestSpeedYtdlp(unittest.TestCase):
         with dl._lock:
             # base 5 s atrás -> 20 MiB / 5 s = 4 MiB/s
             dl._samples[0] = (time.monotonic() - 5.0, dl._samples[0][1])
-        self.assertAlmostEqual(dl.speed_bps(), 4 * 1024 * 1024, delta=1)
+        # folga de 4 KiB: o cálculo usa monotonic() e μs de diferença
+        # entre parse e ajuste mudam os últimos bytes/s (CI varia ~3)
+        self.assertAlmostEqual(dl.speed_bps(), 4 * 1024 * 1024, delta=4096)
 
     def test_velocidade_velha_expira_e_cai_nas_amostras(self):
         import time
@@ -294,7 +301,7 @@ class TestSpeedYtdlp(unittest.TestCase):
         with dl._lock:
             dl._speed_ts = time.monotonic() - 30      # venceu o TTL
             dl._samples[0] = (time.monotonic() - 5.0, dl._samples[0][1])
-        self.assertAlmostEqual(dl.speed_bps(), 4 * 1024 * 1024, delta=1)
+        self.assertAlmostEqual(dl.speed_bps(), 4 * 1024 * 1024, delta=4096)
 
     def test_troca_de_etapa_zera_as_amostras(self):
         # mux: baixou o vídeo (50 MiB) e começou o áudio (0,05 MiB)
