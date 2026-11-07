@@ -73,7 +73,10 @@ def stagePython = tasks.register("stagePython", Sync) {
 
 // O stage tem de rodar antes de qualquer task que processe fontes Python
 // (compilação de .pyc, pip install, empacotamento no APK).
-tasks.named("preBuild").dependsOn(stagePython)
+// `tasks.named()` devolve um TaskProvider — dependsOn() é do Task, então
+// entra via configure { } (chamar direto falharia: "Could not find
+// method dependsOn() for arguments [provider(task 'stagePython')]")
+tasks.named("preBuild").configure { it.dependsOn(stagePython) }
 tasks.configureEach { t ->
     if (t.name != "stagePython"
             && (t.class.name.contains("chaquo")
