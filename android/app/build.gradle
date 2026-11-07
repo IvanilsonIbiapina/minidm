@@ -1,9 +1,9 @@
 // APK do minidm: engine Python (Chaquopy) + UI web (webui) em WebView.
 //
 // O código-fonte Python NÃO é duplicado no repo: a task `stagePython`
-// copia `minidm/` e `webui/` da raiz do repositório para `build/python`,
-// que é declarado como srcDir extra do Chaquopy. A raiz do sistema de
-// arquivos Python fica, portanto, igual à do dev:
+// copia `minidm/` e `webui/` da raiz do repositório para
+// `build/stagedPython`, que é declarado como srcDir extra do Chaquopy.
+// A raiz do sistema de arquivos Python fica, portanto, igual à do dev:
 //
 //     <python-root>/minidm/*.py   (pacote importado como `minidm.*`)
 //     <python-root>/webui/*       (servido pelo server.py em `/`)
@@ -49,9 +49,11 @@ chaquopy {
     }
     sourceSets {
         // src/main/python (bootstrap `main.py`) continua valendo; este
-        // srcDir extra recebe o código copiado da raiz do repositório
+        // srcDir extra recebe o código copiado da raiz do repositório.
+        // NÃO é build/python: essa é a raiz INTERNA do Chaquopy (ver
+        // comentário da task stagePython abaixo).
         getByName("main") {
-            srcDir("build/python")
+            srcDir("build/stagedPython")
         }
     }
 }
@@ -60,8 +62,18 @@ chaquopy {
 // Não dá para apontar direto p/ a raiz do repo: ela conteria tests/,
 // docs/ etc. no APK; e apontar para `minidm/` faria os módulos virarem
 // top-level (perderia o import `minidm.*`).
+//
+// NÃO gravar em `build/python`: essa é a raiz INTERNA do Chaquopy
+// (PythonPlugin.buildSubdir) — lá ficam `build/python/pip/<variant>`
+// (output do installDebugPythonRequirements) e `build/python/sources/
+// <variant>` (output do mergeDebugPythonSources). Um srcDir em cima de
+// `build/python` faria o merge ler a saída do pip install sem dependência
+// declarada e o Gradle aborta com:
+//   "Task ':app:mergeDebugPythonSources' uses this output of task
+//    ':app:installDebugPythonRequirements' without declaring an explicit
+//    or implicit dependency"
 def stagePython = tasks.register("stagePython", Sync) {
-    into(layout.buildDirectory.dir("python"))
+    into(layout.buildDirectory.dir("stagedPython"))
     from("${project.rootDir}/../minidm") {
         include "**/*.py"
         into "minidm"
