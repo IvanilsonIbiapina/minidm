@@ -3,6 +3,11 @@
 
     <!-- downloads http(s) de qualquer site + API local em 127.0.0.1 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- só API 24–28: gravar em Download/ público; API 29+ publica via
+         MediaStore sem permissão (ver MainActivity.publish) -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:name="com.chaquo.python.android.PyApplication"

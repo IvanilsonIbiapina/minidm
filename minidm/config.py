@@ -80,6 +80,11 @@ class AppConfig:
     # vazio = "~/Downloads" (convenção do IDM). Dentro dela criamos uma
     # subpasta por categoria.
     download_base: str = ""
+    # Android: mover o arquivo concluído p/ a pasta pública Download/
+    # do sistema (MediaStore em API 29+; WRITE_EXTERNAL_STORAGE em
+    # 24–28) — sem isso os arquivos ficam no armazenamento privado do
+    # app, invisíveis para o sistema. No desktop não tem efeito.
+    android_public_downloads: bool = True
 
     @property
     def config_path(self) -> str:

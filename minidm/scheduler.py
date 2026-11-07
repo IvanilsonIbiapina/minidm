@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+from minidm.androidpub import publish_if_needed
 from minidm.archive import Archive
 from minidm.categories import effective_category
 from minidm.config import AppConfig
@@ -218,6 +219,8 @@ class Scheduler:
                 task.state = TaskState.DONE
                 task.finished_at = time.time()
                 task.error = None
+                # Android: p/ Download/ do sistema (no-op fora do APK)
+                publish_if_needed(task, self.config)
                 self._emit("done", task)
                 with self._cv:
                     self.store.save()
@@ -231,6 +234,9 @@ class Scheduler:
             self._emit("start", task)
             try:
                 dl.run()
+                # Android: move o arquivo p/ Download/ do sistema antes
+                # de avisar "done" (no-op fora do APK; nunca levanta)
+                publish_if_needed(task, self.config)
                 if self.archive:
                     self.archive.add(task.url)
                 self._emit("done", task)

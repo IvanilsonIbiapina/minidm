@@ -102,6 +102,13 @@ class Task:
     # "audio_filename"?, "vseg"?, "vbytes"?}. A engine baixa as duas
     # faixas e junta com `ffmpeg -c copy` (ver stream.MuxDownloader).
     mux_audio: Optional[dict] = None
+    # ---- v10 (Android: pasta pública)
+    # caminho do arquivo na pasta Download/ do SISTEMA depois de
+    # publicado (MediaStore); "" = não publicado. dest_dir/filename
+    # continuam apontando p/ o arquivo original (interno): as engines
+    # reescrevem nele (mux, resume, re-execução) e escrita direta na
+    # pasta pública é bloqueada pelo scoped storage. Ver androidpub.py.
+    published_path: str = ""
 
     # ---------------------------------------------------------------- paths
     @property
