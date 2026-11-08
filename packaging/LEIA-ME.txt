@@ -37,6 +37,11 @@ baixados aparecem em  Download/<categoria>  da pasta pública do
 Android (visíveis no app "Downloads" do sistema). Android 10+ não
 pede permissão; Android 7-9 pede a permissão de armazenamento na
 primeira abertura do app.
+Obs.: links de PÁGINA (YouTube, Instagram...) exigem o yt-dlp, que o
+APK não embute — sem ele o link é recusado com uma mensagem explicando
+(nada de arquivo vazio). Nomes vêm do Content-Disposition, do link ou
+do título da página, e download nunca conclui com 0 bytes. Para
+YouTube no celular, use a versão Termux (com pip install yt-dlp).
 
 DOWNLOADS
 ---------

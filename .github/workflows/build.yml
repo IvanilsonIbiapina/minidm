@@ -233,3 +233,17 @@ jobs:
             embutida (Chaquopy) + webui em WebView — os arquivos baixados
             aparecem em `Download/<categoria>` do sistema (MediaStore;
             Android 7–9 pede a permissão de armazenamento na 1ª abertura).
+
+            Correções desta versão:
+
+            * **nomes de arquivo**: o nome vem do `Content-Disposition`,
+              do nome com extensão no link ou do **título da página**
+              (não mais o id cru do YouTube, ex.: `5dWeeUIZFgA`);
+            * **nada de download vazio**: servidor sem tamanho (o YouTube
+              responde `Content-Length: 0` no HEAD) vira erro claro e
+              arquivos de 0 bytes não são publicados no MediaStore;
+            * **links de página sem yt-dlp são recusados com mensagem
+              explicando** (o APK não embute yt-dlp — para YouTube no
+              celular use a versão Termux);
+            * a webui mostra o **destino publicado** (`Download/…`) no
+              card de cada tarefa concluída no Android.

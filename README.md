@@ -543,7 +543,19 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
   via **MediaStore** (API 29+, sem permissão) ou escrita direta +
   `WRITE_EXTERNAL_STORAGE` (API 24–28, pedida na primeira abertura);
   desligar: `android_public_downloads false`; a fila fica em `~/.minidm`
-  (HOME do app);
+  (HOME do app); o card da webui mostra o **destino publicado**
+  (`Download/…`, caminho completo no tooltip);
+* **nomes de arquivo**: `Content-Disposition` → nome com extensão no
+  link → **título da página** (o `<title>` extraído na análise) → o
+  segmento do URL — nunca mais o id cru do YouTube (`5dWeeUIZFgA`);
+* **downloads nunca concluem vazios**: servidor sem tamanho (o YouTube
+  responde `Content-Length: 0` no HEAD) vira **erro claro** e arquivos
+  de 0 bytes não são publicados no MediaStore;
+* **links de página (YouTube, Instagram…) exigem yt-dlp** — o APK não o
+  embute (regra do projeto). Sem yt-dlp, colar um link sem extensão
+  (ex.: `youtu.be/ID`) é **recusado no "adicionar" com erro explicando**
+  o que falta — nada de arquivo falso; para esses sites use o caminho
+  Termux abaixo (com yt-dlp instalado);
 * a mesma webui serve de **controle remoto** no desktop: com o daemon
   rodando, abra `http://127.0.0.1:9742/` no navegador;
 * build local: `gradle -p android assembleDebug` (a CI — job `apk` em
@@ -551,7 +563,9 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
   [`packaging/android/README.md`](packaging/android/README.md).
 
 **Termux** — CLI + fila + daemon completos no celular (sem interface
-gráfica); ver [`packaging/android/README.md`](packaging/android/README.md).
+gráfica); instale o yt-dlp (`pip install yt-dlp`) e os links de página
+(YouTube…) passam a funcionar também pelo celular; ver
+[`packaging/android/README.md`](packaging/android/README.md).
 
 ---
 
