@@ -50,6 +50,14 @@ public class MainActivity extends Activity {
     /** context da app (sobrevive à Activity) p/ o Python publicar arquivos. */
     private static volatile Context appCtx;
 
+    /** Porta da API local (0 = ainda não subiu) — lida pelo DownloadService. */
+    private static volatile int apiPort = 0;
+
+    /** Porta da API p/ o {@link DownloadService} fazer o poll de progresso. */
+    public static int apiPort() {
+        return apiPort;
+    }
+
     private WebView web;
 
     @Override
@@ -90,6 +98,7 @@ public class MainActivity extends Activity {
                 PyObject started = Python.getInstance()
                         .getModule("main").callAttr("start");
                 port = started.toInt();
+                apiPort = port;   // DownloadService polla esta porta
             } catch (Throwable t) {
                 // sem Python o WebView mostra o erro de carregamento padrão
             }
@@ -368,12 +377,18 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        // saiu da tela: o download NÃO pode morrer com a Activity —
+        // vira serviço em primeiro plano (notificação + wake/wifi lock)
+        DownloadService.start(this);
         web.onPause();
         super.onPause();
     }
 
     @Override
     protected void onResume() {
+        // voltou ao app: a notificação de segundo plano não faz falta
+        // (a engine segue rodando no processo; volta a serviço ao sair)
+        DownloadService.stop(this);
         web.onResume();
         super.onResume();
     }

@@ -8,6 +8,13 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- frente 2: downloads continuam com o app em segundo plano -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ exige o tipo declarado junto do serviço -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- tela desligada não pode pausar a transferência -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name="com.chaquo.python.android.PyApplication"
@@ -28,6 +35,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- serviço de primeiro plano: notificação de progresso + wake/wifi
+             lock enquanto a Activity está em segundo plano; para sozinho
+             quando a fila esvazia (MainActivity.onPause/onResume) -->
+        <service
+            android:name=".DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

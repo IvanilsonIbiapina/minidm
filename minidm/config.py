@@ -71,6 +71,11 @@ class AppConfig:
     theme: str = "light"             # "light" | "dark" (botão da toolbar)
     notify_sound: bool = True        # "ding" ao concluir (Windows)
     onboarding_done: bool = False    # tela de boas-vindas já mostrada
+    # fechar a janela Some para a bandeja (tray) em vez de sair — como o
+    # IDM. Sair de verdade: menu Arquivo → Sair ou o "Sair" da bandeja.
+    # Em SO sem bandeja (Linux/macOS) o campo é ignorado e o fechar sai
+    # normal.
+    close_to_tray: bool = True
     # verificação
     verify_signatures: bool = True     # Authenticode em .exe/.dll/.msi
     remote_checksums: bool = True      # busca <arquivo>.sha256 / .md5

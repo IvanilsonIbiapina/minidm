@@ -37,6 +37,7 @@ from minidm.meta import Task, TaskState
 from minidm.remote import auto_delegate, filename_from
 from minidm.scheduler import Scheduler
 from minidm.store import TaskStore
+from minidm.tray import TrayIcon
 
 # DnD nativo do sistema de arquivos: opcional (tkinterdnd2). Sem ele a
 # GUI funciona igual, só perde "soltar arquivo" (Ctrl+V faz o mesmo).
@@ -154,6 +155,7 @@ class MinidmApp(_Root):
         self._drag_moved = False
         self._toasts: list[tk.Toplevel] = []
         self._timers: set[str] = set()      # `after` p/ cancelar ao fechar
+        self._tray: TrayIcon | None = None  # bandeja (frente 2, Windows)
 
         self.sched = Scheduler(self.store, self.config_app,
                                on_event=self._on_event)
@@ -426,7 +428,7 @@ class MinidmApp(_Root):
         m_file.add_command(label="Adicionar URL…", command=self._dlg_add,
                            accelerator="Ctrl+N")
         m_file.add_separator()
-        m_file.add_command(label="Sair", command=self._on_close)
+        m_file.add_command(label="Sair", command=self._really_quit)
         menubar.add_cascade(label="Arquivo", menu=m_file)
 
         m_help = tk.Menu(menubar, tearoff=0)
@@ -1136,6 +1138,23 @@ class MinidmApp(_Root):
             self._api_server = None
 
     def _on_close(self):
+        # fechar p/ bandeja (close_to_tray): some da tela, a fila e a API
+        # seguem rodando; sair de verdade é o menu "Sair" (e o item
+        # "Sair" da própria bandeja)
+        if (self.config_app.close_to_tray and self._tray is not None
+                and self._tray.visible):
+            try:
+                self.withdraw()
+            except tk.TclError:
+                pass
+            return
+        self._really_quit()
+
+    def _really_quit(self):
+        """Encerra de verdade: para API, timers, scheduler e a bandeja."""
+        if self._tray is not None:
+            tray, self._tray = self._tray, None
+            tray.destroy()
         self._clipboard_stop.set()
         self._stop_api()
         # cancela os `after` periódicos (tick/refresh/welcome/toasts)
@@ -1154,6 +1173,40 @@ class MinidmApp(_Root):
             return
         self.sched.shutdown(wait=False)
         self.destroy()
+
+    # ------------------------------------------------------- bandeja (tray)
+    def setup_tray(self) -> None:
+        """Cria o ícone de bandeja (Windows) e liga o poll das ações.
+
+        Fora do Windows (ou se falhar) `show()` devolve False e o
+        fechar da janela continua saindo normal.
+        """
+        tray = TrayIcon(tip="minidm")
+        if tray.show():
+            self._tray = tray
+            self._schedule(300, self._poll_tray)
+
+    def _poll_tray(self) -> None:
+        """Lê as ações da bandeja — sempre na thread do tkinter."""
+        if self._tray is None:
+            return
+        act = self._tray.poll()
+        if act == "open":
+            self._restore_from_tray()
+        elif act == "quit":
+            self._really_quit()
+            return
+        if self._tray is not None:      # pode ter saído no _really_quit
+            self._schedule(300, self._poll_tray)
+
+    def _restore_from_tray(self) -> None:
+        """Volta a janela (escondida na bandeja) para a tela."""
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
 
 
 # --------------------------------------------------------------- AddDialog
@@ -1747,6 +1800,7 @@ class MediaPreviewDialog(tk.Toplevel):
 
 def main() -> int:
     app = MinidmApp()
+    app.setup_tray()          # bandeja Windows: fechar some p/ a bandeja
     app.mainloop()
     return 0
 
