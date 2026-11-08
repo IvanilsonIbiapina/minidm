@@ -49,7 +49,7 @@ TPM_LEFTALIGN, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON = 0x0, 0x20, 0x2
 # ---- tipos ctypes (valem em qualquer SO p/ importar o módulo) --------
 _LRESULT = ctypes.c_ssize_t
 _PTR = ctypes.c_void_p
-_WNDPROC_TYPE = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNTYPE
+_WNDPROC_TYPE = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
 _WNDPROC = _WNDPROC_TYPE(_LRESULT, _PTR, ctypes.c_uint,
                          ctypes.c_size_t, ctypes.c_ssize_t)
 
