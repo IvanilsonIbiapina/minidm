@@ -208,6 +208,12 @@ DASH_AUDIO_MPD = """<?xml version="1.0"?>
 </MPD>
 """
 
+# página HTML em URL sem extensão (caso youtu.be/ID): o analyze tem que
+# extrair o <title> e marcar `page` (o /add recusa sem yt-dlp)
+PAGINA_HTML = ("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">"
+               "<title>Vídeo Incrível</title></head>"
+               "<body>conteúdo da página</body></html>")
+
 
 class MediaHandler(BaseHTTPRequestHandler):
     """Serve playlists + segmentos; registra headers recebidos."""
@@ -283,6 +289,10 @@ class MediaHandler(BaseHTTPRequestHandler):
             self._send(DASH_AUDIO_MPD.encode(), "application/dash+xml")
         elif p == "/dash/init.mp4" or p == "/dash/init_a.mp4":
             self._send(DASH_INIT, "video/mp4")
+        elif p.startswith("/pagina"):
+            # página HTML (o do_HEAD já responde Content-Length: 0,
+            # como o YouTube)
+            self._send(PAGINA_HTML.encode(), "text/html; charset=utf-8")
         elif p.startswith("/file-named.bin"):
             # servidor manda o nome real via Content-Disposition
             body = b"arquivo com nome no header" * 50
@@ -571,6 +581,45 @@ class TestDrmNameAudio(MediaBase):
         # get.php?id=9 (URL de download comum) não serve de nome
         got = _suggest_name("http://site/get.php?id=9", page_title="Música")
         self.assertEqual(got, "Música")
+
+    def test_suggest_name_titulo_vence_id_do_url(self):
+        from minidm.media import _suggest_name
+        # youtu.be/5dWeeUIZFgA (sem extensão): o título vence o ID cru
+        # — era o "5dWeeUIZFgA" sem título que saía no celular
+        got = _suggest_name("https://youtu.be/5dWeeUIZFgA",
+                            page_title="Rick Astley — Never Gonna Give You Up")
+        self.assertEqual(got, "Rick Astley — Never Gonna Give You Up")
+
+    def test_suggest_name_extensao_no_url_vence_titulo(self):
+        from minidm.media import _suggest_name
+        # arquivo direto com nome legível: a extensão real do URL vence
+        # o título (e é mantida — o arquivo final precisa dela)
+        got = _suggest_name("http://cdn/pasta/filme.mp4",
+                            page_title="Qualquer Título")
+        self.assertEqual(got, "filme.mp4")
+
+    def test_suggest_name_content_disposition_vence_tudo(self):
+        from minidm.media import _suggest_name
+        got = _suggest_name("http://cdn/x.bin",
+                            'attachment; filename="Meu Video Legal.mp4"',
+                            page_title="Título da Página")
+        self.assertEqual(got, "Meu Video Legal.mp4")
+
+    def test_html_title_extraido_com_entidades(self):
+        from minidm.media import _html_title
+        self.assertEqual(_html_title("<title>A &amp; B — ação</title>"),
+                         "A & B — ação")
+        self.assertEqual(_html_title("<html><body>sem título</body></html>"),
+                         "")
+
+    def test_analyze_pagina_extrai_titulo_e_marca_page(self):
+        # URL sem extensão servindo HTML: `page` marcado + <title> como
+        # nome do arquivo (em vez do segmento cru do URL)
+        r = analyze(f"{self.base}/pagina")
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r.get("page"))
+        self.assertEqual(r.get("page_title"), "Vídeo Incrível")
+        self.assertEqual(r.get("filename"), "Vídeo Incrível")
 
     # --------------------------------------------------------------- áudio
     def test_hls_faixa_de_audio_vira_qualidade(self):

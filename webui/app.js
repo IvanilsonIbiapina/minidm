@@ -92,7 +92,7 @@ function makeCard(t) {
       <span class="pct"></span><span class="size"></span>
       <span class="speed"></span><span class="seg"></span>
     </div>
-    <div class="chips"><span class="chip cat"></span><span class="chip q"></span></div>
+    <div class="chips"><span class="chip cat"></span><span class="chip q"></span><span class="chip path" hidden></span></div>
     <div class="err" hidden></div>
     <div class="acts">
       <button data-act="start" type="button" title="Iniciar">&#9654;</button>
@@ -127,6 +127,14 @@ function updateCard(el, t) {
   const q = el.querySelector(".chip.q");
   q.textContent = t.quality_label || "";
   q.hidden = !t.quality_label;
+
+  // destino público (Android: Download/ do sistema) — encurta o
+  // prefixo de armazenamento e deixa o caminho completo no tooltip
+  const path = el.querySelector(".chip.path");
+  const dest = t.published_path || "";
+  path.textContent = dest.replace(/^\/storage\/emulated\/0\//, "");
+  path.title = dest;
+  path.hidden = !dest;
 
   const err = el.querySelector(".err");
   err.textContent = t.error || "";

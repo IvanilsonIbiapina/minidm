@@ -146,6 +146,7 @@ public class MainActivity extends Activity {
         }
         File src = new File(srcPath);
         if (!src.isFile()) return null;
+        if (src.length() == 0) return null;   // nunca publica 0 bytes
         String sub = subdir == null ? "" : subdir.trim();
         try {
             // já está na pasta pública? (ex.: download_base apontando p/ lá)
@@ -173,16 +174,24 @@ public class MainActivity extends Activity {
                 : Environment.DIRECTORY_DOWNLOADS + "/" + sub;
         String usedRel = rel;
         String usedName = uniqueName(cr, rel, name);
-        Uri out = insertPending(cr, rel, usedName);
+        Uri out = insertPending(cr, rel, usedName, src.length());
         if (out == null && !sub.isEmpty()) {
             // nem todo aparelho/recorte aceita subpasta: tenta na raiz
             usedRel = Environment.DIRECTORY_DOWNLOADS;
             usedName = uniqueName(cr, usedRel, name);
-            out = insertPending(cr, usedRel, usedName);
+            out = insertPending(cr, usedRel, usedName, src.length());
         }
         if (out == null) return null;
 
         boolean ok = copyTo(cr, out, src);
+        // caminho final na pasta pública (scan + retorno ao Python)
+        File root = Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS);
+        String dir = usedRel.equals(Environment.DIRECTORY_DOWNLOADS)
+                ? root.getAbsolutePath()
+                : root.getAbsolutePath() + usedRel.substring(
+                        Environment.DIRECTORY_DOWNLOADS.length());
+        String outPath = new File(dir, usedName).getAbsolutePath();
         if (ok) {
             try {                       // fim do pending: arquivo visível
                 ContentValues fin = new ContentValues();
@@ -199,13 +208,14 @@ public class MainActivity extends Activity {
             }
             return null;
         }
-        File root = Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS);
-        String dir = usedRel.equals(Environment.DIRECTORY_DOWNLOADS)
-                ? root.getAbsolutePath()
-                : root.getAbsolutePath() + usedRel.substring(
-                        Environment.DIRECTORY_DOWNLOADS.length());
-        return new File(dir, usedName).getAbsolutePath();
+        // garante que SIZE/índices fiquem atualizados no MediaStore
+        // (sem isso alguns file managers mostram 0 B no arquivo)
+        try {
+            MediaScannerConnection.scanFile(ctx, new String[]{outPath},
+                    new String[]{mimeOf(usedName)}, null);
+        } catch (Throwable ignore) {
+        }
+        return outPath;
     }
 
     /** API 24–28: escrita direta em Download/ (com permissão concedida). */
@@ -255,12 +265,15 @@ public class MainActivity extends Activity {
     }
 
     private static Uri insertPending(ContentResolver cr, String rel,
-                                     String name) {
+                                     String name, long size) {
         try {
             ContentValues v = new ContentValues();
             v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
             v.put(MediaStore.MediaColumns.MIME_TYPE, mimeOf(name));
             v.put(MediaStore.MediaColumns.RELATIVE_PATH, rel);
+            // tamanho conhecido desde o insert: sem isso alguns file
+            // managers mostram "0 B" até o próximo scan do sistema
+            v.put(MediaStore.MediaColumns.SIZE, size);
             v.put(MediaStore.MediaColumns.IS_PENDING, 1);
             return cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
         } catch (Throwable t) {

@@ -763,6 +763,12 @@ class StreamDownloader:
                         if not chunk:
                             break
                         out.write(chunk)
+
+        # 0 bytes = nada chegou de verdade: erro, nunca "concluído" vazio
+        if os.path.getsize(t.part_path) == 0:
+            t.error = "download concluiu vazio — 0 bytes"
+            raise StreamError(t.error)
+
         _rmtree_quiet(self._segs_dir())
 
         if live:

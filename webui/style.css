@@ -278,6 +278,13 @@ select {
   border: 1px solid var(--border);
 }
 .chip.cat { color: var(--accent); }
+.chip.path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
 
 .err {
   font-size: 13px;

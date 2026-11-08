@@ -107,6 +107,48 @@ def auto_delegate(task) -> bool:
     return False
 
 
+def page_error(url: str) -> Optional[str]:
+    """Erro claro quando o link é de PÁGINA e não há yt-dlp p/ assumir.
+
+    Heurística conservadora: só recusa URLs http(s) cujo último segmento
+    do caminho NÃO tem extensão (`youtu.be/abc123`, `/watch`,
+    `/video/123`) — links com extensão (arquivo direto, `get.php`,
+    `file.html`) seguem normais, sem rede nem chute. Se o yt-dlp estiver
+    instalado, devolve None: a tarefa delega para ele (`auto_delegate`).
+
+    É o "sem yt-dlp o usuário recebe um erro explicando" prometido em
+    `looks_direct_media`: sem isso a tarefa fingia sucesso (baixava o
+    HTML ou um arquivo de 0 bytes com o ID cru no lugar do nome).
+    """
+    p = urlparse(url or "")
+    if p.scheme.lower() not in ("http", "https"):
+        return None
+    last = unquote(p.path).rstrip("/").split("/")[-1]
+    if not last or "." in last:
+        return None                    # é um arquivo (ou URL vazio)
+    from minidm.ytdlp import available
+
+    if available():
+        return None                    # yt-dlp assume o download
+    return ("este link é uma PÁGINA (YouTube, Instagram…), não um arquivo "
+            "direto: baixar sites assim exige o yt-dlp, que não está "
+            "instalado aqui (instale com: pip install yt-dlp; no celular, "
+            "use a versão Termux do minidm).")
+
+
+def _positive_size(value) -> bool:
+    """O `Content-Length` serve como tamanho só se for inteiro > 0.
+
+    YouTube responde HEAD com `Content-Length: 0` (e GET chunked, sem
+    tamanho) — aceitar 0 faria a engine planejar um "download" de 0
+    bytes e concluí-lo com sucesso (arquivo vazio no destino).
+    """
+    try:
+        return value is not None and int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def probe(url: str, headers: dict | None = None) -> Probe:
     """Tenta HEAD; se o servidor não cooperar, faz GET Range mínimo."""
     base = {"User-Agent": USER_AGENT}
@@ -114,8 +156,10 @@ def probe(url: str, headers: dict | None = None) -> Probe:
         base.update(headers)
     r = requests.head(url, headers=base, allow_redirects=True,
                       timeout=TIMEOUT)
-    if r.status_code >= 400 or "content-length" not in r.headers:
-        # alguns servidores recusam HEAD — pergunta com 1 byte
+    if r.status_code >= 400 or not _positive_size(
+            r.headers.get("Content-Length")):
+        # alguns servidores recusam HEAD ou "mentem" no Content-Length
+        # (0) — pergunta com 1 byte de verdade
         h = dict(base)
         h["Range"] = "bytes=0-0"
         r = requests.get(url, headers=h, stream=True, timeout=TIMEOUT)
@@ -135,7 +179,8 @@ def probe(url: str, headers: dict | None = None) -> Probe:
         finally:
             r.close()
 
-    size = int(r.headers["Content-Length"]) if "Content-Length" in r.headers else None
+    size = (int(r.headers["Content-Length"])
+            if _positive_size(r.headers.get("Content-Length")) else None)
     return Probe(
         url=url,
         size=size,

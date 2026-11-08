@@ -147,6 +147,9 @@ class Scheduler:
                 "quality_label": t.quality_label,
                 "page_title": t.page_title,
                 "origin_url": t.origin_url,
+                # Android: onde o arquivo está DEPOIS de publicado na
+                # pasta pública Download/ ("" = não publicado)
+                "published_path": t.published_path,
                 "state": t.state,
                 "progress": t.progress,
                 "received": t.received,

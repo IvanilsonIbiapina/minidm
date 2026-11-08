@@ -447,10 +447,16 @@ class YtdlpDownloader:
     def _hash_and_done(self) -> None:
         """Confere sha-256 e marca a tarefa como concluída."""
         t = self.task
+        path = os.path.join(t.dest_dir or ".", t.filename)
+        # 0 bytes = o yt-dlp não gravou nada: erro, nunca "concluído"
+        if os.path.exists(path) and os.path.getsize(path) == 0:
+            t.state = TaskState.ERROR
+            t.error = "download concluiu vazio — 0 bytes"
+            t.save_meta()
+            raise YtdlpError(t.error)
         # sha-256 do arquivo (mesmo contrato dos outros downloaders)
         try:
             from minidm.verify import sha256_file
-            path = os.path.join(t.dest_dir or ".", t.filename)
             if os.path.exists(path):
                 t.sha256 = sha256_file(path)
         except Exception:

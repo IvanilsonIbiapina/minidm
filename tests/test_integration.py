@@ -16,6 +16,7 @@ import threading
 import unittest
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from minidm.config import AppConfig
 from minidm.meta import Task, TaskState
@@ -58,6 +59,12 @@ MASTER_DRM = """#EXTM3U
 high.m3u8
 """
 
+# página HTML em URL sem extensão (caso youtu.be/ID): o analyze tem que
+# marcar `page`, extrair o <title> e o /add tem que recusar sem yt-dlp
+PAGINA_HTML = ("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">"
+               "<title>Vídeo Incrível</title></head>"
+               "<body>conteúdo da página</body></html>")
+
 
 class HlsHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -91,6 +98,10 @@ class HlsHandler(BaseHTTPRequestHandler):
         elif "high" in p and p.endswith(".ts"):
             i = int(p.rsplit("high", 1)[1].split(".")[0])
             self._send(HIGH_SEGS[i], "video/mp2t")
+        elif p.endswith("/pagina"):
+            # página HTML (o do_HEAD já responde Content-Length: 0,
+            # como o YouTube)
+            self._send(PAGINA_HTML.encode(), "text/html; charset=utf-8")
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")
@@ -383,6 +394,42 @@ class TestApiIntegration(unittest.TestCase):
         task = self.store.get(data["id"])
         self.assertIn("--sponsorblock-remove", task.ytdlp_args)
         self.assertIn("all", task.ytdlp_args)
+
+    def test_19_analyze_pagina_extrai_titulo(self):
+        """URL sem extensão servindo HTML: analyze marca `page` e pega o
+        `<title>` — em vez de devolver o segmento cru do URL como nome
+        (o bug do "5dWeeUIZFgA" sem título no celular)."""
+        status, data = post_json(
+            f"{self.api_base}/media/analyze",
+            {"url": f"{self.hls_base}/pagina"})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data.get("page"))
+        self.assertEqual(data.get("page_title"), "Vídeo Incrível")
+        self.assertEqual(data.get("filename"), "Vídeo Incrível")
+
+    def test_20_add_pagina_sem_ytdlp_recusa_com_erro(self):
+        """Página + sem yt-dlp -> 400 explicando (nada de arquivo vazio).
+
+        Caso real do celular: youtu.be/ID analisado como "arquivo direto"
+        baixava 0 bytes e concluía com sucesso; agora o /add recusa.
+        """
+        with mock.patch("minidm.ytdlp.available", return_value=False):
+            req = urllib.request.Request(
+                f"{self.api_base}/add",
+                data=json.dumps({"url": f"{self.hls_base}/pagina",
+                                 "analyze": True}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=30)
+        self.assertEqual(ctx.exception.code, 400)
+        erro = json.loads(ctx.exception.read().decode())
+        self.assertFalse(erro.get("ok"))
+        self.assertIn("yt-dlp", erro.get("error", ""))
+        # nenhuma tarefa foi criada
+        self.assertFalse([t for t in self.store.all()
+                          if "pagina" in t.url])
 
 
 if __name__ == "__main__":

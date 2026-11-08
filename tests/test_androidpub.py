@@ -98,6 +98,17 @@ class TestPublish(Base):
         self.assertEqual(FakeMainActivity.calls,
                          [(os.path.abspath(t.final_path), "Videos", "a.mp4")])
 
+    def test_nao_publica_arquivo_vazio(self):
+        # 0 bytes = download que falhou em silêncio (bug do celular):
+        # o arquivo NUNCA vai para a pasta pública do sistema
+        t = self.tarefa()
+        with open(t.final_path, "wb"):
+            pass                          # truncate para 0 bytes
+        self.assertIsNone(androidpub.publish_if_needed(t, self.cfg))
+        self.assertEqual(FakeMainActivity.calls, [])
+        self.assertEqual(t.published_path, "")
+        self.assertTrue(os.path.isfile(t.final_path))   # intacto
+
     def test_dest_dir_e_filename_nao_mudam(self):
         # as engines reescrevem em dest_dir (mux/resume/re-execução): o
         # registro original fica; só published_path muda
@@ -254,6 +265,11 @@ class TestSchedulerPublica(unittest.TestCase):
             self.assertTrue(os.path.isfile(t.published_path))
             self.assertFalse(os.path.exists(t.final_path))
             self.assertEqual(t.state, TaskState.DONE)
+
+            # o snapshot (API/webui) expõe onde o arquivo foi publicado
+            row = next((r for r in s.snapshot() if r["id"] == t.id), None)
+            self.assertIsNotNone(row)
+            self.assertEqual(row["published_path"], t.published_path)
 
 
 if __name__ == "__main__":

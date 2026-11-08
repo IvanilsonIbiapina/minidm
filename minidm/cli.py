@@ -356,6 +356,15 @@ def cmd_media(args) -> int:
         else:
             print(f"falha: {r.get('error')}", file=sys.stderr)
         return 1
+    if r.get("page"):
+        # é uma PÁGINA e não há yt-dlp: explica em vez de listar
+        # qualidades "originais" de um HTML
+        from minidm.remote import page_error
+
+        msg = page_error(args.url)
+        if msg:
+            print(f"falha: {msg}", file=sys.stderr)
+            return 1
     dur = r.get("duration")
     print(f"tipo: {r['kind']}" + (f"  duração: {dur:.1f}s" if dur else "")
           + ("  (criptografado)" if r.get("encrypted") else "")

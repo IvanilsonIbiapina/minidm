@@ -602,12 +602,15 @@ class TestCasosDeBorda(unittest.TestCase):
             self.assertEqual(task.sha256, hashlib.sha256(PAYLOAD).hexdigest())
 
     def test_arquivo_vazio_ftp(self):
+        # contrato novo (igual às engines HTTP/yt-dlp): download de 0
+        # bytes NUNCA conclui como sucesso — era o bug do arquivo vazio
+        # que o MediaStore publicava como "concluído" no celular
         with FtpServer(b"") as srv:
             task = _task(srv.url(), self.tmp)
-            FtpDownloader(task, test_config()).run()
-            self.assertEqual(task.state, TaskState.DONE)
-            with open(task.final_path, "rb") as f:
-                self.assertEqual(f.read(), b"")
+            with self.assertRaises(DownloadError):
+                FtpDownloader(task, test_config()).run()
+            self.assertEqual(task.state, TaskState.ERROR)
+            self.assertIn("0 bytes", task.error)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,8 @@ def publish_if_needed(task: Task, config) -> str | None:
         src = os.path.abspath(task.final_path)
         if not os.path.isfile(src):
             return None                  # já publicado (ou removido)
+        if os.path.getsize(src) == 0:
+            return None                  # nunca publica arquivo vazio
         # só a base PADRÃO (privada no Android); download_base explícito
         # é escolha do usuário e fica onde está
         base = os.path.abspath(DEFAULT_BASE)

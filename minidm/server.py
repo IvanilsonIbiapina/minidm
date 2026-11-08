@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from minidm.extsetup import CRX_NAME, UPDATE_XML_NAME
 from minidm.meta import Task, TaskState
-from minidm.remote import auto_delegate, filename_from
+from minidm.remote import auto_delegate, filename_from, page_error
 from minidm.scheduler import Scheduler
 from minidm.store import TaskStore
 
@@ -313,6 +313,17 @@ def make_handler(app: App):
                     self._json({"ok": False, "error": res.get("error"),
                                 "drm": res.get("drm")}, 400)
                     return
+                # é uma PÁGINA (YouTube, Instagram…) e não há yt-dlp p/
+                # assumir: recusa com clareza — sem isso a tarefa fingia
+                # sucesso (HTML ou arquivo de 0 bytes com o ID cru).
+                if res.get("page"):
+                    msg = page_error(url)
+                    if msg:
+                        self._json({"ok": False, "error": msg}, 400)
+                        return
+                # título descoberto na análise ( <title> do HTML ) vira
+                # page_title da tarefa — exibido na interface
+                page_title = page_title or res.get("page_title") or ""
                 q = _pick_quality(res.get("qualities") or [],
                                   payload.get("quality"))
                 if q is None:

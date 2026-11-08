@@ -15,6 +15,7 @@ Só parsing + sondagem: nenhum download de stream acontece aqui
 
 from __future__ import annotations
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from typing import Optional
@@ -691,6 +692,7 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
         direct_size = None
         direct_type = None
         content_disposition = None
+        page = False                # resposta é HTML (uma PÁGINA, não arquivo)
 
         if not kind:
             # precisa descobrir o que é: GET parcial + content-type
@@ -702,8 +704,13 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                             "error": f"servidor respondeu HTTP {r.status_code}"}
                 direct_type = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 content_disposition = r.headers.get("Content-Disposition")
+                # um ÚNICO gerador p/ toda a resposta: uma segunda chamada
+                # de iter_content na mesma resposta streamada levanta
+                # StreamConsumedError (str vazio) quando o corpo já foi
+                # totalmente consumido — e o corpo de página é pequeno
+                it = r.iter_content(2048)
                 prefix = b""
-                for chunk in r.iter_content(2048):
+                for chunk in it:
                     prefix += chunk
                     if len(prefix) >= 2048:
                         break
@@ -711,7 +718,7 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                 if sniffed or direct_type in MIME_HLS or direct_type in MIME_DASH:
                     kind = sniffed or ("hls" if direct_type in MIME_HLS else "dash")
                     body = prefix
-                    for chunk in r.iter_content(64 * 1024):
+                    for chunk in it:
                         body += chunk
                         if len(body) > 4 * 1024 * 1024:
                             break
@@ -725,6 +732,21 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                         total = cr.split("/")[-1]
                         if total.isdigit():
                             direct_size = int(total)
+                    # é uma PÁGINA (HTML)? Lê um pedaço do corpo p/ o
+                    # <title> — vira o nome do arquivo (em vez do ID cru
+                    # do URL) e o flag `page` que faz o /add recusar com
+                    # clareza quando não há yt-dlp p/ assumir o site.
+                    if _is_html(direct_type, prefix):
+                        page = True
+                        body = prefix
+                        if len(body) < 64 * 1024:
+                            for chunk in it:
+                                body += chunk
+                                if len(body) >= 64 * 1024:
+                                    break
+                        page_title = (page_title
+                                      or _html_title(body.decode("utf-8",
+                                                                 "replace")))
             finally:
                 r.close()
         else:
@@ -825,9 +847,13 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
                     "filename": _suggest_name(url, content_disposition,
                                               page_title)}
 
-        # arquivo direto (mp4/webm/etc.)
+        # arquivo direto (mp4/webm/etc.) — ou PÁGINA (HTML) quando o
+        # site só se resolve com yt-dlp: `page`/`page_title` saem na
+        # resposta p/ o /add recusar (sem yt-dlp) e nomear/mostrar o
+        # título em vez do ID cru do URL.
         filename = _suggest_name(url, content_disposition, page_title)
-        return {"ok": True, "kind": "file", "qualities": [{
+        return {"ok": True, "kind": "file", "page": page,
+                "page_title": page_title, "qualities": [{
             "label": "original",
             "url": url,
             "kind": "file",
@@ -898,9 +924,13 @@ def _suggest_name(url: str, content_disposition: str = "",
     """Nome de arquivo legível, na ordem de preferência:
 
     1. `Content-Disposition` do servidor (mais confiável);
-    2. último segmento do URL, se não for genérico;
-    3. `page_title` (título da página, vindo do navegador);
-    4. "video".
+    2. último segmento do URL **com extensão de arquivo**, se legível
+       (`filme.mp4` → "filme.mp4": nome de arquivo de verdade — a
+       extensão real é mantida; só .m3u8/.mpd são removidos);
+    3. `page_title` (título da página — do navegador ou do `<title>`
+       extraído na análise; vence o ID cru do URL, ex. `5dWeeUIZFgA`);
+    4. último segmento do URL sem extensão, se legível;
+    5. o stem mesmo genérico (não deixar sem nome), senão "video".
 
     Remove extensão de playlist (.m3u8/.mpd) e decodifica %XX.
     """
@@ -912,19 +942,25 @@ def _suggest_name(url: str, content_disposition: str = "",
         if name and name != "download.bin":
             return sanitize(_strip_playlist_ext(name))
 
-    # 2) último segmento do URL, se não genérico
     raw = filename_from(url)
     stem = _strip_playlist_ext(raw)
-    if stem and _stem_is_useful(stem):
+    ext = os.path.splitext(raw)[1]      # extensão no URL (sem a playlist)
+
+    # 2) nome de ARQUIVO no URL: tem extensão e é legível
+    if ext and stem and _stem_is_useful(stem):
         return sanitize(stem)
 
-    # 3) título da página (o navegador manda; corta em tamanho razoável)
+    # 3) título da página (o navegador/analise manda; corta em tamanho)
     if page_title:
         title = sanitize(page_title.strip())[:80].strip(" .")
         if title and _stem_is_useful(title):
             return sanitize(_strip_playlist_ext(title))
 
-    # 4) fallback: usa o stem mesmo se genérico, senão "video"
+    # 4) último segmento sem extensão, se legível (ID de CDN etc.)
+    if stem and _stem_is_useful(stem):
+        return sanitize(stem)
+
+    # 5) fallback: usa o stem mesmo se genérico, senão "video"
     return sanitize(stem or "video")
 
 
@@ -933,6 +969,29 @@ def _strip_playlist_ext(name: str) -> str:
         if name.lower().endswith(ext):
             return name[: -len(ext)]
     return name
+
+
+def _is_html(direct_type: str, prefix: bytes) -> bool:
+    """A resposta é uma página HTML (e não um arquivo de mídia)?"""
+    if direct_type in ("text/html", "application/xhtml+xml"):
+        return True
+    head = prefix.lstrip()[:64].lower()
+    return head.startswith((b"<!doctype html", b"<html"))
+
+
+def _html_title(html: str) -> str:
+    """Texto do `<title>` de uma página ("" se não achar).
+
+    É o mesmo título que o navegador mostra na aba — vira o nome do
+    arquivo quando o URL não tem um nome utilizável (IDs do YouTube,
+    tokens de CDN, `get.php?id=…`).
+    """
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    if not m:
+        return ""
+    import html as _html
+
+    return " ".join(_html.unescape(m.group(1)).split())
 
 
 def _stem_is_useful(stem: str) -> bool:

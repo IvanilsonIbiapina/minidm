@@ -113,10 +113,14 @@ class Downloader:
             self._spawn_workers()
             self._checkpoint_loop()
             self._finalize()
-        except DownloadError:
+        except DownloadError as e:
             # pause já marcou PAUSED; qualquer outro caso vira ERROR
             if self.task.state != TaskState.PAUSED:
                 self.task.state = TaskState.ERROR
+                if not self.task.error:
+                    # a interface mostra `task.error`: sem isso o erro
+                    # (ex.: "servidor não informou o tamanho") não aparecia
+                    self.task.error = str(e)
             self.task.save_meta()
             raise
         return t
@@ -163,9 +167,18 @@ class Downloader:
         for url in self._urls:
             try:
                 p = probe(url, headers=self._headers())
-                if p.status < 400 and p.size is not None:
-                    break
-                last_err = f"{url}: HTTP {p.status}"
+                if p.status < 400 and p.size:
+                    break                # tamanho válido (> 0)
+                if p.status < 400:
+                    # sem tamanho não dá p/ planejar segmentos — e um
+                    # "0" do servidor (YouTube responde assim no HEAD)
+                    # viraria um download vazio "concluído"
+                    last_err = (f"{url}: o servidor não informou o tamanho "
+                                f"do arquivo (HTTP {p.status}) — se é uma "
+                                f"página (YouTube, Instagram…), o download "
+                                f"exige o yt-dlp (pip install yt-dlp)")
+                else:
+                    last_err = f"{url}: HTTP {p.status}"
             except requests.RequestException as e:
                 last_err = f"{url}: {e}"
             p = None
@@ -315,6 +328,14 @@ class Downloader:
     def _finalize(self) -> None:
         t = self.task
         os.replace(t.part_path, t.final_path)
+
+        # 0 bytes = a engine não recebeu nada (servidor mentiu no
+        # tamanho, resposta vazia…): erro claro, nunca "concluído"
+        if os.path.getsize(t.final_path) == 0:
+            t.state = TaskState.ERROR
+            t.error = "download concluiu vazio — 0 bytes"
+            t.save_meta()
+            raise DownloadError(t.error)
 
         # 1) hash local
         t.sha256 = verify_mod.sha256_file(t.final_path)
