@@ -23,6 +23,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -65,7 +66,7 @@ public class DownloadService extends Service {
     // o poll NÃO pode rodar na main thread (NetworkOnMainThreadException
     // desde a API 11): thread própria com reagendamento automático
     private final ScheduledExecutorService exec =
-            Executors.newSingleThreadScheduledScheduler();
+            Executors.newSingleThreadScheduledExecutor();
     private WifiManager.WifiLock wifiLock;
     private PowerManager.WakeLock wakeLock;
     private int netFails = 0;
@@ -142,7 +143,11 @@ public class DownloadService extends Service {
                 updateNotification("Na fila: " + (active + queued)
                         + " download(s)", "aguardando conexão…", 0, true);
             }
-            exec.schedule(this, POLL_MS, TimeUnit.MILLISECONDS);
+            try {
+                exec.schedule(this, POLL_MS, TimeUnit.MILLISECONDS);
+            } catch (RejectedExecutionException e) {
+                // onDestroy já desligou o executor — fim do poll
+            }
         }
     };
 
