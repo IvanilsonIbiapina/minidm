@@ -8,6 +8,8 @@ WINDOWS
 3. Se o Windows bloquear (SmartScreen — programa sem assinatura):
    "Mais informações" → "Executar assim". É seguro: é o mesmo código
    publicado no GitHub.
+Obs.: fechar a janela some para a BANDEJA do Windows (os downloads
+continuam); duplo clique no ícone reabre e o menu "Sair" encerra.
 
 LINUX / macOS
 -------------
@@ -42,6 +44,9 @@ APK não embute — sem ele o link é recusado com uma mensagem explicando
 (nada de arquivo vazio). Nomes vêm do Content-Disposition, do link ou
 do título da página, e download nunca conclui com 0 bytes. Para
 YouTube no celular, use a versão Termux (com pip install yt-dlp).
+Saindo do app, a fila continua em SEGUNDO PLANO: um serviço com
+notificação de progresso mantém o download vivo (a tela desligada não
+corta); o serviço some sozinho quando a fila esvazia.
 
 DOWNLOADS
 ---------

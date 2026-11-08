@@ -459,11 +459,18 @@ O que dá pra fazer na janela:
 | **Onboarding** | na 1ª execução, janela com as dicas rápidas (uma vez; `onboarding_done`) |
 | **Toasts + som** | cartão flutuante ao concluir/erro/novo download + "ding" (`notify_sound`) |
 | **Detalhes ao vivo** | as propriedades abertas atualizam sozinhas (estado, velocidade, ETA, segmentos) a cada 500 ms |
+| **Fechar para a bandeja** | fechar a janela **some para a bandeja do Windows** (fila e API seguem rodando); duplo clique no ícone reabre, botão direito → **Sair** encerra de verdade (`close_to_tray`) |
 | Ajustar tudo | **Configurações…** — concorrência, banda, retries, proxy, cookies, verificação |
 
 `minidm-gui-debug.bat` abre o mesmo com janela de terminal, para ver mensagens.
 
 Via terminal (se preferir): `python -m minidm gui`
+
+**Bandeja (Windows)** — com `close_to_tray` ligado (padrão), fechar a
+janela não encerra: o ícone fica na bandeja do sistema e os downloads
+continuam; reabre com duplo clique e sai pelo menu **Sair**. Em SO sem
+bandeja (Linux/macOS) o comportamento é o de sempre. Desligue com
+`minidm config set close_to_tray false`.
 
 ---
 
@@ -558,6 +565,12 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
   Termux abaixo (com yt-dlp instalado);
 * a mesma webui serve de **controle remoto** no desktop: com o daemon
   rodando, abra `http://127.0.0.1:9742/` no navegador;
+* **segundo plano**: ao sair do app a fila continua com um **serviço
+  em primeiro plano** (`DownloadService`, tipo `dataSync`) —
+  notificação de progresso (toque reabre o app), `WifiLock` +
+  `PARTIAL_WAKE_LOCK` para a tela desligada não cortar a transferência;
+  o serviço **para sozinho quando a fila esvazia** (sem notificação
+  fantasma) e o sistema pode recriá-lo (`START_STICKY`);
 * build local: `gradle -p android assembleDebug` (a CI — job `apk` em
   `.github/workflows/build.yml` — já gera o APK a cada push); detalhes em
   [`packaging/android/README.md`](packaging/android/README.md).
