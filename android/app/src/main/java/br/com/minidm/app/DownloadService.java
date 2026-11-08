@@ -9,9 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.wifi.WifiManager;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
 
@@ -24,6 +22,9 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Foreground service que mantém os downloads vivos com a Activity em
@@ -61,7 +62,10 @@ public class DownloadService extends Service {
     /** falhas seguidas do /status antes de concluir que a API morreu. */
     private static final int MAX_NET_FAILS = 20;   // ~30 s
 
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    // o poll NÃO pode rodar na main thread (NetworkOnMainThreadException
+    // desde a API 11): thread própria com reagendamento automático
+    private final ScheduledExecutorService exec =
+            Executors.newSingleThreadScheduledScheduler();
     private WifiManager.WifiLock wifiLock;
     private PowerManager.WakeLock wakeLock;
     private int netFails = 0;
@@ -132,13 +136,13 @@ public class DownloadService extends Service {
                 return;
             }
             if (active > 0) {
-                notify("Baixando: " + name,
+                updateNotification("Baixando: " + name,
                         pct + "% · " + queued + " na fila", pct, false);
             } else if (queued > 0) {
-                notify("Na fila: " + (active + queued) + " download(s)",
-                        "aguardando conexão…", 0, true);
+                updateNotification("Na fila: " + (active + queued)
+                        + " download(s)", "aguardando conexão…", 0, true);
             }
-            handler.postDelayed(this, POLL_MS);
+            exec.schedule(this, POLL_MS, TimeUnit.MILLISECONDS);
         }
     };
 
@@ -194,7 +198,7 @@ public class DownloadService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (!polling) {
             polling = true;
-            handler.post(poller);
+            exec.execute(poller);
         }
         return START_STICKY;
     }
@@ -202,7 +206,7 @@ public class DownloadService extends Service {
     @Override
     public void onDestroy() {
         polling = false;
-        handler.removeCallbacks(poller);
+        exec.shutdownNow();   // corta o poll em andamento (se houver)
         if (wifiLock != null && wifiLock.isHeld()) {
             wifiLock.release();
         }
@@ -268,8 +272,8 @@ public class DownloadService extends Service {
         return b.build();
     }
 
-    private void notify(String title, String text, int pct,
-                        boolean indeterminate) {
+    private void updateNotification(String title, String text, int pct,
+                                    boolean indeterminate) {
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm != null) {
             nm.notify(NOTIF_ID, build(title, text, pct, indeterminate));
