@@ -255,8 +255,12 @@ class TestSchedulerPublica(unittest.TestCase):
                  mock.patch.object(androidpub, "DEFAULT_BASE", private), \
                  mock.patch.object(androidpub, "_JAVA", FakeMainActivity):
                 s = Scheduler(store, cfg, on_event=on_event)
-                s.start()
+                # submit ANTES do start: o FakeDL é instantâneo e, com
+                # start→submit, o worker podia concluir (DONE) antes do
+                # submit rodar — aí o submit o rebaixava p/ QUEUED
+                # (re-download legítimo) e o assert via queued (flaky no CI)
                 s.submit()
+                s.start()
                 self.assertTrue(done.wait(10), "worker não emitiu done")
                 s.shutdown()
 
