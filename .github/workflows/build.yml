@@ -228,7 +228,10 @@ jobs:
             `LEIA-ME.txt` — extraia e duplo clique em
             `minidm-gui/minidm-gui.exe`. Sem Python instalado na máquina.
             Se o SmartScreen bloquear: "Mais informações" → "Executar assim".
-            yt-dlp e ffmpeg continuam externos (`minidm deps` mostra o que falta).
+            **yt-dlp vem embutido** (zip e APK — links de página como
+            YouTube funcionam sem instalar nada); o ffmpeg continua externo
+            (`minidm deps` mostra o que falta; sem ele seguem arquivos
+            diretos e os formatos progressivos).
             O `minidm-android.apk` instala direto no celular: engine Python
             embutida (Chaquopy) + webui em WebView — os arquivos baixados
             aparecem em `Download/<categoria>` do sistema (MediaStore;
@@ -251,8 +254,10 @@ jobs:
             * **nada de download vazio**: servidor sem tamanho (o YouTube
               responde `Content-Length: 0` no HEAD) vira erro claro e
               arquivos de 0 bytes não são publicados no MediaStore;
-            * **links de página sem yt-dlp são recusados com mensagem
-              explicando** (o APK não embute yt-dlp — para YouTube no
-              celular use a versão Termux);
+            * **yt-dlp embutido (zip e APK)**: colar um link de página
+              (YouTube, Instagram…) **baixa direto**, sem Termux e sem
+              `pip install` — a extração roda in-process dentro do app
+              (licença Unlicense/GPLv2 do yt-dlp respeitada: só
+              invocamos a CLI e lemos o JSON);
             * a webui mostra o **destino publicado** (`Download/…`) no
               card de cada tarefa concluída no Android.

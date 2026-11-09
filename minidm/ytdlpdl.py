@@ -1,17 +1,23 @@
-"""Downloader que delega ao yt-dlp (CLI externa, GPL-3.0 — sem copiar código).
+"""Downloader que delega ao yt-dlp (CLI; dual-licenciado Unlicense/GPLv2).
 
 Usado quando o perfil manda (`use_ytdlp_downloader`) ou a config global
-liga `use_ytdlp_downloader`, e o yt-dlp está instalado. A engine própria
+liga `use_ytdlp_downloader`, e o yt-dlp está disponível. A engine própria
 (HLS/DASH/arquivo) continua sendo o fallback.
 
 Interface igual aos outros downloaders (scheduler não muda):
 `run()`, `request_stop()`, `speed_bps()`. O progresso vem do parse das
 linhas `[download] 12.3% of ~10.00MiB at 1.00MiB/s ETA 00:10`.
+
+Com a CLI externa o yt-dlp roda em subprocesso; no APK/PyInstaller o
+módulo é embutido e o `_spawn` usa o caminho in-process
+(`_spawn_in_process`) — mesma leitura de progresso, mesma interface.
 """
 
 from __future__ import annotations
 
+import io
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -21,7 +27,7 @@ from typing import Optional
 from minidm.config import AppConfig
 from minidm.deps import ffmpeg_dir, js_runtime
 from minidm.meta import Task, TaskState
-from minidm.ytdlp import find as find_ytdlp
+from minidm.ytdlp import _in_process, _pipe, find as find_ytdlp
 
 # [download]  12.3% of ~ 10.00MiB at  1.00MiB/s ETA 00:10
 _PROGRESS_RE = re.compile(
@@ -117,6 +123,90 @@ class YtdlpError(Exception):
     pass
 
 
+# ---------------------------------------------------------------------
+# Caminho in-process (APK/PyInstaller): o `yt_dlp.main` roda numa thread
+# e escreve no `_LineSink`, que entrega linhas completas a uma fila —
+# mesma leitura de progresso do caminho com subprocesso.
+# ---------------------------------------------------------------------
+_END = object()                 # sentinela: fim da execução (fila)
+
+
+class _LineSink(io.TextIOBase):
+    """File-like que transforma escritas em linhas para uma fila.
+
+    Fechado pelo consumidor quando ele sai (`close()`): linhas tardias do
+    yt-dlp caem fora em vez de crescer a fila sem fim.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.lines: queue.Queue = queue.Queue()
+        self._buf = ""
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def write(self, s: str) -> int:
+        if not isinstance(s, str):
+            s = str(s)
+        with self._lock:
+            if self._closed:
+                return len(s)
+            self._buf += s
+            self._drain()
+        return len(s)
+
+    def _drain(self) -> None:
+        # quebra em \n (newline) e também em \r (progresso redesenhado)
+        parts = re.split(r"\r\n|\r|\n", self._buf)
+        self._buf = parts.pop()          # resto = linha ainda incompleta
+        for p in parts:
+            if p.strip():                # linhas vazias não interessam
+                self.lines.put(p)
+
+    def flush(self) -> None:
+        pass                             # tudo quebra no próprio write
+
+    def isatty(self) -> bool:
+        return False                     # sem console: yt-dlp usa --newline
+
+    def fileno(self) -> int:
+        raise io.UnsupportedOperation("não é um arquivo real")
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+    def close(self) -> None:
+        """O consumidor desistiu: descarta escritas tardias do yt-dlp."""
+        with self._lock:
+            self._closed = True
+            self._buf = ""
+
+
+def _interrupt(thread: threading.Thread) -> None:
+    """Levanta KeyboardInterrupt na thread do yt-dlp (mesmo efeito do
+    Ctrl+C no terminal) — é como o próprio yt-dlp interrompe downloads.
+
+    Sem ctypes (runtime exótico) o download segue em background até
+    terminar; a interface já saiu do loop e a tarefa fica PAUSED.
+    """
+    if not thread.is_alive():
+        return
+    tid = thread.ident
+    if not tid:                     # ident ainda não publicado (corrida)
+        time.sleep(0.05)
+        tid = thread.ident
+    if not tid:
+        return
+    try:
+        import ctypes
+
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt))
+    except Exception:
+        pass
+
+
 class YtdlpDownloader:
     def __init__(self, task: Task, config: Optional[AppConfig] = None,
                  extra_args: Optional[list[str]] = None, **_kw):
@@ -124,6 +214,7 @@ class YtdlpDownloader:
         self.config = config or AppConfig()
         self.extra_args = list(extra_args or [])
         self._proc: Optional[subprocess.Popen] = None
+        self._worker: Optional[threading.Thread] = None  # yt-dlp in-process
         self._stop = threading.Event()
         self._received = 0
         self._total: Optional[float] = None
@@ -169,7 +260,13 @@ class YtdlpDownloader:
             return t
 
     def _spawn(self, cmd: list[str]) -> list[str]:
-        """Roda o yt-dlp uma vez; devolve as últimas linhas (tail) de log."""
+        """Roda o yt-dlp uma vez; devolve as últimas linhas (tail) de log.
+
+        Com o módulo embutido (APK/PyInstaller) roda DENTRO do processo
+        (`_spawn_in_process`); com CLI externa, subprocesso normal.
+        """
+        if _in_process(cmd):
+            return self._spawn_in_process(cmd[3:])   # pula [exe, -m, yt_dlp]
         t = self.task
         try:
             self._proc = subprocess.Popen(
@@ -198,6 +295,72 @@ class YtdlpDownloader:
             t.error = f"yt-dlp não rodou: {e}"
             t.save_meta()
             raise YtdlpError(t.error) from e
+
+    def _spawn_in_process(self, args: list[str]) -> list[str]:
+        """`yt_dlp.main(args)` numa thread, lendo o progresso linha a linha.
+
+        Mesmo contrato do caminho com subprocesso: devolve o tail de log,
+        preenche `_final_path`/`_rc` e honra `_stop` (interrompe a thread
+        com KeyboardInterrupt, como o Ctrl+C no terminal). O redireciona-
+        mento de stdout/stderr é POR THREAD (`_pipe`): uma extração
+        `describe` da extensão roda junto sem se atropelar com o download.
+        """
+        sink = _LineSink()
+        state = {"rc": 0}
+        done = threading.Event()
+
+        def worker() -> None:
+            try:
+                with _pipe(sink, sink):   # stdout E stderr p/ a mesma fila
+                    import yt_dlp
+                    yt_dlp.main(args)
+            except SystemExit as e:       # a CLI termina com sys.exit
+                code = e.code or 0
+                if isinstance(code, str):
+                    sink.write(f"ERROR: {code}\n")
+                    code = 1
+                state["rc"] = int(code) if isinstance(code, int) else 1
+            except KeyboardInterrupt:     # pedido de parada via _stop
+                state["rc"] = 130
+            except BaseException as e:    # erro de extração/download
+                sink.write(f"ERROR: {type(e).__name__}: {e}\n")
+                state["rc"] = 1
+            finally:
+                done.set()
+                sink.lines.put(_END)
+
+        self._worker = threading.Thread(target=worker, name="minidm-ytdlp",
+                                        daemon=True)
+        self._worker.start()
+        tail: list[str] = []
+        try:
+            while True:
+                try:
+                    line = sink.lines.get(timeout=0.2)
+                except queue.Empty:
+                    if done.is_set() or self._stop.is_set():
+                        break
+                    continue
+                if line is _END:
+                    break
+                # (B) caminho real do arquivo final (linha --print after_move)
+                if line.startswith("MINIDM_PATH:"):
+                    self._final_path = line[len("MINIDM_PATH:"):].strip()
+                    continue
+                self._parse_line(line)
+                tail.append(line.rstrip())
+                if len(tail) > 30:
+                    tail.pop(0)
+                if self._stop.is_set():
+                    break
+        finally:
+            sink.close()                  # linhas tardias caem fora
+            if self._stop.is_set() and self._worker.is_alive():
+                _interrupt(self._worker)
+            if not done.is_set():
+                self._worker.join(timeout=5.0)   # sai se o worker atrasar
+        self._rc = state["rc"]
+        return tail
 
     def _retry_without_cookie(self, tail: list[str]) -> bool:
         """Este erro some se rodarmos sem o cookie do navegador?"""
@@ -296,13 +459,17 @@ class YtdlpDownloader:
         # saída: se o nome ainda é o id bruto do URL (sem título real),
         # deixa o yt-dlp nomear com o título de verdade. Se o usuário/perfil
         # definiu um nome, respeita (usa o stem como prefixo).
+        # Sem subprocesso não existe `cwd` — destino relativo teria que
+        # virar absoluto, senão o yt-dlp gravaria no cwd do processo.
+        dest = (os.path.abspath(t.dest_dir or ".")
+                if _in_process(cmd) else (t.dest_dir or "."))
         stem = os.path.splitext(t.filename)[0] or "download"
         if self._generic_stem(stem):
             self._ytdlp_named = True
-            args += ["-o", os.path.join(t.dest_dir or ".",
+            args += ["-o", os.path.join(dest,
                                         "%(title)s [%(id)s].%(ext)s")]
         else:
-            args += ["-o", os.path.join(t.dest_dir or ".", stem + ".%(ext)s")]
+            args += ["-o", os.path.join(dest, stem + ".%(ext)s")]
         if t.referer:
             args += ["--add-header", f"Referer:{t.referer}"]
         if t.user_agent or self.config.user_agent:

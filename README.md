@@ -363,12 +363,14 @@ O minidm decide sozinho quem resolve cada link:
 | O link é… | Exemplo | Quem baixa |
 |---|---|---|
 | mídia direta (`.mp4`, `.m3u8`, `.mpd`, `.zip`…) | `cdn.ex…/filme.mp4` | **engine própria** (segmentada, retomada, mirrors) |
-| **página** (sem extensão de mídia) | `youtube.com/watch?v=…`, `instagram.com/reel/…` | **yt-dlp**, se instalado — automaticamente, sem precisar de flag |
+| **página** (sem extensão de mídia) | `youtube.com/watch?v=…`, `instagram.com/reel/…` | **yt-dlp** — automaticamente, sem precisar de flag |
 
-Ou seja: instale o yt-dlp **uma vez** (`python -m pip install yt-dlp`) e a
-partir daí `python -m minidm add "<link do YouTube>" --start` já baixa —
-o minidm detecta que é link de página e delega. O nome sai com o **título
-real** (o yt-dlp informa), não o id do vídeo.
+Nos **executáveis e no APK o yt-dlp vem embutido** (frente 3): baixa um
+link de página sem instalar nada. Na instalação **a partir do fonte**
+(`pip install`), ele é opcional — instale uma vez (`python -m pip
+install yt-dlp`) e a partir daí `python -m minidm add "<link do YouTube>"
+--start` já baixa — o minidm detecta que é link de página e delega. O
+nome sai com o **título real** (o yt-dlp informa), não o id do vídeo.
 
 ```bat
 :: instala as duas peças (uma vez só)
@@ -527,9 +529,12 @@ teste+build, sem release.
 Notas do empacotamento (`packaging/`):
 
 * **onedir** (não onefile): inicia mais rápido e antivírus reclama menos;
-* **yt-dlp e ffmpeg NÃO são embutidos** — continuam programas externos
-  (yt-dlp é GPL-3.0; o minidm só chama a CLI). Sem eles a engine própria
-  segue funcionando para arquivos diretos; `minidm deps` mostra o que falta;
+* **yt-dlp EMBUTIDO no zip** (frente 3, Python puro — licença Unlicense/
+  GPLv2, uso como biblioteca permitido; a CLI roda in-process quando não
+  há binário externo) — links de página funcionam sem instalar nada;
+  **ffmpeg continua externo** (grande demais p/ embutir; sem ele a engine
+  própria segue funcionando para arquivos diretos e formatos
+  progressivos) — `minidm deps` mostra o que falta;
 * `browser_ext/` vai dentro do bundle (a API local serve a extensão);
 * ícone gerado por código: `python packaging/make_icon.py` (PIL, sem asset);
 * dependências: `pip install -r packaging/requirements.txt`.
@@ -558,11 +563,12 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
 * **downloads nunca concluem vazios**: servidor sem tamanho (o YouTube
   responde `Content-Length: 0` no HEAD) vira **erro claro** e arquivos
   de 0 bytes não são publicados no MediaStore;
-* **links de página (YouTube, Instagram…) exigem yt-dlp** — o APK não o
-  embute (regra do projeto). Sem yt-dlp, colar um link sem extensão
-  (ex.: `youtu.be/ID`) é **recusado no "adicionar" com erro explicando**
-  o que falta — nada de arquivo falso; para esses sites use o caminho
-  Termux abaixo (com yt-dlp instalado);
+* **links de página (YouTube, Instagram…) funcionam sem instalar
+  nada** — o yt-dlp é **embutido no APK** (frente 3: pip do Chaquopy,
+  rodando in-process); colar um link sem extensão (ex.: `youtu.be/ID`)
+  é analisado e baixado direto, estilo ADM. Sem ffmpeg o yt-dlp ainda
+  entrega os formatos progressivos (vídeo+áudio juntos); o Termux
+  abaixo continua disponível para quem quer a CLI completa;
 * a mesma webui serve de **controle remoto** no desktop: com o daemon
   rodando, abra `http://127.0.0.1:9742/` no navegador;
 * **segundo plano**: ao sair do app a fila continua com um **serviço
@@ -727,7 +733,7 @@ minidm/
   profiles.py    perfis + CommandTemplate (conceito YTDLnis)
   nametpl.py     motor de template de nome {title} [{id}].{ext}
   archive.py     download-archive (não rebaixar URLs concluídas)
-  ytdlp.py       integração opcional com a CLI do yt-dlp (GPL-3.0, externa: describe, playlist, versão)
+  ytdlp.py       integração com o yt-dlp (Unlicense/GPLv2; embutido no APK e nos executáveis, externo no fonte: describe, playlist, versão; CLI in-process quando não há binário)
   ytdlpdl.py     downloader que delega ao yt-dlp (mesma interface)
   cookies.py     cookies do navegador do usuário (export via yt-dlp -> jar -> header p/ engine própria)
   deps.py        descoberta de yt-dlp/ffmpeg/paramiko/runtime JS (PATH/winget/scoop/choco) + `deps`
@@ -739,7 +745,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           349 testes (engine, stream, mídia, DRM, yt-dlp, integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador)
+tests/           433 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

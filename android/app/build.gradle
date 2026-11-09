@@ -45,6 +45,14 @@ chaquopy {
             // HLS AES (minidm/stream.py, importado sob demanda); vem do
             // índice nativo do Chaquopy (wheels android arm64/x86_64)
             install("cryptography")
+            // yt-dlp EMBUTIDO (frente 3): extração de páginas (YouTube…)
+            // sem Termux/dependência externa. Python puro, SEM deps
+            // obrigatórias (brotli/mutagen/pycryptodomex são extras e
+            // teriam wheel Android — deixados de fora p/ não arriscar o
+            // build). Licença dual Unlicense/GPLv2 — sob a Unlicense o
+            // uso como biblioteca é livre; a CLI roda in-process
+            // (minidm/ytdlp.py).
+            install("yt-dlp")
         }
     }
     sourceSets {

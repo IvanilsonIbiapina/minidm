@@ -11,41 +11,50 @@ Saída em `dist/`:
 
 Notas:
 * onedir (não onefile): inicia mais rápido e o antivirus reclama menos;
-* `minidm.ytdlp`/`minidm.player` usam subprocesso — yt-dlp e ffmpeg são
-  programas EXTERNOS (não embutimos: yt-dlp é GPL, ffmpeg é LGPL/GPL);
+* `minidm.ytdlp` embute o **yt-dlp** (frente 3, licença dual
+  Unlicense/GPLv2 — pacote deles incluído, código não copiado; a CLI
+  roda in-process no `.exe` congelado). O **ffmpeg** continua EXTERNO
+  (LGPL/GPL e grande demais); sem ele seguem arquivos diretos e
+  formatos progressivos;
 * tkinterdnd2 é opcional: se ausente, a GUI cai em Ctrl+V (mesmo parsing).
 """
 
 import os
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # pacote inteiro + submódulos importados dinamicamente (try/except)
 hidden = collect_submodules("minidm")
 
-# PIL (ícones/player) e paramiko (SFTP) são importados sob demanda
-for extra in ("PIL", "paramiko"):
+# PIL (ícones/player), paramiko (SFTP) e yt-dlp (extração de páginas)
+# são importados sob demanda
+for extra in ("PIL", "paramiko", "yt_dlp"):
     try:
         hidden += collect_submodules(extra)
     except Exception:
         pass
+
+# dados do yt-dlp (solver JS do YouTube em
+# yt_dlp/extractor/youtube/jsc/_builtin/vendor/*.js)
+try:
+    ytdlp_datas = collect_data_files("yt_dlp")
+except Exception:
+    ytdlp_datas = []
 
 block_cipher = None
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))          # noqa: F821
 ICON = os.path.join(ROOT, "packaging", "minidm.ico")
 VERSION = "6.42.63.3"   # só p/ info de arquivo; a real está em minidm.__version__
 
-# NUNCA embutir yt-dlp: a integração é só via CLI externa (`minidm.ytdlp`
-# faz `import yt_dlp` como último fallback — o PyInstaller seguiria o import
-# estático e traria o pacote GPL inteiro + deps (numpy, curl_cffi…)).
-# Com o exclude, o bundle acha yt-dlp só no PATH/MINIDM_YTDLP, como sempre.
+# yt-dlp EMBUTIDO (frente 3): `minidm.ytdlp` faz `import yt_dlp` como
+# último fallback e, no .exe congelado, roda a CLI in-process. O
+# youtube_dl (progenitor antigo) continua de fora.
 #
 # numpy (26 MB: numpy + numpy.libs/OpenBLAS) também fica de fora: nenhum
 # código do minidm importa numpy; quem o puxa é o grafo do PyInstaller
 # (hook-numpy roda só porque ele aparece), e o PIL já o trata como opcional
 # (hook-PIL.ImageFilter o exclui). Só pesava o bundle.
 EXCLUDES = [
-    "yt_dlp",
     "youtube_dl",
     "numpy",
     "numpy.typing",
@@ -61,7 +70,7 @@ datas = [
      "browser_ext"),
     (os.path.join(ROOT, "webui"),
      "webui"),
-]
+] + ytdlp_datas
 
 common = dict(
     hiddenimports=hidden,

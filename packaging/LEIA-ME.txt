@@ -26,11 +26,16 @@ LINHA DE COMANDO (minidm.exe / minidm)
    minidm deps            o que falta (yt-dlp, ffmpeg...)
    minidm gui             abre a interface (idem duplo clique)
 
-DEPENDÊNCIAS EXTERNAS (baixe por conta própria — licenças próprias)
--------------------------------------------------------------------
+DEPENDÊNCIAS EXTERNAS (licenças próprias)
+-----------------------------------------
    yt-dlp   vídeos (YouTube etc.)   https://yt-dlp.org
    ffmpeg   HLS/DASH/conversão      https://ffmpeg.org
-`minidm deps` mostra o que está faltando. O yt-dlp NÃO vem no zip.
+O yt-dlp VEM EMBUTIDO no zip (licença Unlicense/GPLv2 — o pacote do
+yt-dlp é deles, o código não é copiado): links de página (YouTube,
+Instagram...) funcionam sem instalar nada. O ffmpeg continua externo:
+sem ele seguem funcionando arquivos diretos e os formatos progressivos
+(só faltam conversão mp3, embed e mux vídeo+áudio).
+`minidm deps` mostra o que está faltando.
 
 ANDROID
 -------
@@ -39,11 +44,10 @@ baixados aparecem em  Download/<categoria>  da pasta pública do
 Android (visíveis no app "Downloads" do sistema). Android 10+ não
 pede permissão; Android 7-9 pede a permissão de armazenamento na
 primeira abertura do app.
-Obs.: links de PÁGINA (YouTube, Instagram...) exigem o yt-dlp, que o
-APK não embute — sem ele o link é recusado com uma mensagem explicando
-(nada de arquivo vazio). Nomes vêm do Content-Disposition, do link ou
-do título da página, e download nunca conclui com 0 bytes. Para
-YouTube no celular, use a versão Termux (com pip install yt-dlp).
+Obs.: links de PÁGINA (YouTube, Instagram...) também funcionam no APK
+— o yt-dlp vem embutido (sem Termux, sem pip). Nomes vêm do
+Content-Disposition, do link ou do título da página, e download nunca
+conclui com 0 bytes.
 Saindo do app, a fila continua em SEGUNDO PLANO: um serviço com
 notificação de progresso mantém o download vivo (a tela desligada não
 corta); o serviço some sozinho quando a fila esvazia.

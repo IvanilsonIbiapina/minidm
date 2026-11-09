@@ -1,27 +1,34 @@
-"""Testes da integração opcional com o yt-dlp (CLI externa, GPL-3.0).
+"""Testes da integração com o yt-dlp (dual-licenciado Unlicense/GPLv2).
 
 Usa um *stub* do executável `yt-dlp` (script Python que emite `-J`
-no formato esperado) — assim testamos a conversão sem instalar nada.
+no formato esperado) e módulos `yt_dlp` falsos injetados — assim
+testamos a conversão e o runner in-process sem rede.
 
 Rodar com:  python -m unittest discover -s tests -p "test_ytdlp.py"
 """
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import queue
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 
 from minidm import ytdlp
 from minidm.config import AppConfig
 from minidm.media import analyze
 from minidm.meta import Task, TaskState
 from minidm.stream import make_downloader
-from minidm.ytdlpdl import YtdlpDownloader, YtdlpError
+from minidm.ytdlpdl import YtdlpDownloader, YtdlpError, _LineSink
 
 # JSON no formato `yt-dlp -J` (mesmos campos que ele emite de verdade)
 FAKE_INFO = {
@@ -449,6 +456,390 @@ class TestYtdlpDownloader(YtdlpBase):
                            return_value=False):
             cmd = d._build_cmd()
         self.assertNotIn("--remote-components", cmd)
+
+
+# ------------------------------------------------- runner in-process
+class TestRunnerInProcess(unittest.TestCase):
+    """A CLI do yt-dlp roda DENTRO do processo (APK/PyInstaller).
+
+    No APK (Chaquopy) não existe `python` executável e no .exe congelado
+    (PyInstaller) o `sys.executable` é o nosso binário — nos dois casos
+    `[exe, -m, yt_dlp]` não subprocessa; usamos `yt_dlp.main(argv)` com
+    stdout redirecionado (mesmo código de extração, mesmo JSON).
+    """
+
+    def setUp(self):
+        self._old_env = os.environ.pop("MINIDM_YTDLP", None)
+        self._had_mod = "yt_dlp" in sys.modules
+        self._old_mod = sys.modules.get("yt_dlp")
+        ytdlp.version.cache_clear()
+        ytdlp.supports_remote_components.cache_clear()
+
+    def tearDown(self):
+        if self._old_env is None:
+            os.environ.pop("MINIDM_YTDLP", None)
+        else:
+            os.environ["MINIDM_YTDLP"] = self._old_env
+        if self._had_mod:
+            sys.modules["yt_dlp"] = self._old_mod
+        else:
+            sys.modules.pop("yt_dlp", None)
+        ytdlp.version.cache_clear()
+        ytdlp.supports_remote_components.cache_clear()
+
+    @staticmethod
+    def inject(main):
+        """Instala um módulo `yt_dlp` falso cujo `main(argv)` é `main`."""
+        import types
+        mod = types.ModuleType("yt_dlp")
+        mod.main = main
+        sys.modules["yt_dlp"] = mod
+        return mod
+
+    # ------------------------------------------------------------ detecção
+    def test_cli_externa_nao_vai_in_process(self):
+        self.assertFalse(ytdlp._in_process(["/usr/bin/yt-dlp", "-J", "x"]))
+        self.assertFalse(ytdlp._in_process(["yt-dlp", "--version"]))
+        # `-m` em outra posição não é o comando do módulo
+        self.assertFalse(ytdlp._in_process(["python", "outro", "-m"]))
+
+    def test_modulo_sem_executavel_vai_in_process(self):
+        # Chaquopy: sys.executable vazio ou apontando p/ nada
+        self.assertTrue(ytdlp._in_process(["", "-m", "yt_dlp", "--version"]))
+        self.assertTrue(ytdlp._in_process(["/nao/existe/python",
+                                           "-m", "yt_dlp"]))
+
+    def test_congelado_vai_in_process(self):
+        # PyInstaller: sys.executable é o nosso .exe (não entende -m)
+        with mock.patch.object(ytdlp.sys, "frozen", True, create=True):
+            self.assertTrue(ytdlp._in_process([sys.executable,
+                                               "-m", "yt_dlp"]))
+
+    def test_dev_com_python_real_usa_subprocesso(self):
+        # desktop de dev: sys.executable existe -> subprocesso normal
+        self.assertFalse(ytdlp._in_process([sys.executable,
+                                            "-m", "yt_dlp"]))
+
+    # ------------------------------------------------------------ execução
+    def test_run_in_process_captura_stdout_e_rc(self):
+        def main(argv):
+            print(json.dumps({"argv": argv}))
+        self.inject(main)
+        p = ytdlp._run_in_process(["--version"])
+        self.assertEqual(p.returncode, 0)
+        self.assertEqual(json.loads(p.stdout.decode())["argv"],
+                         ["--version"])
+
+    def test_run_in_process_sysexit_string_vira_rc1(self):
+        def main(argv):
+            raise SystemExit("mensagem de erro")
+        self.inject(main)
+        p = ytdlp._run_in_process(["-J", "http://x"])
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(b"mensagem de erro", p.stderr)
+
+    def test_run_in_process_excecao_vira_rc1(self):
+        def main(argv):
+            raise RuntimeError("boom")
+        self.inject(main)
+        p = ytdlp._run_in_process(["-J", "http://x"])
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(b"boom", p.stderr)
+
+    def test_redirecionamento_de_stdout_restaurado(self):
+        # redirect_stdout é global: tem que restaurar senão a GUI/TUI
+        # do minidm fica sem saída depois da primeira extração
+        orig_out, orig_err = sys.stdout, sys.stderr
+        self.inject(lambda argv: None)
+        ytdlp._run_in_process(["--version"])
+        self.assertIs(sys.stdout, orig_out)
+        self.assertIs(sys.stderr, orig_err)
+
+    # ------------------------------------------------------------ despacho
+    def test_run_despacha_in_process_quando_sem_executavel(self):
+        seen = []
+        self.inject(lambda argv: seen.append(argv))
+        proc = ytdlp._run(["", "-m", "yt_dlp", "--version"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(seen, [["--version"]])   # [exe, -m, yt_dlp] pulado
+
+    def test_run_despacha_subprocesso_para_cli_externa(self):
+        fake = subprocess.CompletedProcess([], 0, b"", b"")
+        with mock.patch.object(ytdlp.subprocess, "run",
+                               return_value=fake) as m:
+            ytdlp._run(["/usr/bin/yt-dlp", "--version"], timeout=7)
+        self.assertEqual(m.call_args.kwargs["timeout"], 7)
+        self.assertEqual(m.call_args.args[0],
+                         ["/usr/bin/yt-dlp", "--version"])
+
+    # ------------------------------------------------------- ponta a ponta
+    def test_version_via_runner_in_process(self):
+        def main(argv):
+            if argv == ["--version"]:
+                print("2026.01.01")
+        self.inject(main)
+        with mock.patch.object(ytdlp, "find",
+                               return_value=["", "-m", "yt_dlp"]):
+            self.assertEqual(ytdlp.version(), "2026.01.01")
+
+    def test_describe_via_runner_in_process(self):
+        def main(argv):
+            if "--help" in argv:
+                print("usage: yt-dlp ... --remote-components")
+            elif "-J" in argv:
+                print(json.dumps(FAKE_INFO))
+        self.inject(main)
+        with mock.patch.object(ytdlp, "find",
+                               return_value=["", "-m", "yt_dlp"]), \
+             mock.patch("minidm.deps.js_runtime", return_value=None):
+            info = ytdlp.describe("http://example.com/watch?v=1")
+        self.assertEqual(info["title"], FAKE_INFO["title"])
+        self.assertTrue(any(f.get("url") for f in info["formats"]))
+
+    def test_expand_playlist_via_runner_in_process(self):
+        def main(argv):
+            if "--flat-playlist" in argv:
+                print(json.dumps({"entries": [
+                    {"url": "http://x/1", "title": "a", "duration": 1},
+                    {"url": "http://x/2", "title": "b", "duration": 2},
+                ]}))
+        self.inject(main)
+        with mock.patch.object(ytdlp, "find",
+                               return_value=["", "-m", "yt_dlp"]):
+            out = ytdlp.expand_playlist("http://example.com/playlist")
+        self.assertEqual([i["url"] for i in out],
+                         ["http://x/1", "http://x/2"])
+
+    def test_supports_remote_components_via_in_process(self):
+        def main(argv):
+            if "--help" in argv:
+                print("usage: yt-dlp ... --remote-components ...")
+        self.inject(main)
+        with mock.patch.object(ytdlp, "find",
+                               return_value=["", "-m", "yt_dlp"]):
+            self.assertTrue(ytdlp.supports_remote_components())
+
+
+# ------------------------------------------- downloader in-process (frente 3)
+class TestDownloaderInProcess(unittest.TestCase):
+    """O `YtdlpDownloader` roda o yt-dlp DENTRO do processo.
+
+    No APK (Chaquopy) e no .exe congelado (PyInstaller) o módulo é
+    embutido e não existe CLI externa — o `_spawn` despacha para
+    `_spawn_in_process`: mesma leitura de progresso, mesmo tail de log,
+    mesmo `_final_path` e a mesma parada via `_stop` do caminho com
+    subprocesso (aí testado com stubs de executável).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="minidm_ip_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._old_env = os.environ.pop("MINIDM_YTDLP", None)
+
+        def _restore_env():
+            if self._old_env is None:
+                os.environ.pop("MINIDM_YTDLP", None)
+            else:
+                os.environ["MINIDM_YTDLP"] = self._old_env
+        self.addCleanup(_restore_env)
+        self._had_mod = "yt_dlp" in sys.modules
+        self._old_mod = sys.modules.get("yt_dlp")
+
+        def _restore_mod():
+            if self._had_mod:
+                sys.modules["yt_dlp"] = self._old_mod
+            else:
+                sys.modules.pop("yt_dlp", None)
+        self.addCleanup(_restore_mod)
+
+    @staticmethod
+    def inject(main):
+        """Instala um módulo `yt_dlp` falso cujo `main(argv)` é `main`."""
+        import types
+
+        mod = types.ModuleType("yt_dlp")
+        mod.main = main
+        sys.modules["yt_dlp"] = mod
+        return mod
+
+    def _task(self, **kw):
+        base = dict(url="http://cdn/video.mp4", dest_dir=self.tmp,
+                    filename="meu video.mp4", kind="file")
+        base.update(kw)
+        return Task(**base)
+
+    def _downloader(self, **kw):
+        """YtdlpDownloader cujo `find` devolve o módulo embutido (APK)."""
+        patch = mock.patch("minidm.ytdlpdl.find_ytdlp",
+                           return_value=["", "-m", "yt_dlp"])
+        patch.start()
+        self.addCleanup(patch.stop)
+        return YtdlpDownloader(self._task(**kw), AppConfig(data_dir=self.tmp))
+
+    # ------------------------------------------------------- execução
+    def test_download_in_process_conclui_e_calcula_sha(self):
+        def main(argv):
+            out = argv[argv.index("-o") + 1].replace("%(ext)s", "mp4")
+            with open(out, "wb") as fh:
+                fh.write(b"abc" * 1000)
+            print("[download]  10.0% of ~ 3.00KiB at  1.00MiB/s ETA 00:00")
+            print("[download] 100.0% of ~ 3.00KiB at  2.00MiB/s ETA 00:00")
+            print("MINIDM_PATH:" + os.path.abspath(out))
+        self.inject(main)
+        d = self._downloader()
+        out = d.run()
+        self.assertEqual(out.state, TaskState.DONE)
+        self.assertEqual(out.filename, "meu video.mp4")
+        self.assertEqual(out.total_size, 3000)
+        self.assertTrue(out.sha256)
+        # progresso foi lido da fila (100% de 3.00KiB = 3072 bytes) e
+        # zerou o stream ao concluir
+        self.assertEqual(d._received, 3072)
+        self.assertIsNone(out.stream)
+        # e nada passou por subprocesso (Popen com "" quebraria no APK)
+        self.assertIsNone(d._proc)
+
+    def test_download_in_process_erro_vira_excecao(self):
+        def main(argv):
+            print("ERROR: [youtube] x: Unable to download webpage")
+            raise SystemExit(1)
+        self.inject(main)
+        d = self._downloader()
+        with self.assertRaises(YtdlpError):
+            d.run()
+        self.assertEqual(d.task.state, TaskState.ERROR)
+        self.assertIn("Unable to download webpage", d.task.error)
+
+    def test_request_stop_interrompe_o_download_in_process(self):
+        """`request_stop` leva o yt-dlp in-process a levantar KeyboardInterrupt
+        (o mesmo efeito do Ctrl+C) e a tarefa termina PAUSED."""
+        started = threading.Event()
+
+        def main(argv):
+            started.set()
+            while True:
+                time.sleep(0.02)
+        self.inject(main)
+        d = self._downloader()
+        result: dict = {}
+
+        def run():
+            try:
+                result["task"] = d.run()
+            except Exception as e:            # pragma: no cover
+                result["err"] = e
+        th = threading.Thread(target=run)
+        th.start()
+        self.assertTrue(started.wait(5.0), "worker do yt-dlp não começou")
+        d.request_stop()
+        th.join(15.0)
+        self.assertFalse(th.is_alive(), "run() não saiu depois do stop")
+        self.assertNotIn("err", result)
+        self.assertEqual(result["task"].state, TaskState.PAUSED)
+        # a thread do yt-dlp foi realmente interrompida (não sobrou rodando)
+        self.assertTrue(d._worker is None or not d._worker.is_alive())
+
+    # --------------------------------------------------------- mecanismo
+    def test_line_sink_quebra_escritas_parciais(self):
+        """Escritas parciais do yt-dlp só viram linha quando completam."""
+        sink = _LineSink()
+        sink.write("[down")
+        with self.assertRaises(queue.Empty):
+            sink.lines.get_nowait()
+        sink.write("load]  50.0% of ~ 1.00MiB at  1.00MiB/s ETA 00:01\n"
+                   "[down")
+        self.assertEqual(
+            sink.lines.get_nowait(),
+            "[download]  50.0% of ~ 1.00MiB at  1.00MiB/s ETA 00:01")
+        # \r (progresso redesenhado sem --newline) também quebra linha
+        sink.write("load] 100.0% of ~ 1.00MiB at  2.00MiB/s ETA 00:00\r")
+        self.assertTrue(sink.lines.get_nowait().startswith(
+            "[download] 100.0%"))
+        # depois de fechado (consumidor saiu), linhas tardias caem fora
+        sink.close()
+        sink.write("tardia\n")
+        with self.assertRaises(queue.Empty):
+            sink.lines.get_nowait()
+
+    def test_pipe_redireciona_somente_a_thread_dona(self):
+        """O `_pipe` isola threads: a dona escreve no alvo dela; as
+        outras continuam no stdout original (GUI/TUI/log não somem)."""
+        cap, own = io.StringIO(), io.StringIO()
+        real = sys.stdout
+        sys.stdout = cap
+        try:
+            with ytdlp._pipe(own):
+                print("da thread dona")
+                th = threading.Thread(
+                    target=lambda: print("de outra thread"))
+                th.start()
+                th.join()
+            self.assertEqual(own.getvalue().strip(), "da thread dona")
+            self.assertEqual(cap.getvalue().strip(), "de outra thread")
+            self.assertIs(sys.stdout, cap)    # restaurado ao sair
+        finally:
+            sys.stdout = real
+
+    def test_describe_nao_atropela_download_in_process(self):
+        """`describe` da extensão roda junto com um download longo.
+
+        O redirect por THREAD impede que o JSON da extração caia na
+        fila de progresso do download (e vice-versa) — era o risco do
+        redirect global antigo quando o yt-dlp roda in-process.
+        """
+        dl_sink = _LineSink()
+        hold, release = threading.Event(), threading.Event()
+        erros: list = []
+        real_out = sys.stdout
+
+        def download_thread():
+            try:
+                with ytdlp._pipe(dl_sink, dl_sink):
+                    print("PROGRESSO 10.0% of ~ 1.00MiB at 1.00MiB/s")
+                    hold.set()
+                    release.wait(10.0)
+            except BaseException as e:       # pragma: no cover
+                erros.append(e)
+                hold.set()
+
+        th = threading.Thread(target=download_thread)
+        th.start()
+        self.assertTrue(hold.wait(5.0), "download não chegou a segurar o pipe")
+        try:
+            # describe (thread principal) enquanto o download está ativo
+            self.inject(lambda argv: print("JSON-DA-DESCRICAO"))
+            p = ytdlp._run_in_process(["--version"])
+        finally:
+            release.set()
+            th.join(10.0)
+        self.assertEqual(erros, [])
+        self.assertFalse(th.is_alive())
+        # a descrição ficou COM ELA…
+        self.assertEqual(p.stdout, b"JSON-DA-DESCRICAO\n")
+        # …e a linha de progresso ficou COM O DOWNLOAD
+        self.assertEqual(dl_sink.lines.get_nowait(),
+                         "PROGRESSO 10.0% of ~ 1.00MiB at 1.00MiB/s")
+        # saída do processo restaurada após as duas redireções
+        self.assertIs(sys.stdout, real_out)
+
+    def test_build_cmd_destino_absoluto_quando_in_process(self):
+        """Sem subprocesso não existe `cwd` — destino relativo teria que
+        virar absoluto, senão o yt-dlp gravaria no cwd do processo."""
+        with mock.patch("minidm.ytdlpdl.find_ytdlp",
+                        return_value=["", "-m", "yt_dlp"]):
+            d = YtdlpDownloader(self._task(dest_dir="downloads"),
+                                AppConfig(data_dir=self.tmp))
+            cmd = d._build_cmd()
+        out_arg = cmd[cmd.index("-o") + 1]
+        self.assertTrue(os.path.isabs(out_arg),
+                        f"-o relativo no modo in-process: {out_arg}")
+        self.assertIn("downloads", out_arg)
+        # CLI externa mantém o destino relativo (o subprocesso tem cwd)
+        with mock.patch("minidm.ytdlpdl.find_ytdlp",
+                        return_value=[r"C:\bin\yt-dlp.exe"]):
+            cmd2 = d._build_cmd()
+        self.assertEqual(cmd2[cmd2.index("-o") + 1],
+                         os.path.join("downloads", "meu video.%(ext)s"))
 
 
 if __name__ == "__main__":
