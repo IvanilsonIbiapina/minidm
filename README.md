@@ -92,19 +92,26 @@ qualidades disponíveis. O `minidm` faz o mesmo com a extensão `browser_ext/`:
    tags `<video>/<source>`, guardando tudo que parece mídia (`.mp4`, `.m3u8`,
    `.mpd`, `.webm`, áudio…). O ícone mostra um badge com o nº de mídias.
 4. **Clique no ícone** — o painel lista o que foi capturado **com os que têm
-   qualidade primeiro** (HLS/DASH no topo, depois vídeo, áudio e o resto).
+   qualidade primeiro** (HLS/DASH no topo, depois vídeo, áudio e o resto) e a
+   **mídia detectada aparece ACIMA do card** da página (o card é o fallback;
+   sem mídia capturada, ele fica no topo).
    **Baixar…** abre a caixa *Salvar como* (estilo IDM): qualidade (quando
    há), **perfil** (Música/Vídeo/…, vem do `GET /profiles`), **nome do
    arquivo editável** (sugerido pelo `Content-Disposition`, URL ou título
    da página) e **pasta de destino** — a última usada fica guardada. O
    envio leva `Referer`, cookies do domínio e o título da aba, como o IDM
-   faz.
+   faz. Quando o link capturado é **singular** (`.ts`, playlist de mídia —
+   um formato só), a caixa reusa a análise da **página** feita pelo card e
+   oferece as **alturas reais do vídeo** (+ "Só áudio"): a escolha vai no
+   payload como `height`/`category: Músicas`, igual ao card, em vez de o
+   servidor escolher a melhor qualidade sozinho.
 
 Também há botão de contexto **Enviar para o minidm** (link/página) e
 **Baixar vídeo desta página**.
 
 **Card "Baixar esta página"** — quando a aba atual é uma *página* (YouTube,
-Instagram, um curso…), o popup mostra um card no topo com um seletor de
+Instagram, um curso…), o popup mostra o card (no topo, se não há mídia
+capturada) com um seletor de
 **categoria** (estilo IDM — Vídeos é a padrão; dá pra mudar para Músicas,
 Programas…) e um seletor de **qualidade com as opções REAIS** do vídeo
 (o servidor analisa com o yt-dlp e lista as alturas disponíveis + "Só
@@ -760,7 +767,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           508 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador, autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
+tests/           517 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (ordem/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

@@ -72,6 +72,35 @@ function _heightsFrom(analysis) {
   return out;
 }
 
+// ---------------------------------------------------------- ordem do popup
+// A mídia DETECTADA na aba (o vídeo real, .ts/HLS/DASH capturado) vem no
+// TOPO; o card genérico "baixar esta página" (yt-dlp) só vai para baixo —
+// ele é o fallback, não o que o usuário veio buscar. Sem mídia detectada,
+// o card continua em cima (é tudo que há).
+let _hasItems = false;
+
+function placeCard() {
+  const main = document.querySelector("main");
+  const card = $("#pageDl");
+  const list = $("#list");
+  if (!main || !card || !list) return;
+  if (_hasItems) main.appendChild(card);      // lista primeiro, card depois
+  else main.insertBefore(card, list);         // sem mídia: card no topo
+}
+
+// análise da PÁGINA feita pelo card (yt-dlp) — reusada na caixa "Salvar
+// como" quando o link capturado é singular e não tem o que escolher.
+// A promessa fica guardada: quem abrir a caixa antes de a análise do
+// card terminar espera ela (senão a escolha de qualidade não aparecia).
+let _pageAnalysis = null;
+let _pageAnalysisPromise = null;
+
+async function ensurePageAnalysis() {
+  if (_pageAnalysis || !_pageAnalysisPromise) return _pageAnalysis;
+  try { await _pageAnalysisPromise; } catch (e) { /* fica sem página */ }
+  return _pageAnalysis;
+}
+
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab || null;
@@ -124,6 +153,7 @@ async function renderPageDownload(tab, up) {
   const box = $("#pageDl");
   if (!tab || !tab.url || !isPageUrl(tab.url)) {
     box.classList.add("hidden");       // mídia direta: o fluxo normal basta
+    placeCard();
     return;
   }
   box.classList.remove("hidden");
@@ -143,10 +173,14 @@ async function renderPageDownload(tab, up) {
   box.appendChild(hint);
 
   // categorias (API local, rápido) + qualidades REAIS (yt-dlp, pode demorar)
+  const analysisP = up ? _analyzePage(tab.url) : Promise.resolve(null);
+  _pageAnalysisPromise = analysisP;      // caixa "Salvar como" pode esperar
   const [cats, analysis] = await Promise.all([
     _categories(),
-    up ? _analyzePage(tab.url) : Promise.resolve(null),
+    analysisP,
   ]);
+  _pageAnalysis = (analysis && analysis.ok) ? analysis : null;
+  placeCard();               // posiciona: com mídia detectada, fica abaixo
   hint.textContent = up
     ? "Página detectada — baixa com o yt-dlp (qualquer site)."
     : "minidm offline — inicie com `python -m minidm serve`.";
@@ -274,6 +308,8 @@ function priorityOf(item) {
 
 function render(items) {
   const list = $("#list");
+  _hasItems = items.length > 0;
+  placeCard();               // mídia detectada acima do card da página
   if (!items.length) {
     list.innerHTML = `<div class="empty">Nenhuma mídia detectada nesta aba ainda.<br>
       Toque um vídeo ou abra uma página com player.</div>`;
@@ -368,9 +404,29 @@ async function openSaveDialog(el, item, preselectedQuality) {
   const qualities = res.qualities || [];
   box.innerHTML = "";
 
-  // --- qualidade (só quando o servidor listou mais de uma opção)
+  // link SINGULAR: espera a análise da PÁGINA (yt-dlp) terminar antes de
+  // decidir — foi o bug: clicar "Baixar…" rápido demais e a escolha de
+  // resolução não aparecia.
+  if (qualities.length <= 1 && !_pageAnalysis) {
+    box.innerHTML = `<div class="q">analisando qualidades da página…</div>`;
+    await ensurePageAnalysis();
+    box.innerHTML = "";
+  }
+
+  // --- qualidade (3 casos, era o que faltava p/ vídeos HLS detectados):
+  //  a) link com VARIANTES (master m3u8/DASH): select do item, como sempre;
+  //  b) link SINGULAR (.ts, playlist de mídia): o link em si não tem
+  //     alternativas — mas quando a aba é uma página e o card já analisou
+  //     com o yt-dlp, oferece as qualidades REAIS do vídeo da página:
+  //     é ali que a escolha de resolução existe;
+  //  c) sem nada: avisa que este link tem formato único (em vez de
+  //     mostrar a caixa sem nenhuma linha de qualidade).
+  const pageInfo = (qualities.length <= 1 && _pageAnalysis)
+    ? _heightsFrom(_pageAnalysis) : { heights: [], audio: false };
+  const mode = qualities.length > 1 ? "item"
+    : (pageInfo.heights.length > 0 ? "page" : "none");
   let qualitySelect = null;
-  if (qualities.length > 1) {
+  if (mode === "item") {
     const row = document.createElement("div");
     row.className = "row";
     const lab = document.createElement("label");
@@ -400,9 +456,37 @@ async function openSaveDialog(el, item, preselectedQuality) {
     qualitySelect.value = String(best);
     row.append(lab, qualitySelect);
     box.appendChild(row);
+  } else if (mode === "page") {
+    const row = document.createElement("div");
+    row.className = "row";
+    const lab = document.createElement("label");
+    lab.textContent = "Qualidade:";
+    qualitySelect = document.createElement("select");
+    // o próprio link detectado continua sendo uma opção (ele já baixa)
+    qualitySelect.appendChild(_option("item",
+      `original — ${qualities[0] ? qualities[0].label : "este link"}`));
+    for (const h of pageInfo.heights) {
+      qualitySelect.appendChild(_option(`h:${h}`, `${h}p (vídeo da página)`));
+    }
+    if (pageInfo.audio) qualitySelect.appendChild(_option("audio", "Só áudio"));
+    qualitySelect.value = "item";     // padrão: o link detectado (sem surpresa)
+    row.append(lab, qualitySelect);
+    box.appendChild(row);
+  } else {
+    const row = document.createElement("div");
+    row.className = "row";
+    const lab = document.createElement("label");
+    lab.textContent = "Qualidade:";
+    const txt = document.createElement("span");
+    txt.className = "q";
+    txt.textContent = qualities[0]
+      ? `único formato deste link (${qualities[0].label})`
+      : "formato único";
+    row.append(lab, txt);
+    box.appendChild(row);
   }
-  const qualityAt = () =>
-    qualitySelect ? qualities[parseInt(qualitySelect.value, 10)] : qualities[0];
+  const qualityAt = () => (mode === "item" && qualitySelect
+    ? qualities[parseInt(qualitySelect.value, 10)] : qualities[0]) || {};
 
   // --- perfil (estilo YT-DLnis: Música/Vídeo/… preenchem tudo)
   const profileRow = document.createElement("div");
@@ -425,6 +509,10 @@ async function openSaveDialog(el, item, preselectedQuality) {
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameInput.value = res.filename || item.filename || "video";
+  // nome pré-preenchido = do LINK DETECTADO (.ts). Se a escolha de
+  // qualidade for do VÍDEO DA PÁGINA (outro arquivo!), só mandamos o
+  // nome quando o usuário editou — senão o yt-dlp tira o título da página.
+  const nomeOriginal = nameInput.value;
   nameRow.append(nameLab, nameInput);
   box.appendChild(nameRow);
 
@@ -455,23 +543,58 @@ async function openSaveDialog(el, item, preselectedQuality) {
   box.appendChild(btnRow);
 
   go.addEventListener("click", async () => {
+    // dois alvos possíveis: o PRÓPRIO link capturado (qualidade vem do
+    // manifesto analisado) ou o VÍDEO DA PÁGINA via yt-dlp — quando o
+    // link é singular (.ts/playlist de mídia), a escolha de resolução
+    // só existe na página, e é ali que mandamos o `height`.
+    const escolha = (mode === "page" && qualitySelect)
+      ? qualitySelect.value : "item";
+    const daPagina = escolha !== "item";
     const q = qualityAt() || {};
-    const payload = {
-      url: q.url || item.url,
-      quality_url: q.url || item.url,
-      kind: q.kind || undefined,
-      referer: item.referer || (currentTab && currentTab.url) || "",
-      page_title: pageTitle,
-      filename: nameInput.value.trim() || undefined,
-      dir: dirInput.value.trim() || undefined,
-      quality_label: q.label || undefined,
-      profile: profileSelect.value || undefined,
-      // escolha da qualidade no próprio manifesto: representação do MPD
-      // (SegmentTemplate) + par de áudio -> engine baixa vídeo+áudio e
-      // mescla com ffmpeg (mux), em vez de gravar vídeo mudo.
-      rep_id: (q.dash && q.dash.id) || undefined,
-      audio: q.audio && q.audio.url ? q.audio : undefined,
-    };
+    let payload;
+    if (daPagina) {
+      // igual ao card "Baixar vídeo desta página": URL da aba + altura
+      // (ou categoria Músicas p/ extrair áudio), SEM analisar de novo.
+      const pageUrl = (currentTab && currentTab.url) || item.referer
+        || item.url;
+      payload = {
+        url: pageUrl,
+        page_title: pageTitle,
+        referer: pageUrl,
+        dir: dirInput.value.trim() || undefined,
+        profile: profileSelect.value || undefined,
+      };
+      if (escolha === "audio") {
+        payload.category = "Músicas";     // perfil/áudio + pasta Músicas
+        payload.quality_label = "áudio";
+      } else {
+        payload.height = parseInt(escolha.slice(2), 10);
+        payload.quality_label = `${payload.height}p`;
+      }
+      // nome pré-preenchido é do link detectado (.ts) — não serve p/
+      // a página; só manda se o usuário editou à mão.
+      const nome = nameInput.value.trim();
+      if (nome && nome !== nomeOriginal) payload.filename = nome;
+    } else {
+      payload = {
+        url: q.url || item.url,
+        quality_url: q.url || item.url,
+        kind: q.kind || undefined,
+        referer: item.referer || (currentTab && currentTab.url) || "",
+        page_title: pageTitle,
+        filename: nameInput.value.trim() || undefined,
+        dir: dirInput.value.trim() || undefined,
+        quality_label: q.label || undefined,
+        profile: profileSelect.value || undefined,
+        // escolha da qualidade no próprio manifesto: representação do MPD
+        // (SegmentTemplate) + par de áudio -> engine baixa vídeo+áudio e
+        // mescla com ffmpeg (mux), em vez de gravar vídeo mudo.
+        rep_id: (q.dash && q.dash.id) || undefined,
+        audio: q.audio && q.audio.url ? q.audio : undefined,
+      };
+    }
+    const rotulo = daPagina ? payload.quality_label
+      : (q.label && qualities.length > 1 ? q.label : "");
     btnRow.querySelectorAll("button").forEach((b) => (b.disabled = true));
     const sent = await chrome.runtime.sendMessage({ type: "download", payload });
     btnRow.querySelectorAll("button").forEach((b) => (b.disabled = false));
@@ -485,7 +608,7 @@ async function openSaveDialog(el, item, preselectedQuality) {
       ok.className = "q ok";
       ok.textContent = `✓ na fila${sent.id ? ` [${sent.id}]` : ""}` +
         (sent.filename ? ` — ${sent.filename}` : "") +
-        (q.label && qualities.length > 1 ? ` (${q.label})` : "");
+        (rotulo ? ` (${rotulo})` : "");
       box.appendChild(ok);
     } else {
       const err = document.createElement("div");
