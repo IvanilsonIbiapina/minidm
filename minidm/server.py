@@ -246,6 +246,14 @@ def make_handler(app: App):
         # -------------------------------------------------------------- /add
         def _add(self, payload):
             url = payload.get("url")
+            # torrent: validação própria (magnet: não é http/ftp) e
+            # roteamento direto para a fila com o aria2 externo
+            if url:
+                from minidm.torrent import is_torrent_url
+
+                if is_torrent_url(str(url)):
+                    self._add_torrent(payload, str(url))
+                    return
             if not url or urlparse(url).scheme not in ("http", "https",
                                                        "ftp", "sftp"):
                 self._json({"error": "url http(s)/ftp/sftp obrigatória"}, 400)
@@ -445,6 +453,52 @@ def make_handler(app: App):
             self._json({"ok": True, "id": task.id, "kind": kind,
                         "filename": task.filename, "dir": task.dest_dir,
                         "profile": task.profile or None}, 201)
+
+        # ---------------------------------------------------- /add torrent
+        def _add_torrent(self, payload, url):
+            """magnet:/URL .torrent -> fila (download via aria2 externo)."""
+            from minidm.deps import aria2_available
+            from minidm.torrent import torrent_name
+
+            scheme = urlparse(url).scheme.lower()
+            if scheme not in ("http", "https", "magnet"):
+                self._json({"error": "torrent: só magnet: ou URL http(s) "
+                                     "de .torrent"}, 400)
+                return
+            if not aria2_available():
+                self._json({"error": "torrent precisa do aria2 — instale "
+                                     "aria2c (`winget install aria2.aria2`, "
+                                     "`apt install aria2`, `brew install "
+                                     "aria2`) ou defina MINIDM_ARIA2"}, 400)
+                return
+
+            dest_dir = payload.get("dir") or app.store.data_dir
+            category = payload.get("category", "")
+            if category:
+                from minidm.categories import (category_folder,
+                                               ensure_folder, get_category)
+
+                cat = get_category(category)
+                if not cat:
+                    self._json({"error": f"categoria desconhecida: "
+                                         f"{category}"}, 400)
+                    return
+                if not payload.get("dir"):
+                    dest_dir = ensure_folder(category_folder(cat,
+                                                             app.config))
+            filename = payload.get("filename") or torrent_name(url)
+            task = Task(
+                url=url, dest_dir=dest_dir, filename=filename,
+                state=TaskState.QUEUED, kind="torrent",
+                category=category or _classify(url, filename),
+                page_title=payload.get("page_title", ""),
+            )
+            app.store.add(task)
+            if payload.get("start", True):
+                app.scheduler.submit([task.id])
+            self._json({"ok": True, "id": task.id, "kind": "torrent",
+                        "filename": task.filename, "dir": task.dest_dir,
+                        "profile": None}, 201)
 
         # ------------------------------------------------------ /add playlist
         def _add_playlist(self, payload, url):

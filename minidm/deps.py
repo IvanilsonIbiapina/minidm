@@ -129,6 +129,24 @@ def paramiko_available() -> bool:
         return False
 
 
+@lru_cache(maxsize=1)
+def aria2_bin() -> Optional[str]:
+    """Caminho do `aria2c` (downloads torrent), ou None.
+
+    MINIDM_ARIA2 > PATH. O aria2 é externo de propósito — bittorrent é
+    um protocolo próprio (DHT, peeração, semente), mesmo racional do
+    yt-dlp: chamamos o binário, nunca reimplementamos.
+    """
+    env = os.environ.get("MINIDM_ARIA2", "")
+    if env:
+        return env if os.path.isfile(env) else None
+    return shutil.which("aria2c")
+
+
+def aria2_available() -> bool:
+    return aria2_bin() is not None
+
+
 def ffmpeg_bin() -> Optional[str]:
     """Caminho do executável `ffmpeg`, ou None se não existir.
 
@@ -177,6 +195,13 @@ def status() -> dict:
             "path": None if not pk else "módulo Python paramiko",
             "install": "python -m pip install paramiko",
         },
+        "aria2": {
+            "available": aria2_available(),
+            "path": aria2_bin(),
+            "install": ("winget install aria2.aria2   (Windows)  ou  "
+                        "brew install aria2   (macOS)  ou  "
+                        "apt install aria2   (Linux)"),
+        },
         "js_runtime": {
             "available": js is not None,
             "path": js,
@@ -197,6 +222,7 @@ def status() -> dict:
             "HLS/DASH e arquivos diretos (engine própria)": True,
             "FTP (engine própria, sem dependência)": True,
             "SFTP (servidores SSH)": pk,
+            "Torrents (magnet/.torrent)": aria2_available(),
         },
     }
 
@@ -206,6 +232,7 @@ def invalidate_cache() -> None:
     ffmpeg_dir.cache_clear()
     js_runtime.cache_clear()
     paramiko_available.cache_clear()
+    aria2_bin.cache_clear()
     status.cache_clear()
 
 

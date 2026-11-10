@@ -77,6 +77,7 @@ sincroniza `minidm/` e `webui/` para dentro do build.
 | YouTube completo (runtime JS) | ✅ `libqjs.so` (quickjs-ng estático) + `yt-dlp-ejs` embutidos |
 | ffmpeg (mux DASH/HLS, mp3) | ❌ não empacotado — vídeo HLS/DASH com faixa separada fica mudo |
 | FTP/SFTP | ⚠️ `ftplib` ok; SFTP sem `paramiko` (não empacotado) |
+| Torrents | ❌ fora do APK (desktop/Termux com `aria2c` — sem aria2, magnet:/.torrent são recusados com instrução) |
 | Extensão de navegador / clipboard | ❌ (desktop only) |
 | Compartilhar link de outro app (ACTION_SEND) | ✅ menu "Compartilhar" do Android → fila + Toast |
 | DRM | ❌ fora de propósito permanente — detecta e recusa |

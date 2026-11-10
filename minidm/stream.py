@@ -1232,15 +1232,20 @@ def make_downloader(task: Task, config: Optional[AppConfig] = None, **kw):
     """Fábrica de downloader.
 
     Ordem:
-    0. ftp:// e sftp:// -> downloaders remotos (engine própria, segmentada);
-    1. yt-dlp (CLI externa) quando a tarefa ou a config mandam e ele existe;
-    2. mux (vídeo+áudio separados) quando a análise ligou o par e há
+    0. magnet:/torrent -> aria2 externo (RPC local, Bittorrent);
+    1. ftp:// e sftp:// -> downloaders remotos (engine própria, segmentada);
+    2. yt-dlp (CLI externa) quando a tarefa ou a config mandam e ele existe;
+    3. mux (vídeo+áudio separados) quando a análise ligou o par e há
        ffmpeg -> MuxDownloader;
-    3. streams (hls/dash) -> StreamDownloader;
-    4. o resto -> Downloader (engine própria, segmentada).
+    4. streams (hls/dash) -> StreamDownloader;
+    5. o resto -> Downloader (engine própria, segmentada).
     """
     cfg = config or AppConfig()
     scheme = urlparse(task.url).scheme.lower()
+    if scheme == "magnet" or getattr(task, "kind", "") == "torrent":
+        from minidm.torrent import TorrentDownloader
+
+        return TorrentDownloader(task, config=cfg, **kw)
     if scheme in ("ftp", "sftp"):
         from minidm.ftpdl import make_remote_downloader
 

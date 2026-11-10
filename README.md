@@ -30,6 +30,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Download de stream HLS/DASH** | `media <url>` — segmentos `.ts`/`.m4s` em paralelo, concatena e decifra AES-128 |
 | **HLS ao vivo** (playlist sem `#EXT-X-ENDLIST`) | a engine re-busca a playlist no período do `#EXT-X-TARGETDURATION` até o `ENDLIST`/limite de duração; pausa/retoma salva; segmento que sai da janela vira `lost`, não erro |
 | **Download FTP/SFTP** | `add ftp://…` / `add sftp://…` — mesma engine segmentada (retomada, retry, mirrors, throttle); FTP é nativo, SFTP precisa de `pip install paramiko` |
+| **Torrents (magnet/.torrent)** | `add "magnet:?xt=…"` — delega ao **aria2 externo** (JSON-RPC local com token, só 127.0.0.1); `--seed-time=0`, pausa preserva o parcial, sem aria2 o `/add` recusa com a instrução de instalação |
 | **Mux vídeo+áudio (ffmpeg)** | streams com faixa de áudio separada (DASH/HLS) baixam as duas pernas e o `ffmpeg -c copy` mescla — sem ffmpeg, segue com uma faixa |
 | **Detecção de DRM** (Widevine/FairPlay/PlayReady) | analisa e **recusa** com aviso — nunca tenta contornar (DMCA §1201) |
 | **Faixa de áudio separada** | HLS `EXT-X-MEDIA`/DASH áudio viram qualidade "áudio" (baixar música) |
@@ -757,7 +758,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           458 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, share ACTION_SEND, webui (qualidade/destino), Android/tray/pub)
+tests/           476 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, share ACTION_SEND, webui (qualidade/destino), Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

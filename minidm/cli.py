@@ -79,16 +79,25 @@ def cmd_add(args) -> int:
             print(f"playlist {u}: {len(items)} item(ns)")
             expanded += [it["url"] for it in items]
         urls = expanded
+    from minidm.torrent import is_torrent_url, torrent_name
+
     for url in urls:
         scheme = url.lower().split(":")[0]
-        if scheme in ("ftp", "sftp"):
+        if is_torrent_url(url):
+            kind = "torrent"    # magnet:/URL .torrent -> aria2 externo
+        elif scheme in ("ftp", "sftp"):
             kind = "file"      # remoto: streams HLS/DASH são HTTP(S)
         else:
             kind = "hls" if url.lower().split("?")[0].endswith(".m3u8") else (
                 "dash" if url.lower().split("?")[0].endswith(".mpd")
                 else "file")
+        fname = filename_from(url)
+        if kind == "torrent" and not fname.endswith(".torrent"):
+            # magnet não tem nome no URL: infohash curto até o aria2
+            # entregar o nome real dos metadados
+            fname = torrent_name(url)
         task = Task(url=url, dest_dir=dest_dir,
-                    filename=filename_from(url), state=TaskState.QUEUED,
+                    filename=fname, state=TaskState.QUEUED,
                     kind=kind, referer=args.referer or "",
                     category=category,
                     section=getattr(args, "section", "") or "",
@@ -111,7 +120,9 @@ def cmd_add(args) -> int:
                           ext=getattr(args, "ext", "") or "")
         elif args.filename:
             task.filename = args.filename
-        if args.ytdlp or (getattr(args, "section", "") or ""):
+        if kind == "torrent":
+            pass                     # delegado ao aria2 externo pela fábrica
+        elif args.ytdlp or (getattr(args, "section", "") or ""):
             # section precisa do yt-dlp (--download-sections)
             task.use_ytdlp_downloader = True
         else:

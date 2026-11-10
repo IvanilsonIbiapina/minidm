@@ -30,12 +30,16 @@ DEPENDÊNCIAS EXTERNAS (licenças próprias)
 -----------------------------------------
    yt-dlp   vídeos (YouTube etc.)   https://yt-dlp.org
    ffmpeg   HLS/DASH/conversão      https://ffmpeg.org
+   aria2    torrents (magnet/.torrent)  https://aria2.io
 O yt-dlp VEM EMBUTIDO no zip (licença Unlicense/GPLv2 — o pacote do
 yt-dlp é deles, o código não é copiado): links de página (YouTube,
 Instagram...) funcionam sem instalar nada. O ffmpeg continua externo:
 sem ele seguem funcionando arquivos diretos e os formatos progressivos
-(só faltam conversão mp3, embed e mux vídeo+áudio).
-`minidm deps` mostra o que está faltando.
+(só faltam conversão mp3, embed e mux vídeo+áudio). O aria2 só é
+preciso para TORRENTS (magnet:) — `winget install aria2.aria2`,
+`apt install aria2` ou `brew install aria2`; sem ele, magnet:/ .torrent
+são recusados com esta instrução. `minidm deps` mostra o que está
+faltando.
 
 ANDROID
 -------
