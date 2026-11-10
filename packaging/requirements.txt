@@ -7,6 +7,10 @@ cryptography>=41.0      # HLS AES-128 + extensão do navegador (assinaturas)
 # yt-dlp EMBUTIDO no bundle (frente 3): extração de páginas sem
 # dependência externa; licença dual Unlicense/GPLv2
 yt-dlp>=2025.1.1
+# scripts EJS do YouTube (solver de challenge): o yt-dlp só declara como
+# extra, então é explícito aqui; Python puro, licença Unlicense+MIT.
+# A versão é resolvida junto com o yt-dlp (==0.8.0 no yt-dlp atual).
+yt-dlp-ejs>=0.8.0
 # opcionais (o código degrada sem eles; entram no bundle se instalados):
 paramiko>=3.0           # SFTP
 tkinterdnd2>=0.3        # arrastar URLs na janela da GUI (Ctrl+V é o fallback)

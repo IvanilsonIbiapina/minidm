@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from minidm.deps import (ffmpeg_dir, ffmpeg_available, js_runtime, status,
                          invalidate_cache)
@@ -74,6 +75,56 @@ class TestJsRuntime(unittest.TestCase):
         self.assertIn("available", st["js_runtime"])
         self.assertIn("extração completa do YouTube (runtime JS)",
                       st["features"])
+
+
+class TestJsRuntimeAndroid(unittest.TestCase):
+    """QuickJS embarcado no APK (libqjs.so) — YouTube completo no celular."""
+
+    def setUp(self):
+        self._old = os.environ.get("MINIDM_JS_RUNTIME")
+        os.environ.pop("MINIDM_JS_RUNTIME", None)
+        invalidate_cache()
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("MINIDM_JS_RUNTIME", None)
+        else:
+            os.environ["MINIDM_JS_RUNTIME"] = self._old
+        invalidate_cache()
+
+    def test_fora_do_android_devolve_none(self):
+        # sem o módulo do APK (desktop/CI) o import hook falha é no-op
+        from minidm.deps import _android_qjs
+        self.assertIsNone(_android_qjs())
+
+    def test_js_runtime_vira_quickjs_com_caminho(self):
+        with mock.patch("minidm.deps._android_qjs",
+                        return_value="/data/app/lib/arm64/libqjs.so"):
+            self.assertEqual(js_runtime(),
+                             "quickjs:/data/app/lib/arm64/libqjs.so")
+
+    def test_quickjs_vence_node_no_android(self):
+        # mesmo com node no PATH, no APK o qjs embarcado é o caminho
+        with mock.patch("minidm.deps._android_qjs",
+                        return_value="/x/libqjs.so"), \
+                mock.patch("shutil.which", return_value="/usr/bin/node"):
+            self.assertEqual(js_runtime(), "quickjs:/x/libqjs.so")
+
+    def test_env_vence_quickjs(self):
+        # override explícito do usuário continua mandando
+        os.environ["MINIDM_JS_RUNTIME"] = "runtime-inexistente"
+        invalidate_cache()
+        with mock.patch("minidm.deps._android_qjs",
+                        return_value="/x/libqjs.so"):
+            self.assertIsNone(js_runtime())
+
+    def test_status_mostra_instalado_no_apk(self):
+        with mock.patch("minidm.deps._android_qjs",
+                        return_value="/x/libqjs.so"):
+            st = status()
+        self.assertTrue(st["js_runtime"]["available"])
+        self.assertEqual(st["js_runtime"]["path"], "quickjs:/x/libqjs.so")
+        self.assertIn("APK", st["js_runtime"]["install"])
 
 
 class TestHiddenWindow(unittest.TestCase):

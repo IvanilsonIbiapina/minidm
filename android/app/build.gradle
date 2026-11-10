@@ -34,6 +34,16 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    packaging {
+        jniLibs {
+            // extração REAL dos .so para o nativeLibraryDir na instalação:
+            // é o que torna libqjs.so (runtime JS do yt-dlp) EXECUTÁVEL —
+            // sem isso o AGP mantém os .so comprimidos dentro do APK
+            // (extractNativeLibs=false), dlopen funciona mas execve() falha.
+            useLegacyPackaging = true
+        }
+    }
 }
 
 chaquopy {
@@ -53,6 +63,12 @@ chaquopy {
             // uso como biblioteca é livre; a CLI roda in-process
             // (minidm/ytdlp.py).
             install("yt-dlp")
+            // scripts EJS do YouTube (solver de challenge) — o yt-dlp só
+            // declara como extra ("default"/"pin"), então vem explícito.
+            // Python puro (wheel py3-none-any), exigido ==0.8.0 pelo
+            // yt-dlp; licença Unlicense+MIT/ISC. Sem isto + o runtime JS
+            // (libqjs.so), a análise do YouTube acha só storyboards.
+            install("yt-dlp-ejs")
         }
     }
     sourceSets {

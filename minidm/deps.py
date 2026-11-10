@@ -43,16 +43,42 @@ def hidden_kwargs() -> dict:
     return {}
 
 
+def _android_qjs() -> Optional[str]:
+    """Caminho do QuickJS embarcado no APK, ou None fora do Android.
+
+    O binário `libqjs.so` (quickjs-ng estático) vem em `jniLibs/` e o
+    instalador o extrai para o `nativeLibraryDir` — o único local de onde
+    o Android 10+ deixa executar (regra W^X; ver `android/setup_qjs.py`).
+    Bridge Python→Java pelo import hook do Chaquopy (mesmo padrão de
+    `minidm/androidpub.py`): fora do APK o import falha e é no-op.
+    """
+    try:
+        import java                        # noqa: F401 (só existe no APK)
+    except BaseException:
+        return None
+    try:
+        from br.com.minidm.app import MainActivity
+        return MainActivity.quickjsPath()
+    except BaseException:
+        return None
+
+
 @lru_cache(maxsize=1)
 def js_runtime() -> Optional[str]:
-    """Nome do runtime JS disponível (node/deno/bun), ou None.
+    """Runtime JS p/ o yt-dlp (`--js-runtimes <valor>`), ou None.
 
-    Usado para passar `--js-runtimes <nome>` ao yt-dlp, sem o que a
-    extração do YouTube pode vir incompleta. Ordem: node, deno, bun.
+    O yt-dlp aceita `RUNTIME[:PATH]`. No desktop procura node, deno e
+    bun no PATH; no APK devolve o QuickJS embarcado
+    (`quickjs:<nativeLibraryDir>/libqjs.so`). Sem runtime, a extração do
+    YouTube pode vir incompleta.
     """
     env = os.environ.get("MINIDM_JS_RUNTIME", "")
     if env:
         return env if shutil.which(env) else None
+    # Android: qjs estático do quickjs-ng dentro do APK (sem node/deno)
+    qjs = _android_qjs()
+    if qjs:
+        return f"quickjs:{qjs}"
     for name in _JS_RUNTIMES:
         if shutil.which(name):
             return name
@@ -154,8 +180,12 @@ def status() -> dict:
         "js_runtime": {
             "available": js is not None,
             "path": js,
-            "install": ("instale o Node.js (https://nodejs.org) — usado pelo "
-                        "yt-dlp p/ extrair vídeos do YouTube"),
+            "install": (
+                "embutido no APK (quickjs) — nada a instalar"
+                if js and js.startswith("quickjs:")
+                else "instale o Node.js (https://nodejs.org) — usado pelo "
+                     "yt-dlp p/ extrair vídeos do YouTube"
+            ),
         },
         # o que cada um destrava (para o usuário entender por que importa)
         "features": {

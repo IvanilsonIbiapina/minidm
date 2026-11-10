@@ -8,3 +8,5 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+# binários do QuickJS baixados por android/setup_qjs.py (não versionar)
+android/app/src/main/jniLibs/

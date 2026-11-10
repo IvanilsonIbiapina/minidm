@@ -52,7 +52,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **SponsorBlock** | `config set sponsorblock all` (ou `add --sponsorblock all`) — remove trechos de patrocínio no pós-processamento |
 | **Aviso de yt-dlp velho** | `deps` mostra a versão e avisa se tem >90 dias (sites mudam; como o próprio upstream) |
 | **Descoberta de dependências** | `python -m minidm deps` — acha yt-dlp, ffmpeg e runtime JS (PATH/winget/scoop/choco) e mostra o que falta |
-| **Runtime JS automático** | acha node/deno/bun e passa `--js-runtimes` — extração completa do YouTube |
+| **Runtime JS automático** | acha node/deno/bun e passa `--js-runtimes`; no APK usa o **quickjs-ng embutido** (`libqjs.so`) — extração completa do YouTube em qualquer plataforma |
 | **Erros traduzidos** | mensagem do yt-dlp vira texto claro ("vídeo indisponível", "instale ffmpeg"…) |
 | **Funciona sem ffmpeg** | sem ffmpeg, o download segue no melhor formato nativo (só faltam conversão/embed/mux) |
 
@@ -566,7 +566,13 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
 * **links de página (YouTube, Instagram…) funcionam sem instalar
   nada** — o yt-dlp é **embutido no APK** (frente 3: pip do Chaquopy,
   rodando in-process); colar um link sem extensão (ex.: `youtu.be/ID`)
-  é analisado e baixado direto, estilo ADM. Sem ffmpeg o yt-dlp ainda
+  é analisado e baixado direto, estilo ADM. O **runtime JS do YouTube**
+  também vem embutido: `android/setup_qjs.py` baixa o quickjs-ng
+  estático como `libqjs.so` nos `jniLibs/` (extraído pelo instalador
+  para o `nativeLibraryDir` — único local executável no Android 10+)
+  e o `minidm/deps.py` o repassa ao yt-dlp como `--js-runtimes
+  quickjs:<caminho>`, junto do pacote `yt-dlp-ejs` (solver EJS).
+  Sem ffmpeg o yt-dlp ainda
   entrega os formatos progressivos (vídeo+áudio juntos); o Termux
   abaixo continua disponível para quem quer a CLI completa;
 * a mesma webui serve de **controle remoto** no desktop: com o daemon
@@ -577,8 +583,9 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
   `PARTIAL_WAKE_LOCK` para a tela desligada não cortar a transferência;
   o serviço **para sozinho quando a fila esvazia** (sem notificação
   fantasma) e o sistema pode recriá-lo (`START_STICKY`);
-* build local: `gradle -p android assembleDebug` (a CI — job `apk` em
-  `.github/workflows/build.yml` — já gera o APK a cada push); detalhes em
+* build local: `python android/setup_qjs.py` (runtime JS) e depois
+  `gradle -p android assembleDebug` (a CI — job `apk` em
+  `.github/workflows/build.yml` — já faz os dois a cada push); detalhes em
   [`packaging/android/README.md`](packaging/android/README.md).
 
 **Termux** — CLI + fila + daemon completos no celular (sem interface
@@ -745,7 +752,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           433 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps, fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, Android/tray/pub)
+tests/           438 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

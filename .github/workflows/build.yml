@@ -165,6 +165,12 @@ jobs:
         with:
           gradle-version: "8.9"      # mínimo do AGP 8.7
 
+      # runtime JS do YouTube: qjs (quickjs-ng estático) baixado como
+      # libqjs.so nos jniLibs — idempotente, sha256 fixo; falha aborta
+      # antes do Gradle com a causa raiz visível
+      - name: baixa QuickJS (runtime JS do YouTube)
+        run: python android/setup_qjs.py
+
       - name: build APK (debug)
         shell: bash
         run: |

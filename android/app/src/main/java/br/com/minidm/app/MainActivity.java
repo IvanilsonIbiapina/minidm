@@ -58,6 +58,33 @@ public class MainActivity extends Activity {
         return apiPort;
     }
 
+    /**
+     * Caminho do QuickJS embarcado ({@code libqjs.so} no nativeLibraryDir),
+     * ou {@code null} se não existir. O Python ({@code minidm/deps.py})
+     * passa {@code --js-runtimes quickjs:<caminho>} ao yt-dlp — é o
+     * runtime JS que falta no Android p/ extrair todos os formatos do
+     * YouTube (challenge EJS).
+     *
+     * <p>O binário (quickjs-ng estático, disfarçado de {@code .so}) vem em
+     * {@code jniLibs/<abi>/} — ver {@code android/setup_qjs.py} — e o
+     * instalador o extrai para o nativeLibraryDir com permissão de
+     * execução: único local executável no Android 10+ (W^X proíbe
+     * filesDir/cacheDir). Nada é carregado via System.loadLibrary.
+     */
+    public static String quickjsPath() {
+        try {
+            Context ctx = appCtx;
+            if (ctx == null) {
+                return null;
+            }
+            File f = new File(ctx.getApplicationInfo().nativeLibraryDir,
+                    "libqjs.so");
+            return f.isFile() ? f.getAbsolutePath() : null;
+        } catch (Throwable t) {
+            return null;   // nunca derrubar o Python por causa disso
+        }
+    }
+
     private WebView web;
 
     @Override

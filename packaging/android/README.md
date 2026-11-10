@@ -54,6 +54,8 @@ a mesma API, a UI é o mesmo `webui/`.
 ```bash
 # pré-requisitos: JDK 17, Android SDK, Python 3.11 (buildPython),
 # Gradle 8.9+ (AGP 8.7.3)
+python android/setup_qjs.py   # runtime JS do YouTube: baixa libqjs.so
+                              # p/ jniLibs/ (idempotente, sha256 fixo)
 gradle -p android assembleDebug
 # saída: android/app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -72,6 +74,7 @@ sincroniza `minidm/` e `webui/` para dentro do build.
 | Categorias estilo IDM (pasta + perfil) | ✅ |
 | webui (tema claro/escuro, polling ao vivo) | ✅ |
 | yt-dlp (sites complexos) | ✅ **embutido** (pip do Chaquopy, in-process — sem Termux, sem instalar nada) |
+| YouTube completo (runtime JS) | ✅ `libqjs.so` (quickjs-ng estático) + `yt-dlp-ejs` embutidos |
 | ffmpeg (mux DASH/HLS, mp3) | ❌ não empacotado — vídeo HLS/DASH com faixa separada fica mudo |
 | FTP/SFTP | ⚠️ `ftplib` ok; SFTP sem `paramiko` (não empacotado) |
 | Extensão de navegador / clipboard | ❌ (desktop only) |
@@ -168,16 +171,19 @@ minidm daemon --dashboard    # barras, velocidade e ETA ao vivo
 
 1. **ffmpeg no APK** — binário estático por ABI + mux DASH/HLS (sem ele
    o yt-dlp embutido ainda baixa os formatos progressivos).
-2. **Runtime JS p/ YouTube** — o challenge do YouTube pode exigir
-   node/deno (hoje sem eles o yt-dlp avisa e a extração pode vir
-   parcial); investigar quickjs/`--remote-components`.
-3. **Notificações** — `NotificationManager` na conclusão de downloads.
-4. **Kivy/UI nativa** — só se a webui não bastar (a engine já roda).
+2. **Notificações** — `NotificationManager` na conclusão de downloads.
+3. **Kivy/UI nativa** — só se a webui não bastar (a engine já roda).
 
 Feito: **yt-dlp no APK** (frente 3 — embutido via pip; extração **e**
 download de páginas rodam in-process: `minidm/ytdlp.py` (runner) +
 `_spawn_in_process` em `minidm/ytdlpdl.py`, com progresso, parada e
 interrupção por `KeyboardInterrupt` — mesma interface do subprocesso).
+Feito: **runtime JS do YouTube** — `android/setup_qjs.py` baixa o
+quickjs-ng estático como `libqjs.so` em `jniLibs/<abi>/` (sha256 fixo);
+o `useLegacyPackaging=true` o extrai para o `nativeLibraryDir` (único
+local executável no Android 10+ — W^X proíbe `filesDir`) e
+`minidm/deps.py` devolve `quickjs:<caminho>` para `--js-runtimes`, com
+`yt-dlp-ejs` (solver EJS) instalado junto do yt-dlp.
 
 Nenhum item toca no escopo de DRM (fora de propósito permanente) nem em
 bypass de licença — ver `docs/analise-idm.md`.
