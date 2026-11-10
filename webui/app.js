@@ -65,15 +65,42 @@ function toast(msg) {
 }
 
 /* ------------------------------------------------------------ categorias */
+let catBase = "";        // pasta base das categorias (/categories)
+let catFolders = {};     // nome da categoria -> subpasta
+let catDataDir = "";     // sem categoria: destino interno (/config)
+
+/** Destino padrão da categoria atual (o servidor usa igual). */
+function destFor(name) {
+  if (!name) return catDataDir;
+  const sub = catFolders[name] || name;
+  if (!catBase) return sub;
+  return catBase.replace(/[\\/]+$/, "") + "/" + sub;
+}
+
+function refreshDestPlaceholder() {
+  const d = destFor($("#category").value);
+  $("#dest").placeholder = d ? `Salva em: ${d}` : "Pasta padrão da categoria";
+}
+
 async function loadCategories() {
   try {
     const d = await api("/categories");
+    catBase = d.base || "";
+    catFolders = {};
+    for (const c of d.categories || []) catFolders[c.name] = c.folder;
     const def = (d.categories || []).find((c) => c.default);
     $("#category").innerHTML = `<option value="">Automático</option>` +
       (d.categories || []).map((c) =>
         `<option value="${esc(c.name)}"${c === def ? " selected" : ""}>` +
         `${esc(c.name)}</option>`).join("");
+    $("#category").addEventListener("change", refreshDestPlaceholder);
+    refreshDestPlaceholder();
   } catch (_) { /* offline: fica só "Automático" */ }
+  try {
+    const c = await api("/config");
+    catDataDir = c.data_dir || "";
+    refreshDestPlaceholder();
+  } catch (_) { /* sem /config novo: placeholder genérico */ }
 }
 
 /* ---------------------------------------------------------- render (diff) */
@@ -201,25 +228,107 @@ setInterval(tick, 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
 
 /* ------------------------------------------------------------- ações */
+/* escolher qualidade (diálogo pós-análise, estilo IDM) */
+let pickResolve = null;
+function pickQuality(res) {
+  if (pickResolve) pickResolve(null);   // nunca dois diálogos abertos
+  return new Promise((resolve) => {
+    pickResolve = (val) => {
+      pickResolve = null;
+      $("#pick").hidden = true;
+      resolve(val);
+    };
+    $("#pick-title").textContent = res.page_title || "Escolher qualidade";
+    const box = $("#pick-list");
+    box.textContent = "";
+    for (const q of res.qualities || []) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pick-opt";
+      const det = [];
+      if (q.resolution) det.push(q.resolution);
+      if (q.estimated_size) det.push(fmtBytes(q.estimated_size));
+      else if (q.bandwidth) det.push(`${nf.format(q.bandwidth / 1000)} kbps`);
+      if (q.audio_only) det.push("só áudio");
+      if (q.live) det.push("ao vivo");
+      const lab = document.createElement("span");
+      lab.className = "pick-label";
+      lab.textContent = q.label || "original";
+      b.appendChild(lab);
+      if (det.length) {
+        const d = document.createElement("span");
+        d.className = "pick-det";
+        d.textContent = det.join(" · ");
+        b.appendChild(d);
+      }
+      b.addEventListener("click", () => pickResolve && pickResolve(q));
+      box.appendChild(b);
+    }
+    $("#pick").hidden = false;
+  });
+}
+$("#pick-close").addEventListener("click",
+  () => pickResolve && pickResolve(null));
+$("#pick").addEventListener("click", (ev) => {
+  if (ev.target.id === "pick" && pickResolve) pickResolve(null);
+});
+
 $("#add-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const url = $("#url").value.trim();
   if (!url) return;
   const payload = { url, category: $("#category").value };
   if ($("#analyze").checked) payload.analyze = true;
+  // pasta escolhida pelo usuário (vazia = o destino padrão da categoria,
+  // mostrado no placeholder)
+  const dest = $("#dest").value.trim();
+  if (dest) payload.dir = dest;
   const btn = ev.submitter;
-  if (btn) btn.disabled = true;
+  const btnText = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; if (payload.analyze) btn.textContent = "Analisando…"; }
   try {
+    // com "Analisar mídia", analisa ANTES da tarefa: aí a caixa de
+    // qualidades aparece (o usuário escolhe) e a escolha vai direto
+    // no /add (quality_url/kind/…) — sem refazer a análise no servidor
+    if (payload.analyze) {
+      let res = null;
+      try { res = await post("/media/analyze", { url }); }
+      catch (_) { /* falhou aqui: o /add analisa de novo e escolhe/erro */ }
+      const quals = (res && res.ok && !res.page) ? (res.qualities || []) : [];
+      if (quals.length > 1) {
+        if (btn) btn.textContent = btnText;   // diálogo assume o fluxo
+        const q = await pickQuality(res);
+        if (!q) return;                 // cancelou — o link fica na caixa
+        applyQuality(payload, res, q);
+      } else if (quals.length === 1) {
+        applyQuality(payload, res, quals[0]);   // qualidade única: direto
+      }
+      // página (page=true) ou sem análise: segue com analyze pro /add
+      // decidir (delega ao yt-dlp ou recusa com clareza)
+    }
     await post("/add", payload);
     $("#url").value = "";
     $("#url").focus();
+    $("#dest").value = "";
     tick();
   } catch (e) {
     toast(e.message);   // ex.: DRM recusado, URL inválida, sem qualidade
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = btnText; }
   }
 });
+
+/** Leva a escolha do diálogo para o payload do /add (sem re-analisar). */
+function applyQuality(payload, res, q) {
+  delete payload.analyze;
+  payload.quality_url = q.url;
+  payload.kind = q.kind || "";
+  payload.quality_label = q.label || "";
+  if (q.dash && q.dash.id) payload.rep_id = q.dash.id;
+  if (q.audio) payload.audio = q.audio;
+  if (res.page_title) payload.page_title = res.page_title;
+  if (res.filename) payload.filename = res.filename;
+}
 
 $("#start-all").addEventListener("click", async () => {
   try { await post("/start", { all: true }); tick(); }

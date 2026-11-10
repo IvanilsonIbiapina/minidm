@@ -33,6 +33,11 @@
         <span>Analisar mídia</span>
       </label>
     </div>
+    <div class="row">
+      <input id="dest" name="dest" type="text" spellcheck="false"
+             autocomplete="off" aria-label="Pasta de destino"
+             placeholder="Pasta padrão da categoria">
+    </div>
   </form>
 </section>
 
@@ -46,6 +51,19 @@
 <main id="list" class="list" aria-live="polite"></main>
 
 <div id="empty" class="empty">Nada na fila ainda — cole um link acima.</div>
+
+<!-- escolher qualidade antes de baixar (estilo IDM: a caixa de
+     formatos aparece depois da análise da página) -->
+<div id="pick" class="sheet-back" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="pick-title">
+    <div class="sheet-head">
+      <span id="pick-title">Escolher qualidade</span>
+      <button type="button" class="icon-btn" id="pick-close"
+              aria-label="Cancelar">&#10005;</button>
+    </div>
+    <div id="pick-list" class="pick-list"></div>
+  </div>
+</div>
 
 <div id="toast" class="toast" role="status" hidden></div>
 

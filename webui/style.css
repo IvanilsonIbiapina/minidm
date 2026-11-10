@@ -325,6 +325,70 @@ select {
 }
 .toast[hidden] { display: none; }
 
+/* ------------------------------------------------- escolher qualidade */
+.sheet-back {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, .5);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.sheet-back[hidden] { display: none; }
+
+.sheet {
+  width: min(720px, 100%);
+  max-height: 82vh;
+  overflow: auto;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 14px;
+  padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pick-opt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  width: 100%;
+  padding: 12px 14px;
+  min-height: 48px;
+}
+.pick-opt:active { border-color: var(--accent); }
+.pick-label { font-weight: 600; }
+.pick-det {
+  color: var(--muted);
+  font-size: 13px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+@media (min-width: 700px) {
+  .sheet-back { align-items: center; }
+  .sheet { border-radius: var(--radius); }
+}
+
 @media (min-width: 700px) {
   .name { font-size: 15.5px; }
 }

@@ -61,6 +61,19 @@ class WebuiServeTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("text/html", ctype)
 
+    def test_seletor_de_qualidade_presente(self):
+        """A caixa de qualidades (pós-análise, estilo IDM) existe no
+        servido: diálogo no HTML, fluxo no JS e estilo no CSS."""
+        _, _, html = self._get("/")
+        self.assertIn(b'id="pick"', html)
+        self.assertIn(b'id="pick-list"', html)
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"function pickQuality", js)
+        self.assertIn(b"/media/analyze", js)
+        self.assertIn(b"quality_url", js)     # escolha vai direto no /add
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b".sheet-back", css)
+
     def test_static_assets(self):
         for path, want in (("/webui/style.css", "text/css"),
                            ("/webui/app.js", "javascript")):
@@ -100,6 +113,18 @@ class WebuiServeTest(unittest.TestCase):
         # rotas da extensão continuam respondendo (o webui não as engoliu)
         status, _, _ = self._get("/config")
         self.assertEqual(status, 200)
+
+    def test_campo_de_destino(self):
+        """O campo de pasta (destino padrão no placeholder, escolha do
+        usuário no payload.dir) existe e o /config expõe o data_dir p/ o
+        placeholder quando não há categoria."""
+        _, _, html = self._get("/")
+        self.assertIn(b'id="dest"', html)
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"payload.dir", js)
+        status, _, body = self._get("/config")
+        self.assertEqual(status, 200)
+        self.assertIn(b"data_dir", body)
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Pasta de destino escolhida** | popup e `/add` aceitam `dir`; a última pasta fica guardada |
 | **Análise via yt-dlp** (opcional) | `media <url> --ytdlp` — cobre sites complexos (chama a CLI do yt-dlp) |
 | **Perfis de download** (conceito do YT-DLnis) | `add --profile Música` — perfil define qualidade, formato, pasta e nome |
-| **Escolha de qualidade/formato** | `add --height 720 --ext mp4` (ou o card da extensão) — teto de altura + container, com fallback p/ DASH-only |
+| **Escolha de qualidade/formato** | `add --height 720 --ext mp4` (ou o card da extensão, ou a **caixa de qualidades da webui** antes do Baixar) — teto de altura + container, com fallback p/ DASH-only |
 | **Categorias estilo IDM** (pasta+perfil) | `--category Vídeos` — separa por pastas (Vídeos, Músicas, Programas…); base configurável (`download_base`), Vídeos é a padrão |
 | **Templates de comando yt-dlp** | `CommandTemplate` com `url_regex` de ativação automática (`profiles` no CLI) |
 | **Template de nome de arquivo** | motor `{title} [{id}].{ext}` com preview e sanitização (`nametpl.py`) |
@@ -757,7 +757,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           456 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, share ACTION_SEND, Android/tray/pub)
+tests/           458 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, share ACTION_SEND, webui (qualidade/destino), Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

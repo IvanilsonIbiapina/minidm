@@ -185,6 +185,9 @@ def make_handler(app: App):
                     "throttle_bps": c.throttle_bps,
                     "proxy": bool(c.proxy),
                     "api_port": c.api_port,
+                    # pasta interna = destino quando não há categoria —
+                    # a webui mostra no placeholder do campo de destino
+                    "data_dir": app.store.data_dir,
                 })
             elif path in ("/update.xml", f"/{UPDATE_XML_NAME}"):
                 # manifest de atualização p/ a política ExtensionInstallForcelist
