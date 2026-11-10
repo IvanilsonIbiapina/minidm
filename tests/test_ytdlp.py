@@ -520,6 +520,25 @@ class TestRunnerInProcess(unittest.TestCase):
         self.assertFalse(ytdlp._in_process([sys.executable,
                                             "-m", "yt_dlp"]))
 
+    def test_android_app_process_vai_in_process(self):
+        # APK: sys.executable é o app_process (arquivo EXISTENTE no
+        # /system/bin) — subprocessar aborta com SIGABRT no chown do
+        # dalvik-cache ("Error changing dalvik-cache ownership", rc -6)
+        self.assertTrue(ytdlp._in_process(["/system/bin/app_process64",
+                                           "-m", "yt_dlp"]))
+        self.assertTrue(ytdlp._android_runtime("/system/bin/app_process"))
+        self.assertFalse(ytdlp._android_runtime(sys.executable))
+
+    def test_android_env_forca_in_process(self):
+        # mesmo com python "existente", ambiente Android → in-process
+        with mock.patch.dict(os.environ, {"ANDROID_ROOT": "/system"}):
+            self.assertTrue(ytdlp._in_process([sys.executable,
+                                               "-m", "yt_dlp"]))
+        # e a CLI externa continua intocada (sai antes da checagem)
+        with mock.patch.dict(os.environ, {"ANDROID_ROOT": "/system"}):
+            self.assertFalse(ytdlp._in_process(["/usr/bin/yt-dlp", "-J",
+                                                "x"]))
+
     # ------------------------------------------------------------ execução
     def test_run_in_process_captura_stdout_e_rc(self):
         def main(argv):

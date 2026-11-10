@@ -22,8 +22,6 @@ import os
 import time
 from typing import Optional
 
-from minidm.deps import hidden_kwargs
-
 # navegadores que o yt-dlp sabe ler
 BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "vivaldi",
             "chromium", "whale")
@@ -60,11 +58,16 @@ def export(browser: str, data_dir: str, url: str = _PROBE_URL,
         os.makedirs(data_dir, exist_ok=True)
         import subprocess
 
-        proc = subprocess.run(
+        from minidm.ytdlp import _run
+
+        # mesmo dispatcher do download (`ytdlp._run`): no APK/congelado
+        # roda in-process — subprocessar sys.executable abortaria com
+        # SIGABRT (app_process, ver ytdlp._in_process)
+        proc = _run(
             cmd + ["--cookies-from-browser", browser,
                    "--cookies", path,
                    "--skip-download", "--no-warnings", url],
-            capture_output=True, timeout=60, check=False, **hidden_kwargs())
+            timeout=60)
         if proc.returncode != 0 or not os.path.exists(path) or \
                 os.path.getsize(path) == 0:
             return None

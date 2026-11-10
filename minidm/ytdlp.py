@@ -61,10 +61,27 @@ def available() -> bool:
     return find() is not None
 
 
+def _android_runtime(exe: str) -> bool:
+    """True quando o "python" é o do APK (Chaquopy) — não executa.
+
+    No Android `sys.executable` é o `app_process` (`/proc/self/exe`),
+    um binário do sistema: chamado como subprocesso ele aborta com
+    SIGABRT no chown do dalvik-cache ("Error changing dalvik-cache
+    ownership : Permission denied" — código -6). `ANDROID_ROOT`/
+    `ANDROID_DATA` só existem no sistema Android (e no Termux, onde o
+    in-process também funciona).
+    """
+    if os.path.basename(exe or "").startswith("app_process"):
+        return True
+    return bool(os.environ.get("ANDROID_ROOT")
+                or os.environ.get("ANDROID_DATA"))
+
+
 def _in_process(argv: list[str]) -> bool:
     """True quando não dá p/ subprocessar a CLI do yt-dlp.
 
-    * APK (Chaquopy): não existe `python` executável em runtime;
+    * APK (Chaquopy): não existe `python` executável em runtime — o
+      `sys.executable` é o `app_process`, que **aborta** (SIGABRT);
     * executável congelado (PyInstaller): `sys.executable` é o nosso
       .exe, que não entende `-m yt_dlp`.
 
@@ -74,6 +91,8 @@ def _in_process(argv: list[str]) -> bool:
     if argv[1:3] != ["-m", "yt_dlp"]:
         return False         # CLI externa de verdade (PATH/MINIDM_YTDLP)
     if getattr(sys, "frozen", False):
+        return True
+    if _android_runtime(argv[0]):
         return True
     return not os.path.isfile(argv[0] or "")
 
