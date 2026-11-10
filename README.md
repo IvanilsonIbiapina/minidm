@@ -27,6 +27,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Tempo restante (ETA) de verdade** | usa a velocidade impressa pelo yt-dlp (`at 1.00MiB/s`) com fallback por diferença de amostras, suavizada p/ não dançar; ETA **total** na barra de status |
 | **Barra de progresso viva** | barra em blocos (`████░░░`) por linha, linha colorida pelo estado, listras zebradas e barra **agregada** na base da janela |
 | **GUI responsiva** | a snapshot da fila (lock de arquivo + disco) roda em **thread** — a janela nunca congela ao buscar, ordenar, abrir detalhes ou com outra instância disputando a fila; a UI só renderiza o cache mais novo |
+| **Iniciar com o sistema (autostart)** | `minidm autostart on\|off\|status` ou menu **Arquivo → Iniciar com o sistema** — Windows: chave `Run` do registro (HKCU, sem admin); Linux: desktop entry `~/.config/autostart`; detecta registro de instalação antiga |
 | **Captura de vídeo (HLS/DASH/direto)** | extensão detecta vídeos e lista qualidades (abaixo) |
 | **Download de stream HLS/DASH** | `media <url>` — segmentos `.ts`/`.m4s` em paralelo, concatena e decifra AES-128 |
 | **HLS ao vivo** (playlist sem `#EXT-X-ENDLIST`) | a engine re-busca a playlist no período do `#EXT-X-TARGETDURATION` até o `ENDLIST`/limite de duração; pausa/retoma salva; segmento que sai da janela vira `lost`, não erro |
@@ -759,7 +760,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           487 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador, share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
+tests/           508 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador, autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

@@ -623,6 +623,46 @@ def cmd_config(args) -> int:
     return 0
 
 
+def cmd_autostart(args) -> int:
+    """Liga/desliga/mostra o "iniciar com o sistema" (chave Run no
+    Windows, desktop entry no Linux) — o minidm abre sozinho no login."""
+    from minidm import autostart
+
+    if not autostart.supported():
+        print("autostart indisponível nesta plataforma — só Windows "
+              "(chave Run do registro) e Linux (desktop entry XDG).",
+              file=sys.stderr)
+        return 1
+
+    act = args.action
+    if act == "status":
+        st = autostart.status()
+        print(f"autostart: {'ATIVO' if st['enabled'] else 'desligado'}"
+              f"   ({st['backend']})")
+        print(f"comando registrado: {st['registered'] or '(nenhum)'}")
+        if st["stale"]:
+            print(f"ATENÇÃO: registro aponta para outra instalação — "
+                  f"rode `minidm autostart on` de novo para corrigir "
+                  f"(atual: {st['command']})")
+        return 0
+    if act == "on":
+        try:
+            cmd = autostart.enable()
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"autostart ATIVO — o minidm abre no login com:\n  {cmd}")
+        return 0
+    if act == "off":
+        if autostart.disable():
+            print("autostart desligado.")
+        else:
+            print("autostart já estava desligado.")
+        return 0
+    print(f"ação desconhecida: {act}", file=sys.stderr)
+    return 2
+
+
 # --------------------------------------------------------------------- main
 def _add_net_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--proxy", help="proxy http://host:port ou socks5://host:port")
@@ -782,6 +822,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("key", nargs="?")
     a.add_argument("value", nargs="?")
     a.set_defaults(func=cmd_config)
+
+    a = sub.add_parser("autostart",
+                       help="iniciar com o sistema (registro no Windows, "
+                            "desktop entry no Linux)")
+    a.add_argument("action", choices=["on", "off", "status"])
+    a.set_defaults(func=cmd_autostart)
 
     return p
 

@@ -29,9 +29,10 @@ integração com o sistema:
 
 * **duplo clique → GUI** (feito: `minidm.exe` sem args abre a janela);
 * **LEIA-ME.txt** no zip com instruções + aviso do SmartScreen (feito);
-* **bandeja (tray)** + fechar-para-bandeja na GUI;
-* **autostart** (chave `Run` do registro — o `extsetup` já escreve
-  registro) + atalhos no Menu Iniciar;
+* **bandeja (tray)** + fechar-para-bandeja na GUI (feito);
+* **autostart** (feito: chave `Run` do registro no Windows + desktop
+  entry XDG no Linux — `minidm autostart on|off|status` e menu Arquivo);
+  faltam os **atalhos no Menu Iniciar**;
 * **extensão do navegador instalada por padrão** no primeiro uso
   (`minidm ext guided` automatizado, com consentimento);
 * **SmartScreen/assinatura**: exe sem assinatura é bloqueado uma vez;

@@ -444,6 +444,16 @@ class MinidmApp(_Root):
         m_file.add_command(label="Adicionar URL…", command=self._dlg_add,
                            accelerator="Ctrl+N")
         m_file.add_separator()
+        # iniciar com o sistema (autostart): só onde existe backend
+        # (Windows = chave Run do registro, Linux = desktop entry XDG)
+        from minidm import autostart
+        if autostart.supported():
+            self._var_autostart = tk.BooleanVar(
+                value=autostart.status()["enabled"])
+            m_file.add_checkbutton(label="Iniciar com o sistema",
+                                   variable=self._var_autostart,
+                                   command=self._toggle_autostart)
+            m_file.add_separator()
         m_file.add_command(label="Sair", command=self._really_quit)
         menubar.add_cascade(label="Arquivo", menu=m_file)
 
@@ -452,6 +462,31 @@ class MinidmApp(_Root):
         menubar.add_cascade(label="Ajuda", menu=m_help)
         self.config(menu=menubar)
         self.bind("<Control-n>", lambda e: self._dlg_add())
+
+    def _toggle_autostart(self):
+        """Checkbutton 'Iniciar com o sistema' do menu Arquivo.
+
+        Liga/desliga a chave Run do registro (Windows) ou a desktop
+        entry XDG (Linux). Se o sistema negar a escrita, o check volta
+        ao estado real e a barra de status explica — nunca um traceback
+        na thread da UI.
+        """
+        from minidm import autostart
+
+        on = bool(self._var_autostart.get())
+        try:
+            if on:
+                cmd = autostart.enable()
+                self._status(f"Autostart ativo — abre no login com: {cmd}")
+            else:
+                autostart.disable()
+                self._status("Autostart desligado")
+        except Exception as exc:         # noqa: BLE001 — registro nega?
+            try:
+                self._var_autostart.set(not on)   # volta o check
+            except tk.TclError:
+                pass
+            self._status(f"Autostart: {exc}")
 
     def _build_sidebar(self):
         """Barra lateral de categorias estilo IDM (Todas + categorias + contagem)."""
