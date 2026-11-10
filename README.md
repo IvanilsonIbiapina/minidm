@@ -91,10 +91,10 @@ qualidades disponíveis. O `minidm` faz o mesmo com a extensão `browser_ext/`:
 3. **Navegue** — a extensão observa as requisições da aba (`webRequest`) e as
    tags `<video>/<source>`, guardando tudo que parece mídia (`.mp4`, `.m3u8`,
    `.mpd`, `.webm`, áudio…). O ícone mostra um badge com o nº de mídias.
-4. **Clique no ícone** — o painel lista o que foi capturado **com os que têm
-   qualidade primeiro** (HLS/DASH no topo, depois vídeo, áudio e o resto) e a
-   **mídia detectada aparece ACIMA do card** da página (o card é o fallback;
-   sem mídia capturada, ele fica no topo).
+4. **Clique no ícone** — o painel **já abre com a caixa de qualidades da
+   página** no topo (a análise com o yt-dlp começa sozinha, sem clique) e
+   a **mídia detectada aparece ABAIXO como opções** (os que têm qualidade
+   primeiro: HLS/DASH, depois vídeo, áudio e o resto).
    **Baixar…** abre a caixa *Salvar como* (estilo IDM): qualidade (quando
    há), **perfil** (Música/Vídeo/…, vem do `GET /profiles`), **nome do
    arquivo editável** (sugerido pelo `Content-Disposition`, URL ou título
@@ -110,8 +110,8 @@ Também há botão de contexto **Enviar para o minidm** (link/página) e
 **Baixar vídeo desta página**.
 
 **Card "Baixar esta página"** — quando a aba atual é uma *página* (YouTube,
-Instagram, um curso…), o popup mostra o card (no topo, se não há mídia
-capturada) com um seletor de
+Instagram, um curso…), o popup abre com a caixa **no topo, já com as
+qualidades** (a análise começa ao abrir o painel) e mostra um seletor de
 **categoria** (estilo IDM — Vídeos é a padrão; dá pra mudar para Músicas,
 Programas…) e um seletor de **qualidade com as opções REAIS** do vídeo
 (o servidor analisa com o yt-dlp e lista as alturas disponíveis + "Só

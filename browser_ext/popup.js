@@ -1,10 +1,13 @@
 // popup.js — lista mídia capturada na aba e envia para o minidm.
 //
-// Fluxo (igual ao IDM ao capturar um vídeo):
-//   1. lista o que a aba tem, com OS QUE TÊM QUALIDADE PRIMEIRO (HLS/DASH);
-//   2. "Baixar" abre a caixa "Salvar como": qualidade, nome do arquivo e
-//      pasta (a última usada fica guardada);
-//   3. envia para o minidm com Referer + cookies + título da página.
+// Fluxo (estilo IDM, o painel já abre pronto):
+//   1. o popup JÁ ABRE com a caixa de qualidades da PÁGINA em cima — a
+//      análise yt-dlp começa sozinha no init, sem clique;
+//   2. a mídia detectada na aba fica ABAIXO como opções (as que têm
+//      qualidade primeiro: HLS/DASH, depois vídeo, áudio e o resto);
+//   3. "Baixar…" num item abre "Salvar como": qualidade, nome e pasta
+//      (a última usada fica guardada);
+//   4. envia para o minidm com Referer + cookies + título da página.
 // DRM: quando o analyze recusa, mostramos o aviso em vermelho (não baixamos).
 
 const $ = (sel) => document.querySelector(sel);
@@ -73,19 +76,16 @@ function _heightsFrom(analysis) {
 }
 
 // ---------------------------------------------------------- ordem do popup
-// A mídia DETECTADA na aba (o vídeo real, .ts/HLS/DASH capturado) vem no
-// TOPO; o card genérico "baixar esta página" (yt-dlp) só vai para baixo —
-// ele é o fallback, não o que o usuário veio buscar. Sem mídia detectada,
-// o card continua em cima (é tudo que há).
-let _hasItems = false;
-
+// Estilo IDM: o popup já abre com a CAIXA DE QUALIDADES da página em
+// primeiro (a análise yt-dlp começa sozinha no init, sem clique); a mídia
+// detectada na aba fica ABAIXO, como opções extras. A ordem não depende
+// da lista — a caixa é o motivo de abrir o painel.
 function placeCard() {
   const main = document.querySelector("main");
   const card = $("#pageDl");
   const list = $("#list");
   if (!main || !card || !list) return;
-  if (_hasItems) main.appendChild(card);      // lista primeiro, card depois
-  else main.insertBefore(card, list);         // sem mídia: card no topo
+  main.insertBefore(card, list);            // caixa em cima, detectados embaixo
 }
 
 // análise da PÁGINA feita pelo card (yt-dlp) — reusada na caixa "Salvar
@@ -180,7 +180,7 @@ async function renderPageDownload(tab, up) {
     analysisP,
   ]);
   _pageAnalysis = (analysis && analysis.ok) ? analysis : null;
-  placeCard();               // posiciona: com mídia detectada, fica abaixo
+  placeCard();               // caixa em cima (a análise já começou ao abrir)
   hint.textContent = up
     ? "Página detectada — baixa com o yt-dlp (qualquer site)."
     : "minidm offline — inicie com `python -m minidm serve`.";
@@ -308,8 +308,7 @@ function priorityOf(item) {
 
 function render(items) {
   const list = $("#list");
-  _hasItems = items.length > 0;
-  placeCard();               // mídia detectada acima do card da página
+  placeCard();               // caixa de qualidades em cima; itens embaixo
   if (!items.length) {
     list.innerHTML = `<div class="empty">Nenhuma mídia detectada nesta aba ainda.<br>
       Toque um vídeo ou abra uma página com player.</div>`;

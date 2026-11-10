@@ -2,8 +2,9 @@
 
 São as DUAS correções de usabilidade relatadas com a extensão:
 
-1. a mídia DETECTADA na aba (.ts/HLS) aparece NO TOPO do popup e o card
-   genérico "baixar esta página" vai para baixo (`placeCard`);
+1. o popup JÁ ABRE com a caixa de qualidades da PÁGINA em cima (a
+   análise yt-dlp começa no init, sem clique — estilo IDM) e a mídia
+   DETECTADA na aba fica ABAIXO como opções (`placeCard`);
 2. o botão "Baixar…" do item passa a PERMITIR ESCOLHER A QUALIDADE
    quando o link é singular (.ts/playlist de mídia): as alturas REAIS do
    vídeo da página (análise yt-dlp já feita pelo card) entram no seletor
@@ -32,15 +33,16 @@ def _read(name: str) -> bytes:
 
 
 class PopupOrdemTest(unittest.TestCase):
-    """(1) lista de mídia detectada acima do card da página."""
+    """(1) popup abre com a caixa de qualidades em cima; detectados embaixo."""
 
-    def test_placeCard_existe_e_decide_ordem(self):
+    def test_placeCard_existe_e_mantem_caixa_no_topo(self):
         js = _read("popup.js")
         self.assertIn(b"function placeCard", js)
-        # com itens: card vai para o FIM do <main> (lista primeiro)
-        self.assertIn(b"main.appendChild(card)", js)
-        # sem itens: card continua no topo (é tudo que há)
+        # caixa da página SEMPRE primeiro (estilo IDM: já abre com as
+        # qualidades da página, sem clique); detectados ficam embaixo
         self.assertIn(b"main.insertBefore(card, list)", js)
+        # a lista detectada não empurra mais o card para o fim do <main>
+        self.assertNotIn(b"main.appendChild(card)", js)
 
     def test_placeCard_chamado_na_renderizacao(self):
         js = _read("popup.js")
