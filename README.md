@@ -583,6 +583,11 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
   `PARTIAL_WAKE_LOCK` para a tela desligada não cortar a transferência;
   o serviço **para sozinho quando a fila esvazia** (sem notificação
   fantasma) e o sistema pode recriá-lo (`START_STICKY`);
+* **compartilhar para o miniDM**: o menu *Compartilhar* de qualquer
+  app (navegador, YouTube, WhatsApp…) oferece o miniDM para texto
+  (`ACTION_SEND`) — a URL é extraída, entra na fila via mesma API da
+  webui e um Toast confirma (com o app em segundo plano o `onNewIntent`
+  processa direto; o Python faz retry enquanto o daemon ainda sobe);
 * build local: `python android/setup_qjs.py` (runtime JS) e depois
   `gradle -p android assembleDebug` (a CI — job `apk` em
   `.github/workflows/build.yml` — já faz os dois a cada push); detalhes em
@@ -752,7 +757,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           438 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, Android/tray/pub)
+tests/           456 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, share ACTION_SEND, Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

@@ -34,6 +34,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- menu "Compartilhar" de qualquer app (navegador, YouTube,
+                 WhatsApp…) → link vai direto p/ a fila (ACTION_SEND) -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
         <!-- serviço de primeiro plano: notificação de progresso + wake/wifi
              lock enquanto a Activity está em segundo plano; para sozinho

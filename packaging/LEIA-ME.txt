@@ -52,6 +52,9 @@ conclui com 0 bytes.
 Saindo do app, a fila continua em SEGUNDO PLANO: um serviço com
 notificação de progresso mantém o download vivo (a tela desligada não
 corta); o serviço some sozinho quando a fila esvazia.
+Para mandar um link de outro app (navegador, YouTube, WhatsApp...):
+toque em COMPARTILHAR e escolha o miniDM — o link entra na fila e um
+aviso confirma. Também funciona com o app aberto em segundo plano.
 
 DOWNLOADS
 ---------

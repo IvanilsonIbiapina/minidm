@@ -78,6 +78,7 @@ sincroniza `minidm/` e `webui/` para dentro do build.
 | ffmpeg (mux DASH/HLS, mp3) | ❌ não empacotado — vídeo HLS/DASH com faixa separada fica mudo |
 | FTP/SFTP | ⚠️ `ftplib` ok; SFTP sem `paramiko` (não empacotado) |
 | Extensão de navegador / clipboard | ❌ (desktop only) |
+| Compartilhar link de outro app (ACTION_SEND) | ✅ menu "Compartilhar" do Android → fila + Toast |
 | DRM | ❌ fora de propósito permanente — detecta e recusa |
 
 ---

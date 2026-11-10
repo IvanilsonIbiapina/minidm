@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.media.MediaScannerConnection;
@@ -17,6 +18,7 @@ import android.webkit.MimeTypeMap;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 
 import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
@@ -113,6 +115,21 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient());
 
         boot();
+
+        // ACTION_SEND (menu "Compartilhar"): só na abertura real — uma
+        // recriação da Activity não reprocessa o mesmo intent (senão a
+        // tarefa duplicaria ao girar/reabrir)
+        if (savedInstanceState == null) {
+            handleShare(getIntent());
+        }
+    }
+
+    /** Share com o app já aberto (singleTop) chega aqui. */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);   // getIntent() passa a valer o novo
+        handleShare(intent);
     }
 
     /** Inicia o daemon Python e só carrega a página quando a API responder. */
@@ -150,6 +167,39 @@ public class MainActivity extends Activity {
                 }
             }
         }
+    }
+
+    /**
+     * ACTION_SEND: texto vindo de outro app (navegador, YouTube…) →
+     * `main.share` extrai a URL e POSTa em `/add` (mesma fila da
+     * webui); o resultado vira Toast.
+     *
+     * <p>Roda numa thread própria: mesmo o POST em loopback bloquearia
+     * a UI (NetworkOnMainThreadException). O Python faz retry p/ a API
+     * que pode ainda estar subindo (chegamos aqui antes do boot).
+     */
+    private void handleShare(Intent intent) {
+        if (intent == null
+                || !Intent.ACTION_SEND.equals(intent.getAction())) {
+            return;
+        }
+        final String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        new Thread(() -> {
+            String msg;
+            try {
+                PyObject r = Python.getInstance()
+                        .getModule("main").callAttr("share", text);
+                msg = r.toString();
+            } catch (Throwable t) {
+                msg = "Não foi possível adicionar o link";
+            }
+            final String toast = msg;
+            runOnUiThread(() -> Toast.makeText(getApplicationContext(),
+                    toast, Toast.LENGTH_LONG).show());
+        }, "minidm-share").start();
     }
 
     // ------------------------------------------------------- Download/ público

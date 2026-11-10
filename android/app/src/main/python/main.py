@@ -46,3 +46,16 @@ def start() -> int:
 
     threading.Thread(target=_run, name="minidm-daemon", daemon=True).start()
     return port
+
+
+def share(text: str) -> str:
+    """ACTION_SEND do Android: extrai o link do texto e põe na fila.
+
+    Chamado pela MainActivity (menu "Compartilhar" de qualquer app);
+    devolve a frase em pt-BR que vira o Toast. `start()` é idempotente —
+    garante o daemon de pé antes do POST (o share pode chegar antes do
+    boot terminar).
+    """
+    from minidm.share import submit
+
+    return submit(text, start())
