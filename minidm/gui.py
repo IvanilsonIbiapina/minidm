@@ -161,6 +161,18 @@ class MinidmApp(_Root):
                                on_event=self._on_event)
         self.sched.start()
 
+        # snapshot em THREAD (responsividade): o store.refresh() do
+        # snapshot trava em lock de arquivo/disco — na thread da UI a
+        # janela congelava (feedback "o PC deve ser responsivo"). A
+        # produtora publica a mais nova numa fila de 1; a UI só
+        # renderiza o cache (nunca bloqueia no lock da fila).
+        self._snap_q: queue.Queue = queue.Queue(maxsize=1)
+        self._snap_last: list[dict] = []
+        self._snap_err = ""
+        self._snap_stop = threading.Event()
+        self._snap_wake = threading.Event()
+        threading.Thread(target=self._snapshot_loop, daemon=True).start()
+
         self._build_styles()
         self._build_sidebar()
         self._build_toolbar()
@@ -193,7 +205,11 @@ class MinidmApp(_Root):
             self._schedule(350, self._dlg_welcome)
 
         self._tick()
+        self._snap_wake.set()       # primeira snapshot já (a UI não fica
+        #                            vazia esperando o primeiro ciclo)
         self._refresh()
+        # popula a lista assim que a produtora publicar (~150 ms)
+        self._schedule(150, self._refresh_now)
 
     # ------------------------------------------------------------------ UI
     def _build_styles(self):
@@ -547,8 +563,46 @@ class MinidmApp(_Root):
         """Chamado por threads do scheduler — só enfileira."""
         self.events.put((event, task))
 
+    def _snapshot_loop(self) -> None:
+        """Produtora: snapshot (lock de arquivo + disco) FORA da UI.
+
+        Dorme `REFRESH_MS` entre ciclos; `_snap_wake` acelera quando a
+        UI precisa de dados frescos (busca/ordem/após ação). Só a
+        snapshot mais nova importa — fila de 1 derruba a penúltima.
+        Erros (outra instância segurando a fila) viram aviso na barra
+        de status, sem derrubar a thread nem congelar a janela.
+        """
+        while not self._snap_stop.is_set():
+            self._snap_wake.wait(REFRESH_MS / 1000.0)
+            self._snap_wake.clear()
+            if self._snap_stop.is_set():
+                break
+            try:
+                rows, err = self.sched.snapshot(), ""
+            except Exception as exc:      # lock: TimeoutError do store
+                rows, err = None, str(exc)
+            try:
+                self._snap_q.get_nowait()  # derruba a velha (mais nova vence)
+            except queue.Empty:
+                pass
+            self._snap_q.put_nowait((rows, err))
+
+    def _drain_snapshot(self) -> None:
+        """Atualiza o cache com o que a produtora publicou — nunca bloqueia."""
+        try:
+            while True:
+                rows, err = self._snap_q.get_nowait()
+                if rows is not None:
+                    self._snap_last = rows
+                elif err and err != self._snap_err:
+                    self._status(f"Fila: {err}")
+                self._snap_err = err
+        except queue.Empty:
+            pass
+
     def _refresh(self, reschedule: bool = True):
-        rows = self.sched.snapshot()
+        self._drain_snapshot()
+        rows = self._snap_last          # cache da produtora (sem lock aqui)
         self._update_sidebar(rows)
 
         # filtro da sidebar (categoria estilo IDM) — usa a categoria efetiva
@@ -686,7 +740,10 @@ class MinidmApp(_Root):
     def _refresh_now(self):
         """Um ciclo de refresh imediato (a ordenação responde ao clique
         sem esperar o tick periódico de 500 ms). Não reagenda — a cadeia
-        periódica continua viva sozinha."""
+        periódica continua viva sozinha. Acorda a produtora para a
+        próxima snapshot sair na hora; o render usa o cache (instantâneo
+        e sem tocar no lock da fila)."""
+        self._snap_wake.set()
         self._refresh(reschedule=False)
 
     def _update_toolbar_state(self):
@@ -1156,6 +1213,7 @@ class MinidmApp(_Root):
             tray, self._tray = self._tray, None
             tray.destroy()
         self._clipboard_stop.set()
+        self._snap_stop.set()       # para a produtora da snapshot
         self._stop_api()
         # cancela os `after` periódicos (tick/refresh/welcome/toasts)
         for iid in list(self._timers):
@@ -1164,8 +1222,13 @@ class MinidmApp(_Root):
             except tk.TclError:
                 pass
         self._timers.clear()
-        busy = any(r["state"] == TaskState.DOWNLOADING
-                   for r in self.sched.snapshot())
+        # downloads em andamento? snapshot com fallback pro cache: se a
+        # fila estiver travada por outra instância, não trava a SAÍDA
+        try:
+            rows = self.sched.snapshot()
+        except Exception:                      # noqa: BLE001
+            rows = self._snap_last
+        busy = any(r["state"] == TaskState.DOWNLOADING for r in rows)
         if busy and not messagebox.askyesno(
                 "Sair", "Há downloads em andamento.\n"
                 "O progresso será salvo e você pode retomar depois.\n\n"
@@ -1558,7 +1621,9 @@ class DetailsDialog(tk.Toplevel):
         app = self._parent_app
         row = None
         try:
-            for r in app.sched.snapshot():
+            # cache da produtora da snapshot (sem lock — o popup repinta
+            # a cada 500 ms e nunca pode congelar a thread da UI)
+            for r in app._snap_last:
                 if r["id"] == self._task_id:
                     row = r
                     break

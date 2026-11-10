@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -36,7 +39,8 @@ from minidm import player
 from minidm.config import AppConfig
 from minidm.dashboard import eta, eta_seconds
 from minidm.dnd import read_url_file, urls_from_clipboard, urls_from_drop
-from minidm.gui import _best_playable, kind_badge, progress_bar, sort_rows
+from minidm.gui import (MinidmApp, _best_playable, kind_badge, progress_bar,
+                        sort_rows)
 from minidm.theme import LIGHT, next_theme, resolve
 
 
@@ -326,6 +330,109 @@ class TestApiDefault(unittest.TestCase):
         cfg = AppConfig(data_dir=tmp, api_enabled=False)
         cfg.save()
         self.assertFalse(AppConfig.load(tmp).api_enabled)
+
+
+class TestSnapshotThread(unittest.TestCase):
+    """A snapshot (lock de arquivo + disco) roda em THREAD — a UI só
+    renderiza o cache. Garantia da responsividade: nenhum caminho de
+    render toca no lock da fila na thread da tkinter."""
+
+    @staticmethod
+    def _app():
+        """MinidmApp sem janela (padrão do test_tray) + attrs da snapshot."""
+        f = MinidmApp.__new__(MinidmApp)
+        f._snap_q = queue.Queue(maxsize=1)
+        f._snap_last = []
+        f._snap_err = ""
+        f._snap_stop = threading.Event()
+        f._snap_wake = threading.Event()
+        f.sched = mock.Mock()
+        f._status = mock.Mock()
+        return f
+
+    @staticmethod
+    def _app_com_widgets(f):
+        """Atributos que o `_refresh` lê — todos mocks (sem display)."""
+        f._speed_smooth = {}
+        f._filter_category = ""
+        f._search = ""
+        f._sort_col = ""
+        f._update_sidebar = mock.Mock()
+        f._schedule = mock.Mock()
+        f.tree = mock.Mock()
+        f.tree.get_children.return_value = ()
+        f.tree.selection.return_value = ()
+        f.pbar = mock.MagicMock()   # pbar["value"] = … (item assignment)
+        f.var_eta_total = mock.Mock()
+        f.var_speed = mock.Mock()
+        f.config_app = mock.Mock(throttle_bps=0, max_concurrent=1,
+                                 max_connections=8)
+        return f
+
+    @staticmethod
+    def _run_uma_rodada(f, timeout=3.0):
+        """Roda o loop da produtora até publicar (ou dar tempo)."""
+        f._snap_wake.set()
+        th = threading.Thread(target=f._snapshot_loop, daemon=True)
+        th.start()
+        deadline = time.monotonic() + timeout
+        try:
+            while f._snap_q.empty() and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            f._snap_stop.set()
+            f._snap_wake.set()          # acorda p/ sair do wait
+            th.join(timeout=3.0)
+        f._snap_stop.clear()            # libera p/ a próxima rodada
+        return not th.is_alive()
+
+    def test_refresh_da_ui_nunca_toca_no_lock_da_fila(self):
+        f = self._app_com_widgets(self._app())
+        MinidmApp._refresh(f, reschedule=False)
+        f.sched.snapshot.assert_not_called()   # sem snapshot na UI
+
+    def test_refresh_now_acorda_a_produtora(self):
+        f = self._app_com_widgets(self._app())
+        MinidmApp._refresh_now(f)
+        self.assertTrue(f._snap_wake.is_set())
+
+    def test_produtora_publica_e_ui_drena(self):
+        f = self._app()
+        f.sched.snapshot.return_value = [{"id": "a", "state": "done"}]
+        parada = self._run_uma_rodada(f)
+        self.assertTrue(parada, "loop não saiu com o stop")
+        f._drain_snapshot()
+        self.assertEqual(f._snap_last, [{"id": "a", "state": "done"}])
+        f._status.assert_not_called()
+
+    def test_erro_de_lock_vira_aviso_sem_matar_a_thread(self):
+        f = self._app()
+        f.sched.snapshot.side_effect = TimeoutError(
+            "outra instância do minidm segura a fila")
+        parada = self._run_uma_rodada(f)
+        self.assertTrue(parada, "erro não pode derrubar a produtora")
+        f._drain_snapshot()
+        self.assertEqual(f._snap_last, [])          # cache preservado
+        f._status.assert_called_once()
+        msg = f._status.call_args[0][0]
+        self.assertIn("Fila:", msg)
+        self.assertIn("segura a fila", msg)
+        # drenar de novo não repete o aviso (só quando o erro muda)
+        f._drain_snapshot()
+        f._status.assert_called_once()
+
+    def test_segunda_rodada_substitui_a_velha(self):
+        # fila de 1: a produtora derruba a snapshot anterior antes de
+        # publicar — a UI sempre vê o estado MAIS NOVO
+        f = self._app()
+        f.sched.snapshot.side_effect = [[{"id": "velha"}],
+                                        [{"id": "nova"}]]
+        self._run_uma_rodada(f)
+        f._drain_snapshot()
+        self.assertEqual(f._snap_last, [{"id": "velha"}])
+        self._run_uma_rodada(f)
+        f._drain_snapshot()
+        self.assertEqual(f._snap_last, [{"id": "nova"}])
 
 
 if __name__ == "__main__":
