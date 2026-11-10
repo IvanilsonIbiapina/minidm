@@ -126,6 +126,20 @@ class WebuiServeTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"data_dir", body)
 
+    def test_busca_e_filtro_de_estado(self):
+        """Busca + chips de estado (histórico estilo YTDLnis): input de
+        busca, abas no HTML, lógica de filtro no JS e estilo."""
+        _, _, html = self._get("/")
+        self.assertIn(b'id="q"', html)
+        self.assertIn(b'data-filter="done"', html)
+        self.assertIn(b'data-filter="error"', html)
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"function matchesFilter", js)
+        self.assertIn(b"filterState", js)
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b".filters", css)
+        self.assertIn(b".tab.on", css)
+
 
 if __name__ == "__main__":
     unittest.main()

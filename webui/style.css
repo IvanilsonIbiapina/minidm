@@ -191,6 +191,59 @@ select {
 
 .counts b { color: var(--text); }
 
+/* ------------------------------------------------------------ busca/filtros */
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 14px 8px;
+  flex-wrap: wrap;
+}
+
+.filters input[type="search"] {
+  flex: 1 1 160px;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 12px;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+}
+.filters input[type="search"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+
+.tab {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+  min-height: 36px;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted);
+  cursor: pointer;
+}
+.tab.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
 /* ------------------------------------------------------------------ lista */
 .list {
   display: flex;

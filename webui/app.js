@@ -106,6 +106,25 @@ async function loadCategories() {
 /* ---------------------------------------------------------- render (diff) */
 const cards = new Map();   // id -> <article>
 
+/* busca + filtro por estado (histórico — as concluídas ficam na fila) */
+let filterState = "all";
+let filterQuery = "";
+
+/** A tarefa passa no filtro atual (busca por nome/URL + chip de estado)? */
+function matchesFilter(t) {
+  const st = t.state || "queued";
+  if (filterState === "active" &&
+      !(st === "downloading" || st === "queued" || st === "paused")) return false;
+  if (filterState === "done" && st !== "done") return false;
+  if (filterState === "error" && st !== "error") return false;
+  if (filterQuery) {
+    const hay = `${t.filename || ""} ${t.url || ""} ${t.page_title || ""}`
+      .toLowerCase();
+    if (!hay.includes(filterQuery)) return false;
+  }
+  return true;
+}
+
 function makeCard(t) {
   const el = document.createElement("article");
   el.className = "card";
@@ -182,10 +201,13 @@ function updateCard(el, t) {
 function render(tasks) {
   const list = $("#list");
   const seen = new Set();
+  let shown = 0;
   for (const t of tasks) {
     seen.add(t.id);
     const el = cards.get(t.id) || makeCard(t);
     updateCard(el, t);
+    el.hidden = !matchesFilter(t);   // busca/chip escondem sem destruir a card
+    if (!el.hidden) shown += 1;
     list.appendChild(el);          // move p/ a ordem do servidor
   }
   for (const [id, el] of cards) {
@@ -199,8 +221,13 @@ function render(tasks) {
   if (by("paused")) parts.push(`<b>${by("paused")}</b> pausado${by("paused") > 1 ? "s" : ""}`);
   if (by("done")) parts.push(`<b>${by("done")}</b> ok`);
   if (by("error")) parts.push(`<b>${by("error")}</b> erro${by("error") > 1 ? "s" : ""}`);
+  const filtering = filterState !== "all" || filterQuery;
+  if (filtering) parts.push(`<b>${shown}</b> exibido${shown === 1 ? "" : "s"}`);
   $("#counts").innerHTML = parts.length ? parts.join(" &middot; ") : "&nbsp;";
-  $("#empty").hidden = tasks.length > 0;
+  $("#empty").hidden = shown > 0;
+  $("#empty").textContent = tasks.length === 0
+    ? "Nada na fila ainda — cole um link acima."
+    : "Nada bate com a busca/filtro — limpe ou troque a aba.";
 }
 
 function setConn(ok) {
@@ -226,6 +253,23 @@ async function tick() {
 }
 setInterval(tick, 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+
+/* --------------------------------------------------------- busca/filtros */
+$("#q").addEventListener("input", () => {
+  filterQuery = $("#q").value.trim().toLowerCase();
+  tick();                       // re-render na hora (não espera o poll)
+});
+document.querySelectorAll(".tab").forEach((b) => {
+  b.addEventListener("click", () => {
+    filterState = b.dataset.filter;
+    document.querySelectorAll(".tab").forEach((o) => {
+      const on = o === b;
+      o.classList.toggle("on", on);
+      o.setAttribute("aria-selected", String(on));
+    });
+    tick();
+  });
+});
 
 /* ------------------------------------------------------------- ações */
 /* escolher qualidade (diálogo pós-análise, estilo IDM) */

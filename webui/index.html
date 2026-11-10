@@ -48,6 +48,23 @@
   </span>
 </div>
 
+<!-- busca + filtro por estado (histórico: as concluídas continuam na fila) -->
+<div class="filters">
+  <input id="q" type="search" placeholder="Buscar na fila…"
+         aria-label="Buscar por nome ou URL" spellcheck="false"
+         autocomplete="off">
+  <div class="tabs" role="tablist" aria-label="Filtrar por estado">
+    <button class="tab on" data-filter="all" type="button" role="tab"
+            aria-selected="true">Todos</button>
+    <button class="tab" data-filter="active" type="button" role="tab"
+            aria-selected="false">Ativos</button>
+    <button class="tab" data-filter="done" type="button" role="tab"
+            aria-selected="false">Concluídos</button>
+    <button class="tab" data-filter="error" type="button" role="tab"
+            aria-selected="false">Erros</button>
+  </div>
+</div>
+
 <main id="list" class="list" aria-live="polite"></main>
 
 <div id="empty" class="empty">Nada na fila ainda — cole um link acima.</div>

@@ -758,7 +758,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           476 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, share ACTION_SEND, webui (qualidade/destino), Android/tray/pub)
+tests/           477 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player, extensão do navegador, share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)
