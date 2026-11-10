@@ -75,7 +75,7 @@ sincroniza `minidm/` e `webui/` para dentro do build.
 | webui (tema claro/escuro, polling ao vivo) | ✅ |
 | yt-dlp (sites complexos) | ✅ **embutido** (pip do Chaquopy, in-process — sem Termux, sem instalar nada) |
 | YouTube completo (runtime JS) | ✅ `libqjs.so` (quickjs-ng estático) + `yt-dlp-ejs` embutidos |
-| ffmpeg (mux DASH/HLS, mp3) | ❌ não empacotado — vídeo HLS/DASH com faixa separada fica mudo |
+| ffmpeg (mux DASH/HLS, mp3) | ✅ **embutido** — `libffmpeg.so`/`libffprobe.so` (FFmpeg 8.0 estático, `android/setup_ffmpeg.py`) — vídeo HLS/DASH com faixa separada mescla e o mp3 converte; APK ~167 MB maior (ambas as ABIs) |
 | FTP/SFTP | ⚠️ `ftplib` ok; SFTP sem `paramiko` (não empacotado) |
 | Torrents | ❌ fora do APK (desktop/Termux com `aria2c` — sem aria2, magnet:/.torrent são recusados com instrução) |
 | Extensão de navegador / clipboard | ❌ (desktop only) |

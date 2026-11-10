@@ -12,8 +12,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from minidm.deps import (ffmpeg_dir, ffmpeg_available, js_runtime, status,
-                         invalidate_cache)
+from minidm.deps import (ffmpeg_bin, ffmpeg_dir, ffmpeg_available, js_runtime,
+                         status, invalidate_cache)
 from minidm.meta import Task
 from minidm.remote import auto_delegate, looks_direct_media
 from minidm.ytdlpdl import _filter_ffmpeg_args, _hidden_kwargs, _explain_error
@@ -125,6 +125,61 @@ class TestJsRuntimeAndroid(unittest.TestCase):
         self.assertTrue(st["js_runtime"]["available"])
         self.assertEqual(st["js_runtime"]["path"], "quickjs:/x/libqjs.so")
         self.assertIn("APK", st["js_runtime"]["install"])
+
+
+class TestFfmpegAndroid(unittest.TestCase):
+    """FFmpeg estático embarcado no APK (`libffmpeg.so` na jniLibs).
+
+    No Android `ffmpeg_dir()` devolve o PRÓPRIO arquivo (o yt-dlp aceita
+    caminho de executável e deriva o `libffprobe.so` ao lado via
+    `replace("ffmpeg", "ffprobe")`).
+    """
+
+    def setUp(self):
+        self._old = os.environ.pop("MINIDM_FFMPEG", None)
+        invalidate_cache()
+
+    def tearDown(self):
+        if self._old is not None:
+            os.environ["MINIDM_FFMPEG"] = self._old
+        invalidate_cache()
+
+    def test_fora_do_android_devolve_none(self):
+        # sem o módulo do APK (desktop/CI) o import hook falha é no-op
+        from minidm.deps import _android_ffmpeg
+        self.assertIsNone(_android_ffmpeg())
+
+    def test_ffmpeg_dir_e_o_arquivo_no_apk(self):
+        with mock.patch("minidm.deps._android_ffmpeg",
+                        return_value="/x/libffmpeg.so"):
+            self.assertEqual(ffmpeg_dir(), "/x/libffmpeg.so")
+
+    def test_ffmpeg_bin_devolve_o_arquivo(self):
+        with tempfile.NamedTemporaryFile(delete=False) as fh:
+            path = fh.name
+        try:
+            with mock.patch("minidm.deps._android_ffmpeg",
+                            return_value=path):
+                self.assertEqual(ffmpeg_bin(), path)
+        finally:
+            os.unlink(path)
+
+    def test_env_vence_ffmpeg_do_apk(self):
+        # override explícito do usuário continua mandando
+        os.environ["MINIDM_FFMPEG"] = "/nao/existe/ffmpeg"
+        invalidate_cache()
+        with mock.patch("minidm.deps._android_ffmpeg",
+                        return_value="/x/libffmpeg.so"):
+            self.assertIsNone(ffmpeg_dir())
+
+    def test_status_mostra_embutido_no_apk(self):
+        with mock.patch("minidm.deps._android_ffmpeg",
+                        return_value="/x/libffmpeg.so"):
+            st = status()
+        self.assertTrue(st["ffmpeg"]["available"])
+        self.assertEqual(st["ffmpeg"]["path"], "/x/libffmpeg.so")
+        self.assertIn("APK", st["ffmpeg"]["install"])
+        self.assertTrue(st["features"]["converter áudio (mp3) / recodificar"])
 
 
 class TestHiddenWindow(unittest.TestCase):

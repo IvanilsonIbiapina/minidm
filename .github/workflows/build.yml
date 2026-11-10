@@ -171,6 +171,12 @@ jobs:
       - name: baixa QuickJS (runtime JS do YouTube)
         run: python android/setup_qjs.py
 
+      # ffmpeg estático (mux vídeo+áudio e mp3 — última dependência
+      # externa do APK): libffmpeg.so/libffprobe.so nos jniLibs,
+      # idempotente, sha256 fixo (zip + cada binário extraído)
+      - name: baixa FFmpeg estático (mux/conversão)
+        run: python android/setup_ffmpeg.py
+
       - name: build APK (debug)
         shell: bash
         run: |

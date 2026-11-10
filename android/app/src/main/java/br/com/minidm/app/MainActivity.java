@@ -87,6 +87,35 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Caminho do FFmpeg estático ({@code libffmpeg.so} no
+     * nativeLibraryDir), ou {@code null} se não existir. O Python
+     * ({@code minidm/deps.py}) expõe isso como {@code ffmpeg_dir()} /
+     * {@code ffmpeg_bin()}: mux de vídeo+áudio (streams DASH/HLS com
+     * faixa separada) e conversão mp3 passam a funcionar no APK.
+     *
+     * <p>Mesmo desenho do QuickJS: binário estático (FFmpeg 8.0, ver
+     * {@code android/setup_ffmpeg.py}) disfarçado de {@code .so} em
+     * {@code jniLibs/<abi>/}, extraído para o nativeLibraryDir — único
+     * local executável no Android 10+ (W^X). O {@code libffprobe.so}
+     * está ao lado e o yt-dlp o deriva sozinho do caminho do ffmpeg
+     * ({@code replace("ffmpeg", "ffprobe")}). Nada é carregado via
+     * System.loadLibrary.
+     */
+    public static String ffmpegPath() {
+        try {
+            Context ctx = appCtx;
+            if (ctx == null) {
+                return null;
+            }
+            File f = new File(ctx.getApplicationInfo().nativeLibraryDir,
+                    "libffmpeg.so");
+            return f.isFile() ? f.getAbsolutePath() : null;
+        } catch (Throwable t) {
+            return null;   // nunca derrubar o Python por causa disso
+        }
+    }
+
     private WebView web;
 
     @Override

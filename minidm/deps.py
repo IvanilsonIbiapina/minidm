@@ -85,18 +85,48 @@ def js_runtime() -> Optional[str]:
     return None
 
 
+def _android_ffmpeg() -> Optional[str]:
+    """Caminho do FFmpeg estático embutido no APK, ou None fora do Android.
+
+    O binário `libffmpeg.so` (FFmpeg 8.0 completamente estático) vem em
+    `jniLibs/` e o instalador o extrai para o `nativeLibraryDir` — o
+    único local de onde o Android 10+ deixa executar (W^X; ver
+    `android/setup_ffmpeg.py`). Bridge Python→Java pelo import hook do
+    Chaquopy (mesmo padrão de `_android_qjs`): fora do APK o import
+    falha e é no-op. O `libffprobe.so` está ao lado — o yt-dlp o deriva
+    do caminho do ffmpeg (`replace("ffmpeg", "ffprobe")`).
+    """
+    try:
+        import java                        # noqa: F401 (só existe no APK)
+    except BaseException:
+        return None
+    try:
+        from br.com.minidm.app import MainActivity
+        return MainActivity.ffmpegPath()
+    except BaseException:
+        return None
+
+
 @lru_cache(maxsize=1)
 def ffmpeg_dir() -> Optional[str]:
     """Diretório que contém o ffmpeg (para --ffmpeg-location), ou None.
 
-    O yt-dlp aceita o *diretório* em `--ffmpeg-location` e acha ffmpeg e
-    ffprobe lá dentro. Cacheado: descoberta é uma vez por processo.
+    No desktop: o *diretório* (o yt-dlp acha ffmpeg e ffprobe lá).
+    No Android: o **próprio arquivo** `libffmpeg.so` — o yt-dlp aceita
+    caminho de executável e deriva o ffprobe por `replace` nos nomes
+    `libffmpeg.so`/`libffprobe.so`. Cacheado: descoberta é uma vez por
+    processo.
     """
     env = os.environ.get("MINIDM_FFMPEG", "")
     if env:
         # aceita tanto o executável quanto o diretório
         p = env if os.path.isdir(env) else os.path.dirname(env)
         return p if os.path.exists(env) else None
+
+    # Android: ffmpeg/ffprobe estáticos embarcados no APK (jniLibs)
+    ff = _android_ffmpeg()
+    if ff:
+        return ff
 
     # 1) PATH
     hit = shutil.which("ffmpeg")
@@ -151,11 +181,14 @@ def ffmpeg_bin() -> Optional[str]:
     """Caminho do executável `ffmpeg`, ou None se não existir.
 
     `ffmpeg_dir()` devolve o diretório (o yt-dlp quer assim); para rodar o
-    ffmpeg DIRETO (mux da engine própria) precisamos do binário.
+    ffmpeg DIRETO (mux da engine própria) precisamos do binário. No
+    Android o próprio `ffmpeg_dir()` já é o arquivo (`libffmpeg.so`).
     """
     d = ffmpeg_dir()
     if not d:
         return None
+    if os.path.isfile(d):      # Android: devolve o próprio libffmpeg.so
+        return d
     for name in _FFMPEG_NAMES:
         p = os.path.join(d, name)
         if os.path.isfile(p):
@@ -186,7 +219,9 @@ def status() -> dict:
         "ffmpeg": {
             "available": ff is not None,
             "path": ff,
-            "install": ("winget install Gyan.FFmpeg   (Windows)  ou  "
+            "install": ("embutido no APK (ffmpeg estático) — nada a instalar"
+                        if ff and _android_ffmpeg() else
+                        "winget install Gyan.FFmpeg   (Windows)  ou  "
                         "brew install ffmpeg   (macOS)  ou  "
                         "apt install ffmpeg   (Linux)"),
         },
