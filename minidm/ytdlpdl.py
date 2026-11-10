@@ -32,8 +32,11 @@ from minidm.ytdlp import _in_process, _pipe, find as find_ytdlp
 # [download]  12.3% of ~ 10.00MiB at  1.00MiB/s ETA 00:10
 _PROGRESS_RE = re.compile(
     r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+)([KMG]?i?B)")
-# a velocidade impressa pelo próprio yt-dlp na mesma linha ("at 1.00MiB/s")
+# uma velocidade impressa pelo próprio yt-dlp na mesma linha ("at 1.00MiB/s")
 _SPEED_RE = re.compile(r"\bat\s+([\d.,]+)\s*([KMG]?i?B)/s")
+# linha de fase do yt-dlp ("[youtube] xyz: Downloading webpage",
+# "[download] Destination: …") — vira a "note" exibida na UI
+_NOTE_RE = re.compile(r"^\[([A-Za-z][\w.:-]*)\]\s*(\S.*)$")
 _SIZE_UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
                "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
 # quanto tempo a velocidade impressa vale antes de cair p/ a estimativa
@@ -519,6 +522,7 @@ class YtdlpDownloader:
     def _parse_line(self, line: str) -> None:
         m = _PROGRESS_RE.search(line)
         if not m:
+            self._note(line)
             return
         pct = float(m.group(1))
         total = float(m.group(2)) * _SIZE_UNITS.get(m.group(3), 1)
@@ -549,10 +553,27 @@ class YtdlpDownloader:
                              if now - st <= 30.0]
         t = self.task
         t.total_size = self._total
-        # received/progress vêm do stream dict para casar com a UI
-        t.stream = {"bytes_done": self._received,
-                    "segments_total": 100,
-                    "segments_done": int(pct)}
+        # received/progress vêm do stream dict para casar com a UI;
+        # as outras chaves (ex.: note da fase atual) são preservadas
+        st = dict(t.stream) if isinstance(t.stream, dict) else {}
+        st.update({"bytes_done": self._received,
+                   "segments_total": 100,
+                   "segments_done": int(pct)})
+        t.stream = st
+
+    def _note(self, line: str) -> None:
+        """Guarda a fase atual do yt-dlp ("[youtube] Extraindo…").
+
+        Sem isso a barra fica muda durante a extração/resolução do
+        título e o usuário só vê "0%" até a tarefa finalizar.
+        """
+        m = _NOTE_RE.match(line.strip())
+        if not m or m.group(1) in ("debug", "console"):
+            return
+        t = self.task
+        st = dict(t.stream) if isinstance(t.stream, dict) else {}
+        st["note"] = m.group(0)[:140]
+        t.stream = st
 
     # ------------------------------------------------------------ finalizar
     def _finalize(self) -> None:
@@ -630,5 +651,10 @@ class YtdlpDownloader:
             pass
         t.state = TaskState.DONE
         t.finished_at = time.time()
-        t.stream = None
+        # mantém os bytes contados (stream=None faria a UI mostrar "0%"
+        # numa tarefa concluída — sem segments, received = 0); o tamanho
+        # real do arquivo vence (mux pós-processo muda o total)
+        prev = t.stream if isinstance(t.stream, dict) else {}
+        t.stream = {"bytes_done": int(t.total_size
+                                      or prev.get("bytes_done") or 0)}
         t.save_meta()

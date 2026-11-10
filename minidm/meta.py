@@ -128,10 +128,22 @@ class Task:
         if self.stream and isinstance(self.stream, dict):
             # stream: bytes contados no plano de segmentos
             return int(self.stream.get("bytes_done", 0))
-        return sum(s.received for s in self.segments)
+        segs = sum(s.received for s in self.segments)
+        if segs:
+            return segs
+        # concluído sem histórico de progresso (tarefas antigas do
+        # yt-dlp zeravam o stream ao finalizar): o arquivo está inteiro
+        # no disco — o total veio do próprio arquivo no _finalize
+        if self.state == TaskState.DONE:
+            return int(self.total_size or 0)
+        return 0
 
     @property
     def progress(self) -> float:
+        if self.state == TaskState.DONE:
+            # concluído é 100% — sem isso a UI mostrava "0%" em tarefas
+            # que finalizaram sem stream de progresso salvo
+            return 1.0
         if self.stream and isinstance(self.stream, dict):
             done = self.stream.get("segments_done") or 0
             total = self.stream.get("segments_total") or 0

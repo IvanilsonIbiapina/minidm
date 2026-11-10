@@ -154,6 +154,9 @@ class Scheduler:
                 "progress": t.progress,
                 "received": t.received,
                 "total": t.total_size,
+                # fase atual do yt-dlp ("[youtube] Extraindo…") — dá
+                # feedback visual enquanto a barra ainda está em 0%
+                "note": st.get("note", ""),
                 "speed": dl.speed_bps() if dl else 0.0,
                 "error": t.error,
                 "sha256": t.sha256,

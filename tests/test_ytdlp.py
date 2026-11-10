@@ -711,10 +711,12 @@ class TestDownloaderInProcess(unittest.TestCase):
         self.assertEqual(out.filename, "meu video.mp4")
         self.assertEqual(out.total_size, 3000)
         self.assertTrue(out.sha256)
-        # progresso foi lido da fila (100% de 3.00KiB = 3072 bytes) e
-        # zerou o stream ao concluir
+        # progresso foi lido da fila (100% de 3.00KiB = 3072 bytes) e o
+        # stream final preserva os bytes (zerar mostraria "0%" na UI)
         self.assertEqual(d._received, 3072)
-        self.assertIsNone(out.stream)
+        self.assertEqual(out.stream, {"bytes_done": 3000})
+        self.assertEqual(out.received, 3000)
+        self.assertEqual(out.progress, 1.0)
         # e nada passou por subprocesso (Popen com "" quebraria no APK)
         self.assertIsNone(d._proc)
 
@@ -728,6 +730,36 @@ class TestDownloaderInProcess(unittest.TestCase):
             d.run()
         self.assertEqual(d.task.state, TaskState.ERROR)
         self.assertIn("Unable to download webpage", d.task.error)
+
+    def test_fase_do_ytdlp_vira_note_para_a_ui(self):
+        """Linhas de fase ("[youtube] Extraindo…") viram `stream.note` —
+        dá feedback na UI enquanto a barra ainda está em 0% (a extração
+        e a resolução do título demoram; antes a barra só "carregava"
+        ao finalizar)."""
+        d = self._downloader()
+        d._parse_line("[youtube] x9: Downloading webpage")
+        self.assertEqual(d.task.stream["note"],
+                         "[youtube] x9: Downloading webpage")
+        # o progresso seguinte NÃO apaga a nota (o dict é preservado)
+        d._parse_line("[download]  10.0% of ~ 1.00MiB at  1.00MiB/s "
+                      "ETA 00:01")
+        self.assertEqual(d.task.stream["note"],
+                         "[youtube] x9: Downloading webpage")
+        # linhas de debug e texto sem tag de fase não viram nota
+        d._parse_line("[debug] sim 10.0 >= 10.0 — vindo do dl")
+        self.assertEqual(d.task.stream["note"],
+                         "[youtube] x9: Downloading webpage")
+        d._parse_line("yt-dlp sem tag alguma")
+        self.assertEqual(d.task.stream["note"],
+                         "[youtube] x9: Downloading webpage")
+
+    def test_done_sem_progresso_mostra_100_e_os_bytes(self):
+        """Tarefa concluída sem stream (tarefas antigas do yt-dlp zeravam
+        o progresso no fim) mostra 100% e o tamanho real — não "0% / 0 B"."""
+        t = self._task(state=TaskState.DONE, total_size=20_600_000,
+                       stream=None, segments=[])
+        self.assertEqual(t.received, 20_600_000)
+        self.assertEqual(t.progress, 1.0)
 
     def test_request_stop_interrompe_o_download_in_process(self):
         """`request_stop` leva o yt-dlp in-process a levantar KeyboardInterrupt

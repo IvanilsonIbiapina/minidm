@@ -91,6 +91,7 @@ function makeCard(t) {
     <div class="meta">
       <span class="pct"></span><span class="size"></span>
       <span class="speed"></span><span class="seg"></span>
+      <span class="note"></span>
     </div>
     <div class="chips"><span class="chip cat"></span><span class="chip q"></span><span class="chip path" hidden></span></div>
     <div class="err" hidden></div>
@@ -120,6 +121,10 @@ function updateCard(el, t) {
     st === "downloading" ? fmtSpeed(t.speed) : "";
   el.querySelector(".seg").textContent =
     t.segments_total > 0 ? `${t.segments_done}/${t.segments_total} seg` : "";
+  // fase do yt-dlp (ex.: "[youtube] Extraindo…") — aparece enquanto a
+  // barra ainda não tem bytes; some ao concluir/pausar
+  el.querySelector(".note").textContent =
+    st === "downloading" ? (t.note || "") : "";
 
   const cat = el.querySelector(".chip.cat");
   cat.textContent = t.effective_category || "";
