@@ -193,6 +193,27 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b".pick-row", css)
         self.assertIn(b".sheet-acts", css)
 
+    def test_guia_da_extensao(self):
+        """Guia de primeiro uso da extensão: banner some quando a API
+        vê o X-MiniDM-Ext; instalar/guia manual/check nos 3 assets."""
+        _, _, html = self._get("/")
+        self.assertIn(b'id="ext-guide"', html)
+        self.assertIn(b'id="ext-state"', html)
+        self.assertIn(b'id="ext-install"', html)
+        self.assertIn(b'id="ext-guided"', html)
+        self.assertIn(b'id="ext-check"', html)
+        self.assertIn(b'id="ext-steps"', html)
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"/ext/status", js)            # verifica conexão
+        self.assertIn(b'"/ext"', js)                 # install/guided
+        self.assertIn(b"minidm-ext-dismissed", js)    # dispensa persistida
+        self.assertIn(b"function maybeShowExtGuide", js)
+        self.assertIn(b"function checkExt", js)
+        self.assertIn(b"extTick", js)                # re-verificação 10 s
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b".ext-guide", css)
+        self.assertIn(b".ext-steps", css)
+
 
 if __name__ == "__main__":
     unittest.main()

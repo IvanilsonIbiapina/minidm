@@ -9,6 +9,10 @@
 const API = "http://127.0.0.1:9742";
 const MAX_PER_TAB = 60;          // guarda no máximo N itens por aba
 
+// todas as chamadas carregam a versão p/ a API marcar "extensão vista"
+// (X-MiniDM-Ext -> ext_seen.json; é o que o guia de primeiro uso lê)
+const EXT_HDR = { "X-MiniDM-Ext": chrome.runtime.getManifest().version };
+
 // extensões/tipos que tratamos como mídia (IDM faz parecido no sniffer)
 const MEDIA_EXT = /\.(mp4|m4v|webm|mkv|mov|flv|avi|wmv|ts|m4s|m3u8|mpd|mp3|m4a|aac|ogg|opus|wav)(\?|$)/i;
 const MEDIA_MIME = /(video\/|audio\/|application\/vnd\.apple\.mpegurl|application\/x-mpegurl|application\/dash\+xml)/i;
@@ -25,6 +29,9 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "Baixar vídeo desta página com o minidm",
     contexts: ["page", "video"],
   });
+  // instalou (carregar expandida ou política): avisa a API na hora — o
+  // guia de primeiro uso da webui some ao verificar (ext_seen.json)
+  probeApi();
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -169,7 +176,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // ------------------------------------------------------------- API minidm
 async function probeApi() {
   try {
-    const r = await fetch(`${API}/status`, { method: "GET" });
+    const r = await fetch(`${API}/status`, { method: "GET",
+                                             headers: EXT_HDR });
     return r.ok;
   } catch (e) {
     return false;
@@ -191,7 +199,7 @@ async function analyze({ url, referer, page_title, ytdlp }) {
   try {
     const r = await fetch(`${API}/media/analyze`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...EXT_HDR },
       body: JSON.stringify({
         url,
         referer: referer || "",
@@ -212,7 +220,7 @@ async function downloadItem(payload) {
   try {
     const r = await fetch(`${API}/add`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...EXT_HDR },
       body: JSON.stringify({
         ...payload,
         cookie,

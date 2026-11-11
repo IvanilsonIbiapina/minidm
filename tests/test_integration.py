@@ -778,5 +778,139 @@ class TestConfigEndpoint(unittest.TestCase):
         self.addCleanup(self.sched.shutdown)
 
 
+class TestExtEndpoint(unittest.TestCase):
+    """GET /ext/status + POST /ext — guia de primeiro uso da extensão.
+
+    `_ext_status` é mockado (a varredura de perfis do navegador é do
+    ambiente); o visto `X-MiniDM-Ext` e a persistência em
+    `ext_seen.json` são exercitados de verdade.
+    """
+
+    FAKE = {
+        "browsers": [
+            {"name": "chrome", "present": True,
+             "profiles": [{"name": "Default", "installed": False}]},
+            {"name": "edge", "present": False, "profiles": []},
+        ],
+        "policy": {"chrome": {}},
+        "crx_present": True,
+        "key_present": True,
+        "ext_id": "abcdefghijklmnop",
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="minidm-ext-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.api = None
+        self._start_api()
+
+    def _start_api(self):
+        cfg = AppConfig(data_dir=self.tmp)
+        store = TaskStore(self.tmp)
+        sched = Scheduler(store, cfg)
+        self.app = App(store, sched, cfg)
+        self.api = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(self.app))
+        threading.Thread(target=self.api.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.api.server_address[1]}"
+
+    def _stop_api(self):
+        if self.api is None:
+            return
+        self.api.shutdown()
+        self.api.server_close()
+        self.api = None
+
+    def tearDown(self):
+        self._stop_api()
+
+    def _get(self, path, headers=None):
+        req = urllib.request.Request(self.base + path, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+
+    def _post(self, payload):
+        req = urllib.request.Request(
+            f"{self.base}/ext", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    @mock.patch("minidm.server._ext_status")
+    def test_status_sem_visto_desconectada(self, st):
+        st.return_value = dict(self.FAKE)
+        d = self._get("/ext/status")
+        self.assertFalse(d["connected"])
+        self.assertFalse(d["recent"])
+        self.assertEqual(d["last_seen"], 0)
+        # mapeamento da varredura de perfis
+        self.assertEqual(d["installed"], {"chrome": False, "edge": False})
+        self.assertEqual(d["present"], {"chrome": True, "edge": False})
+        self.assertTrue(d["crx_present"])
+        self.assertEqual(d["ext_id"], "abcdefghijklmnop")
+        self.assertIn("windows", d)         # p/ a webui esconder o botão
+
+    @mock.patch("minidm.server._ext_status")
+    def test_header_visto_liga_connected(self, st):
+        st.return_value = dict(self.FAKE)
+        # a extensão falou (qualquer endpoint carrega X-MiniDM-Ext)
+        self._get("/status", headers={"X-MiniDM-Ext": "2.0"})
+        d = self._get("/ext/status")
+        self.assertTrue(d["connected"])
+        self.assertTrue(d["recent"])
+        self.assertEqual(d["version"], "2.0")
+        self.assertGreater(d["last_seen"], 0)
+        # persiste em ext_seen.json (o guia lê mesmo após reiniciar)
+        with open(os.path.join(self.tmp, "ext_seen.json"),
+                  encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["version"], "2.0")
+
+    @mock.patch("minidm.server._ext_status")
+    def test_visto_sobrevive_a_reinicio_da_api(self, st):
+        st.return_value = dict(self.FAKE)
+        self._get("/status", headers={"X-MiniDM-Ext": "9.9"})
+        self._stop_api()                    # "reinício": memória zerada
+        self._start_api()
+        d = self._get("/ext/status")
+        self.assertTrue(d["connected"])
+        self.assertEqual(d["version"], "9.9")
+
+    @mock.patch("minidm.server._ext_install")
+    def test_install_passa_a_porta_real_da_api(self, inst):
+        # o update_url da política aponta p/ ESTA API (mesmo se a porta
+        # não for a default 9742)
+        inst.return_value = {"ext_id": "x", "policy_keys": {"chrome": "k"}}
+        status, data = self._post({"action": "install"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        inst.assert_called_once_with(
+            self.tmp, api_port=self.api.server_address[1])
+
+    @mock.patch("minidm.server._ext_guided")
+    def test_guided_devolve_os_passos(self, guid):
+        guid.return_value = {"ext_dir": "C:\\ext", "copied_to_clipboard": True,
+                             "explorer_opened": True,
+                             "steps": ["passo 1", "passo 2"]}
+        status, data = self._post({"action": "guided"})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["steps"], ["passo 1", "passo 2"])
+        guid.assert_called_once_with(self.tmp)
+
+    @mock.patch("minidm.server._ext_install")
+    def test_install_com_falha_vira_400(self, inst):
+        inst.side_effect = RuntimeError("só existe no Windows")
+        status, data = self._post({"action": "install"})
+        self.assertEqual(status, 400)
+        self.assertIn("instalar", data["error"])
+
+    def test_action_invalida_400(self):
+        status, data = self._post({"action": "uninstall"})
+        self.assertEqual(status, 400)
+        self.assertIn("action", data["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,8 @@ Endpoints:
     POST /open     {id, what}     -> abre pasta ou arquivo no explorador
     GET  /config                  -> configuração efetiva (campos editáveis)
     POST /config  {campo: valor}  -> salva e aplica ao vivo (valida tudo)
+    GET  /ext/status              -> extensão: conectada/instalada/policy
+    POST /ext     {action}        -> "install" (policy) | "guided" (passos)
     POST /media/analyze {url,...} -> lista qualidades de vídeo (HLS/DASH/dir.)
     GET  /update.xml              -> manifest da extensão (política forcelist)
     GET  /minidm.crx              -> pacote CRX3 assinado da extensão
@@ -29,7 +31,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from minidm.extsetup import CRX_NAME, UPDATE_XML_NAME
+from minidm.extsetup import (CRX_NAME, UPDATE_XML_NAME,
+                             guided as _ext_guided,
+                             install_policy as _ext_install,
+                             status as _ext_status)
 from minidm.meta import Task, TaskState
 from minidm.remote import auto_delegate, filename_from, page_error
 from minidm.scheduler import Scheduler
@@ -43,6 +48,12 @@ class App:
         self.store = store
         self.scheduler = scheduler
         self.config = config
+        # última vez que a extensão do navegador falhou com a API
+        # (header X-MiniDM-Ext) — vira ext_seen.json, vê o guia da webui
+        self.ext_lock = threading.Lock()
+        self.ext_ts = 0.0
+        self.ext_ver = ""
+        self.ext_flush = 0.0
 
 
 # ----------------------------------------------------------------- webui
@@ -93,6 +104,59 @@ def _open_path(path: str) -> None:
         subprocess.Popen(["open", path])  # noqa: S606
     else:
         subprocess.Popen(["xdg-open", path])  # noqa: S606
+
+
+# ------------------------------------------ extensão do navegador (visto)
+def _note_ext(app: App, headers) -> None:
+    """Registra que a extensão do navegador falhou com a API.
+
+    A extensão manda ``X-MiniDM-Ext: <versão>`` em todas as chamadas;
+    o visto vira ``ext_seen.json`` no data_dir — é o que o guia de
+    primeiro uso da webui e `minidm ext status` usam p/ saber se ela
+    está conectada (funciona mesmo sem varrer os perfis do navegador).
+
+    Persistência com throttle de 30 s (arquivo minúsculo, mas não
+    precisa gravar a cada request); em memória atualiza sempre.
+    """
+    ver = headers.get("X-MiniDM-Ext")
+    if not ver:
+        return
+    now = time.time()
+    with app.ext_lock:
+        app.ext_ts = now
+        app.ext_ver = str(ver).strip()[:40] or "0"
+        if app.ext_flush and now - app.ext_flush < 30:
+            return
+        app.ext_flush = now
+        ts, version = app.ext_ts, app.ext_ver
+    try:
+        with open(os.path.join(app.store.data_dir, "ext_seen.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"ts": ts, "version": version}, f)
+    except OSError:
+        pass   # sem data_dir gravável: o estado segue só em memória
+
+
+def _ext_seen(app: App) -> dict:
+    """Última visita da extensão — memória, ou disco após reiniciar."""
+    with app.ext_lock:
+        if app.ext_ts:
+            return {"ts": app.ext_ts, "version": app.ext_ver}
+    try:
+        with open(os.path.join(app.store.data_dir, "ext_seen.json"),
+                  encoding="utf-8") as f:
+            d = json.load(f)
+        ts = float(d.get("ts") or 0)
+        version = str(d.get("version") or "")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+    if ts <= 0:
+        return {}
+    with app.ext_lock:
+        if not app.ext_ts:      # outra thread pode ter chegado primeiro
+            app.ext_ts = ts
+            app.ext_ver = version
+    return {"ts": ts, "version": version}
 
 
 # --------------------------------------------- configuração editável
@@ -283,6 +347,7 @@ def make_handler(app: App):
 
         def do_GET(self):
             path = urlparse(self.path).path
+            _note_ext(app, self.headers)   # X-MiniDM-Ext da extensão
             if path == "/status":
                 self._json({
                     "tasks": app.scheduler.snapshot(),
@@ -356,6 +421,32 @@ def make_handler(app: App):
                     self._json({"error": "tarefa não encontrada"}, 404)
                     return
                 self._json(t.to_dict())
+            elif path == "/ext/status":
+                # guia de primeiro uso da extensão (webui): conectada?
+                # instalada em qual navegador? política/CRX prontos?
+                st = _ext_status(app.store.data_dir)   # varre perfis
+                seen = _ext_seen(app)
+                ts = float(seen.get("ts") or 0)
+                self._json({
+                    # "connected" = já falhou com a API alguma vez (o
+                    # visto é a prova de que funciona; a varredura de
+                    # perfis pode errar em perfil custom/instalação
+                    # portátil) — é o sinal que esconde o guia
+                    "connected": ts > 0,
+                    "recent": 0 < time.time() - ts < 600,
+                    "last_seen": ts,
+                    "version": seen.get("version", ""),
+                    "installed": {b["name"]: any(p.get("installed")
+                                                 for p in b["profiles"])
+                                  for b in st["browsers"]},
+                    "present": {b["name"]: b["present"]
+                                for b in st["browsers"]},
+                    "policy": st["policy"],
+                    "crx_present": st["crx_present"],
+                    "key_present": st["key_present"],
+                    "ext_id": st["ext_id"],
+                    "windows": os.name == "nt",
+                })
             elif path in ("/update.xml", f"/{UPDATE_XML_NAME}"):
                 # manifest de atualização p/ a política ExtensionInstallForcelist
                 self._file(os.path.join(app.store.data_dir, "ext",
@@ -376,6 +467,7 @@ def make_handler(app: App):
 
         def do_POST(self):
             path = urlparse(self.path).path
+            _note_ext(app, self.headers)   # X-MiniDM-Ext da extensão
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
@@ -384,6 +476,9 @@ def make_handler(app: App):
 
             if path == "/add":
                 self._add(payload)
+            elif path == "/ext":
+                # guia de primeiro uso: instalar (policy) ou modo manual
+                self._ext_action(payload)
             elif path == "/media/analyze":
                 self._media_analyze(payload)
             elif path == "/open":
@@ -821,6 +916,36 @@ def make_handler(app: App):
                 return
             app.scheduler.apply_config()   # workers/semáforo/archive
             self._json({"ok": True})
+
+        # ----------------------------------------------------------- /ext
+        def _ext_action(self, payload):
+            """Ações do guia da extensão (mesmas do `minidm ext`).
+
+            * ``install`` — gera CRX3 + update.xml e escreve a política
+              `ExtensionInstallForcelist` (HKCU, sem admin); a porta
+              passada é a DESTA API, então o update_url aponta certo
+              mesmo com a porta mudada;
+            * ``guided`` — copia o caminho da pasta, abre o Explorer e
+              devolve os passos manuais (carregar expandida).
+            """
+            action = payload.get("action")
+            if action == "install":
+                try:
+                    port = self.server.server_address[1]
+                    rep = _ext_install(app.store.data_dir, api_port=port)
+                except (RuntimeError, OSError) as e:
+                    self._json({"error": f"não deu para instalar: {e}"}, 400)
+                    return
+                self._json({"ok": True, **rep})
+            elif action == "guided":
+                try:
+                    rep = _ext_guided(app.store.data_dir)
+                except (RuntimeError, OSError) as e:
+                    self._json({"error": f"não deu para abrir: {e}"}, 400)
+                    return
+                self._json({"ok": True, **rep})
+            else:
+                self._json({"error": "action: install ou guided"}, 400)
 
     return Handler
 

@@ -44,6 +44,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Interações da fila na webui** | botão direito/**⋯** no card (estilo IDM): **abrir pasta/arquivo** (`POST /open`, caminho do registro — destino publicado no Android), **copiar URL** (clipboard com fallback), **propriedades** (`GET /task`, registro completo), **↑/↓ subir-descer** e **arrastar** p/ reordenar (`POST /reorder`) |
 | **Configurações na webui** | sheet **⚙** (concorrência/banda, resiliência, yt-dlp, rede/pastas) grava via `POST /config` — **valida tudo antes de aplicar** (atômico), persiste em `config.json` e reconfigura o pool **ao vivo** (`apply_config`: workers/semáforo/archive sem reiniciar); `max_concurrent` é lido a cada claim (descer/suber vale na hora) |
 | **Seletor de pasta no Android** | botões **"Escolher…"** no destino e na base de categorias via SAF (`ACTION_OPEN_DOCUMENT_TREE` → caminho físico com **probe de escrita** — falha honesta cedo se o SO bloquear); ponte `MinidmBridge` só aparece no APK, cancelar é silencioso |
+| **Extensão guiada no 1º uso** | a webui mostra um banner "Conecte a extensão" que **some sozinho** quando a API recebe `X-MiniDM-Ext` (visto em `ext_seen.json`, re-verificado a cada 10 s): **Instalar agora** (`POST /ext` → política forcelist com a porta da própria API, sem admin), **Guia manual** (copia a pasta + passos) ou **Já instalei — verificar**; dispensa fica no `localStorage`; escondido no celular |
 | **Categorias estilo IDM** (pasta+perfil) | `--category Vídeos` — separa por pastas (Vídeos, Músicas, Programas…); base configurável (`download_base`), Vídeos é a padrão |
 | **Templates de comando yt-dlp** | `CommandTemplate` com `url_regex` de ativação automática (`profiles` no CLI) |
 | **Template de nome de arquivo** | motor `{title} [{id}].{ext}` com preview e sanitização (`nametpl.py`) |
@@ -673,6 +674,12 @@ Com o `minidm daemon`/`serve` rodando (ou **API do navegador** marcado na
 GUI), a extensão captura vídeos da navegação e o painel (ícone) mostra as
 qualidades. Botão direito → **Enviar para o minidm**.
 
+**Primeiro uso**: a webui abre um banner "Conecte a extensão do navegador"
+(com o caminho da pasta no clipboard pelo **Guia manual**, ou política
+forcelist automática pelo **Instalar agora**). A extensão manda
+`X-MiniDM-Ext: <versão>` em cada chamada — a API guarda em
+`ext_seen.json` e o banner some sozinho quando ela aparece.
+
 ## API local (127.0.0.1:9742)
 
 ```
@@ -705,6 +712,14 @@ POST /config  {campo: valor}  -> salva e aplica ao vivo (valida a requisição
                                  inteira antes — 400 nada é gravado; campos
                                  não editáveis como data_dir/api_port/cookie
                                  são rejeitados; persiste + apply_config)
+GET  /ext/status              -> extensão p/ o guia de 1º uso: {connected
+                                 (visto X-MiniDM-Ext em ext_seen.json),
+                                 recent, last_seen, version, installed (por
+                                 navegador/perfil), present, policy, crx/key,
+                                 ext_id, windows}
+POST /ext     {action}        -> "install" (gera CRX + política forcelist
+                                 com a porta DESTA API) | "guided" (copia a
+                                 pasta + passos manuais)
 POST /media/analyze {url, referer?, page_title?, cookie?, user_agent?,
                      proxy?, ytdlp?}
                    -> {ok, kind, qualities:[{label,url,bandwidth,
@@ -790,7 +805,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           551 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder + gate de concorrência ao vivo, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API (incl. /open + /task + /config atômico), GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila/configurações), Android (SAF/ponte Java + tray/pub))
+tests/           562 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder + gate de concorrência ao vivo, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API (incl. /open + /task + /config atômico + /ext), GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade) + guia 1º uso (X-MiniDM-Ext), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila/configurações/guia da extensão), Android (SAF/ponte Java + tray/pub))
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

@@ -110,5 +110,37 @@ class PopupQualidadeTest(unittest.TestCase):
         self.assertIn(b"rep_id: (q.dash && q.dash.id)", js)
 
 
+class GuiadoExtTest(unittest.TestCase):
+    """Guia de 1º uso: a extensão se identifica e avisa ao instalar.
+
+    A webui só some com o banner quando a API recebe `X-MiniDM-Ext`
+    (visto em ext_seen.json) — por isso TODAS as chamadas carregam o
+    header e o `onInstalled` faz um probe na hora de instalar.
+    """
+
+    def test_header_versao_em_todas_as_chamadas(self):
+        bg = _read("background.js")
+        self.assertIn(b"X-MiniDM-Ext", bg)
+        # def + probeApi + analyze + add
+        self.assertGreaterEqual(bg.count(b"EXT_HDR"), 4)
+        pop = _read("popup.js")
+        self.assertIn(b"X-MiniDM-Ext", pop)
+        # def + profiles + categories
+        self.assertGreaterEqual(pop.count(b"EXT_HDR"), 3)
+
+    def test_on_installed_prova_a_api(self):
+        bg = _read("background.js")
+        # instalar (carregar expandida OU política) marca o visto na
+        # hora: o guia da webui some na próxima verificação (10 s)
+        self.assertRegex(
+            bg,
+            rb"onInstalled\.addListener\(\(\) => \{[\s\S]{0,600}?"
+            rb"probeApi\(\)")
+
+    def test_probe_ainda_existe(self):
+        bg = _read("background.js")
+        self.assertIn(b"async function probeApi()", bg)
+
+
 if __name__ == "__main__":
     unittest.main()

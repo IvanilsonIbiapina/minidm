@@ -258,6 +258,11 @@ async function tick() {
     const d = await api("/status");
     setConn(true);
     render(d.tasks || []);
+    // guia visível: re-verifica a cada 10 s — instalou a extensão,
+    // o probe do onInstalled marca o visto e o banner some sozinho
+    if (!$("#ext-guide").hidden && (extTick = (extTick + 1) % 10) === 0) {
+      checkExt();
+    }
   } catch (_) {
     setConn(false);
   } finally {
@@ -627,6 +632,75 @@ $("#list").addEventListener("dragend", () => {
   tick();                      // devolve a ordem do servidor (se divergiu)
 });
 
+/* --------------------------------------- guia da extensão (1º uso) */
+/* Banner que some sozinho: a extensão manda X-MiniDM-Ext em cada
+   chamada, a API guarda em ext_seen.json e o GET /ext/status diz
+   "connected". Dispensado fica no localStorage (não insiste). */
+const EXT_DISMISS = "minidm-ext-dismissed";
+let extTick = 0;              // contador p/ re-verificar a cada 10 s
+
+function renderExtState(s) {
+  $("#ext-state").textContent = s.connected
+    ? `Conectada${s.version ? ` — v${s.version}` : ""}.`
+    : "Extensão ainda não detectada — instale para capturar vídeos " +
+      "durante a navegação.";
+  // política ExtensionInstallForcelist só existe no Windows
+  $("#ext-install").hidden = !s.windows;
+}
+
+async function checkExt() {
+  let s;
+  try { s = await api("/ext/status"); } catch (_) { return; }
+  if (s.connected) {
+    $("#ext-guide").hidden = true;   // pronta: some e não volta mais
+    return;
+  }
+  renderExtState(s);
+}
+
+/** Abre o guia só se: desktop + não dispensado + nunca vista. */
+async function maybeShowExtGuide() {
+  if (typeof ANDROID !== "undefined" && ANDROID) return;  // sem ext. no celular
+  try {
+    if (localStorage.getItem(EXT_DISMISS) === "1") return;
+  } catch (_) { /* armazenamento privado */ }
+  let s;
+  try { s = await api("/ext/status"); } catch (_) { return; }
+  if (s.connected) return;
+  renderExtState(s);
+  $("#ext-guide").hidden = false;
+}
+
+/** Ações do guia: install (política) e guided (passos manuais). */
+async function extAction(action) {
+  let r;
+  try {
+    r = await post("/ext", { action });
+  } catch (e) {
+    toast(e.message);   // ex.: "não deu para instalar: …"
+    return;
+  }
+  if (action === "guided") {
+    const ol = $("#ext-steps");
+    ol.innerHTML = (r.steps || []).map((s) => `<li>${esc(s)}</li>`).join("");
+    ol.hidden = false;
+    toast(r.copied_to_clipboard
+      ? "Pasta copiada — é ela que o navegador vai pedir (Ctrl+V)"
+      : "Siga os passos abaixo");
+  } else {
+    toast("Política gravada — abra o Chrome/Edge para instalar");
+    setTimeout(checkExt, 3000);   // instalação automática demora um pouco
+  }
+}
+
+$("#ext-close").addEventListener("click", () => {
+  $("#ext-guide").hidden = true;
+  try { localStorage.setItem(EXT_DISMISS, "1"); } catch (_) {}
+});
+$("#ext-install").addEventListener("click", () => extAction("install"));
+$("#ext-guided").addEventListener("click", () => extAction("guided"));
+$("#ext-check").addEventListener("click", () => checkExt());
+
 /* ------------------------------------------- configurações + SAF (APK) */
 /* Botões "Escolher…" só existem de verdade no APK: a ponte Java
    (window.MinidmBridge) só está lá — no navegador ficam ocultos. */
@@ -732,4 +806,5 @@ $("#cfg-form").addEventListener("submit", async (ev) => {
 
 /* -------------------------------------------------------------- início */
 loadCategories();
+maybeShowExtGuide();
 tick();

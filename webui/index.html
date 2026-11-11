@@ -47,6 +47,27 @@
   </form>
 </section>
 
+<!-- guia de primeiro uso: conectar a extensão do navegador (só desktop;
+     some sozinho quando a API vê a extensão — X-MiniDM-Ext) -->
+<div id="ext-guide" class="ext-guide" hidden>
+  <div class="ext-head">
+    <span class="ext-title">Conecte a extensão do navegador</span>
+    <button type="button" class="icon-btn" id="ext-close"
+            aria-label="Dispensar">&#10005;</button>
+  </div>
+  <p class="ext-desc">Como a extensão do IDM: detecta vídeos durante a
+    navegação e envia para esta fila. Funciona no computador — no
+    celular cole o link direto aqui.</p>
+  <div id="ext-state" class="ext-state">Verificando…</div>
+  <div class="ext-acts">
+    <button type="button" id="ext-install" class="primary" hidden>
+      Instalar agora (Chrome/Edge)</button>
+    <button type="button" id="ext-guided">Guia manual</button>
+    <button type="button" id="ext-check">Já instalei — verificar</button>
+  </div>
+  <ol id="ext-steps" class="ext-steps" hidden></ol>
+</div>
+
 <div class="toolbar">
   <span id="counts" class="counts">&nbsp;</span>
   <span class="acts">

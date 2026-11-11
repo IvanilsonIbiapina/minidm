@@ -12,6 +12,9 @@
 
 const $ = (sel) => document.querySelector(sel);
 
+// versão p/ a API marcar "extensão vista" (mesmo header do background)
+const EXT_HDR = { "X-MiniDM-Ext": chrome.runtime.getManifest().version };
+
 let currentTab = null;
 let pageTitle = "";
 
@@ -27,7 +30,8 @@ let _profilesCache = null;
 async function _profiles() {
   if (_profilesCache) return _profilesCache;
   try {
-    const r = await fetch("http://127.0.0.1:9742/profiles");
+    const r = await fetch("http://127.0.0.1:9742/profiles",
+                          { headers: EXT_HDR });
     const d = await r.json();
     _profilesCache = (d && d.profiles ? d.profiles : []).map((p) => p.name);
   } catch (e) {
@@ -41,7 +45,8 @@ let _catCache = null;
 async function _categories() {
   if (_catCache) return _catCache;
   try {
-    const r = await fetch("http://127.0.0.1:9742/categories");
+    const r = await fetch("http://127.0.0.1:9742/categories",
+                          { headers: EXT_HDR });
     _catCache = await r.json();
   } catch (e) {
     _catCache = null;
