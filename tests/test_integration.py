@@ -652,5 +652,131 @@ class TestOpenEndpoint(unittest.TestCase):
         self.assertEqual(cm.exception.code, 404)
 
 
+class TestConfigEndpoint(unittest.TestCase):
+    """POST /config (tela de configurações da webui) + GET estendido.
+
+    Valida ATÔMICA (requisição inteira rejeitada, nada aplicado em
+    meio-termo), persistência em config.json e `apply_config` ao vivo
+    (conorrência muda sem reiniciar a API).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="minidm-cfg-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.cfg = AppConfig(data_dir=self.tmp)
+        self.store = TaskStore(self.tmp)
+        self.sched = Scheduler(self.store, self.cfg)   # SEM start()
+        self.app = App(self.store, self.sched, self.cfg)
+        self.api = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(self.app))
+        threading.Thread(target=self.api.serve_forever, daemon=True).start()
+        self.addCleanup(self._stop_api)
+        self.base = f"http://127.0.0.1:{self.api.server_address[1]}"
+
+    def _stop_api(self):
+        self.api.shutdown()
+        self.api.server_close()
+
+    def _post(self, payload):
+        req = urllib.request.Request(
+            f"{self.base}/config", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    def _get(self):
+        with urllib.request.urlopen(f"{self.base}/config",
+                                    timeout=5) as r:
+            return json.loads(r.read())
+
+    def test_get_expoe_os_campos_editaveis(self):
+        d = self._get()
+        # proxy É string (a tela edita o valor real, não um bool)
+        self.assertEqual(d["proxy"], "")
+        self.assertIn("download_base", d)
+        self.assertIn("max_concurrent", d)
+        self.assertIn("cookies_from_browser", d)
+        self.assertIn("sponsorblock", d)
+        self.assertIn("android_public_downloads", d)
+        self.assertEqual(d["data_dir"], self.tmp)   # só leitura
+
+    def test_salva_aplica_e_persiste(self):
+        status, data = self._post({"max_concurrent": 5,
+                                   "throttle_bps": 2048,
+                                   "proxy": "http://127.0.0.1:8080"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(self.cfg.max_concurrent, 5)
+        self.assertEqual(self.cfg.throttle_bps, 2048)
+        self.assertEqual(self.cfg.proxy, "http://127.0.0.1:8080")
+        # persiste em config.json (sobrevive a reiniciar)
+        again = AppConfig.load(data_dir=self.tmp)
+        self.assertEqual(again.max_concurrent, 5)
+        self.assertEqual(again.proxy, "http://127.0.0.1:8080")
+
+    def test_rejeita_campo_nao_editavel_sem_aplicar_nada(self):
+        status, data = self._post({"data_dir": "/tmp/outro",
+                                   "max_concurrent": 7})
+        self.assertEqual(status, 400)
+        self.assertIn("data_dir", data["error"])
+        # atômico: o campo válido NÃO foi aplicado em meio-termo
+        self.assertEqual(self.cfg.max_concurrent, 3)
+
+    def test_rejeita_fora_do_limite(self):
+        status, data = self._post({"max_concurrent": 0})
+        self.assertEqual(status, 400)
+        self.assertIn("max_concurrent", data["error"])
+        status, _ = self._post({"max_connections": 9999})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.cfg.max_concurrent, 3)   # nada mudou
+
+    def test_rejeita_tipo_errado(self):
+        status, _ = self._post({"segments": "abc"})
+        self.assertEqual(status, 400)
+        # bool não é número (JSON true chega como bool)
+        status, _ = self._post({"retries": True})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.cfg.segments, 0)
+        status, _ = self._post({"nao_existe": 1})
+        self.assertEqual(status, 400)
+
+    def test_bool_e_enum(self):
+        status, _ = self._post({"download_archive": True,
+                                "cookies_from_browser": "firefox",
+                                "sponsorblock": "all"})
+        self.assertEqual(status, 200)
+        self.assertTrue(self.cfg.download_archive)
+        self.assertEqual(self.cfg.cookies_from_browser, "firefox")
+        self.assertEqual(self.cfg.sponsorblock, "all")
+        # string booleana também vale ("true" do select do form)
+        status, _ = self._post({"verify_signatures": "false"})
+        self.assertEqual(status, 200)
+        self.assertFalse(self.cfg.verify_signatures)
+        # enum fora da lista
+        status, data = self._post({"cookies_from_browser": "ie6"})
+        self.assertEqual(status, 400)
+        self.assertIn("cookies_from_browser", data["error"])
+
+    def test_payload_vazio_400(self):
+        status, _ = self._post({})
+        self.assertEqual(status, 400)
+
+    def test_apply_config_cresce_o_pool_ao_vivo(self):
+        # pool já rodando com 1 worker: subir a concorrência nasce mais
+        # workers na hora (sem reiniciar a API)
+        self.cfg.max_concurrent = 1          # começa com 1 (default é 3)
+        self.sched.start()
+        self.assertEqual(len(self.sched._workers), 1)
+        status, _ = self._post({"max_concurrent": 3})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.sched._workers), 3)
+        # semáforo/bucket novos valem p/ as próximas tarefas
+        self.assertIsNotNone(self.sched.sem)
+        self.addCleanup(self.sched.shutdown)
+
+
 if __name__ == "__main__":
     unittest.main()

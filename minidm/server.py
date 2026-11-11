@@ -11,7 +11,8 @@ Endpoints:
     POST /remove   {id, delete}   -> remove da fila
     POST /reorder  {ids}          -> reordena a fila (arrasto/subir/descer)
     POST /open     {id, what}     -> abre pasta ou arquivo no explorador
-    GET  /config                  -> configuração efetiva
+    GET  /config                  -> configuração efetiva (campos editáveis)
+    POST /config  {campo: valor}  -> salva e aplica ao vivo (valida tudo)
     POST /media/analyze {url,...} -> lista qualidades de vídeo (HLS/DASH/dir.)
     GET  /update.xml              -> manifest da extensão (política forcelist)
     GET  /minidm.crx              -> pacote CRX3 assinado da extensão
@@ -92,6 +93,74 @@ def _open_path(path: str) -> None:
         subprocess.Popen(["open", path])  # noqa: S606
     else:
         subprocess.Popen(["xdg-open", path])  # noqa: S606
+
+
+# --------------------------------------------- configuração editável
+# Tela de configurações da webui (POST /config): só campos seguros p/
+# editar por aqui. `data_dir` (identidade da fila), `api_port`/
+# `api_enabled` (exigem reiniciar a API) e `cookie` (segredo) ficam
+# de fora. chave -> (tipo, mínimo ou conjunto, máximo)
+_CFG_EDIT: dict[str, tuple] = {
+    "max_concurrent": ("int", 1, 64),
+    "max_connections": ("int", 1, 512),
+    "segments": ("int", 0, 128),
+    "retries": ("int", 0, 100),
+    "throttle_bps": ("int", 0, None),          # 0 = sem limite
+    "concurrent_fragments": ("int", 0, 64),
+    "playlist_limit": ("int", 1, 5000),
+    "use_ytdlp_downloader": ("bool", None, None),
+    "download_archive": ("bool", None, None),
+    "android_public_downloads": ("bool", None, None),
+    "verify_signatures": ("bool", None, None),
+    "remote_checksums": ("bool", None, None),
+    "cookies_from_browser": ("enum", ("", "chrome", "chromium", "edge",
+                                      "firefox", "brave", "opera",
+                                      "opera_gx", "vivaldi"), None),
+    "sponsorblock": ("enum", ("", "all", "sponsor",
+                              "sponsor,selfpromo",
+                              "sponsor,selfpromo,interaction,intro,outro,"
+                              "preview,music_offtopic"), None),
+    "proxy": ("str", 0, 300),
+    "download_base": ("str", 0, 400),
+}
+
+
+def _cfg_value(spec: tuple, raw) -> object:
+    """Converte/valida um valor da tela de configurações.
+
+    Levanta `TypeError`/`ValueError` para o campo errado — o `/config`
+    rejeita a requisição INTEIRA (não aplica nada em meio-termo).
+    """
+    kind, lo, hi = spec
+    if kind == "bool":
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, int) and raw in (0, 1):
+            return bool(raw)
+        if isinstance(raw, str) and raw.lower() in ("true", "false", "1",
+                                                    "0", "on", "off"):
+            return raw.lower() in ("true", "1", "on")
+        raise ValueError("esperado booleano")
+    if kind in ("int", "float"):
+        if isinstance(raw, bool):
+            raise ValueError("booleano não é número")
+        v = int(raw) if kind == "int" else float(raw)
+        if lo is not None and v < lo:
+            raise ValueError(f"mínimo {lo}")
+        if hi is not None and v > hi:
+            raise ValueError(f"máximo {hi}")
+        return v
+    if kind == "enum":                     # `lo` = conjunto permitido
+        s = str(raw).strip().lower()
+        if s not in lo:
+            raise ValueError("valor fora da lista")
+        return s
+    if kind == "str":
+        s = str(raw).strip()
+        if hi is not None and len(s) > hi:
+            raise ValueError(f"máximo {hi} caracteres")
+        return s
+    raise ValueError("tipo desconhecido")
 
 
 # ------------------------------------------------------- nome em paralelo
@@ -257,11 +326,24 @@ def make_handler(app: App):
                     "segments": c.segments,
                     "retries": c.retries,
                     "throttle_bps": c.throttle_bps,
-                    "proxy": bool(c.proxy),
+                    # string ("", "http://host:8080") — a tela de
+                    # configurações edita o valor real (não o bool)
+                    "proxy": c.proxy,
                     "api_port": c.api_port,
                     # pasta interna = destino quando não há categoria —
                     # a webui mostra no placeholder do campo de destino
                     "data_dir": app.store.data_dir,
+                    # tela de configurações (POST /config edita estes)
+                    "concurrent_fragments": c.concurrent_fragments,
+                    "playlist_limit": c.playlist_limit,
+                    "cookies_from_browser": c.cookies_from_browser,
+                    "sponsorblock": c.sponsorblock,
+                    "use_ytdlp_downloader": c.use_ytdlp_downloader,
+                    "download_archive": c.download_archive,
+                    "download_base": c.download_base,
+                    "android_public_downloads": c.android_public_downloads,
+                    "verify_signatures": c.verify_signatures,
+                    "remote_checksums": c.remote_checksums,
                 })
             elif path == "/task":
                 # registro COMPLETO da tarefa (diálogo de propriedades):
@@ -307,6 +389,9 @@ def make_handler(app: App):
             elif path == "/open":
                 # botão direito/⋯ da webui: abrir pasta ou arquivo
                 self._open_task(payload)
+            elif path == "/config":
+                # tela de configurações da webui (persiste + aplica ao vivo)
+                self._set_config(payload)
             elif path == "/start":
                 ids = None if payload.get("all") else _ids(payload)
                 n = app.scheduler.submit(ids)
@@ -700,6 +785,42 @@ def make_handler(app: App):
                 self._json({"error": f"não deu para abrir: {e}"}, 500)
                 return
             self._json({"ok": True, "path": path})
+
+        # --------------------------------------------------------- /config
+        def _set_config(self, payload):
+            """Salva a configuração (tela de configurações da webui).
+
+            Valida TUDO antes de aplicar (nada de meio-termo gravado),
+            persiste em `config.json` e chama `scheduler.apply_config`
+            — concorrência/limites valem sem reiniciar a API.
+            """
+            if not isinstance(payload, dict) or not payload:
+                self._json({"error": "objeto com campos obrigatório"}, 400)
+                return
+            pend: dict[str, object] = {}
+            errs: dict[str, str] = {}
+            for k, raw in payload.items():
+                spec = _CFG_EDIT.get(k)
+                if spec is None:
+                    errs[k] = "campo não editável"
+                    continue
+                try:
+                    pend[k] = _cfg_value(spec, raw)
+                except (TypeError, ValueError):
+                    errs[k] = "valor inválido"
+            if errs:
+                detalhe = "; ".join(f"{k}: {v}" for k, v in errs.items())
+                self._json({"error": f"config inválida ({detalhe})"}, 400)
+                return
+            for k, v in pend.items():
+                setattr(app.config, k, v)
+            try:
+                app.config.save()
+            except OSError as e:
+                self._json({"error": f"não deu para gravar: {e}"}, 500)
+                return
+            app.scheduler.apply_config()   # workers/semáforo/archive
+            self._json({"ok": True})
 
     return Handler
 

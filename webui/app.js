@@ -93,7 +93,12 @@ async function loadCategories() {
       (d.categories || []).map((c) =>
         `<option value="${esc(c.name)}"${c === def ? " selected" : ""}>` +
         `${esc(c.name)}</option>`).join("");
-    $("#category").addEventListener("change", refreshDestPlaceholder);
+    // guarda: recarregar p/ atualizar categorias após salvar config
+    // não deve duplicar o listener de change
+    if (!loadCategories._bound) {
+      $("#category").addEventListener("change", refreshDestPlaceholder);
+      loadCategories._bound = true;
+    }
     refreshDestPlaceholder();
   } catch (_) { /* offline: fica só "Automático" */ }
   try {
@@ -445,6 +450,7 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
   closeCtx();
   $("#props").hidden = true;
+  closeCfg();
 });
 
 $("#list").addEventListener("contextmenu", (ev) => {
@@ -619,6 +625,109 @@ $("#list").addEventListener("dragend", () => {
     el.classList.remove("dragging", "over");
   }
   tick();                      // devolve a ordem do servidor (se divergiu)
+});
+
+/* ------------------------------------------- configurações + SAF (APK) */
+/* Botões "Escolher…" só existem de verdade no APK: a ponte Java
+   (window.MinidmBridge) só está lá — no navegador ficam ocultos. */
+const ANDROID = !!window.MinidmBridge;
+if (ANDROID) {
+  $("#dest-pick").hidden = false;
+  $("#cfg-pick").hidden = false;
+}
+
+/** Callback do seletor de pastas do Android (ACTION_OPEN_DOCUMENT_TREE).
+   id = input que pediu; path vazio = cancelou/não deu para usar. */
+window.minidmFolderPicked = (id, path) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!path) {
+    toast("não deu para usar essa pasta neste Android");
+    return;
+  }
+  el.value = path;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  toast("pasta escolhida");
+};
+
+/** Pede ao Android para abrir o seletor de pastas (SAF). */
+function askFolder(inputId) {
+  if (!ANDROID) return;
+  try { window.MinidmBridge.pickFolder(inputId); }
+  catch (_) { toast("seletor de pastas indisponível"); }
+}
+$("#dest-pick").addEventListener("click", () => askFolder("dest"));
+$("#cfg-pick").addEventListener("click", () => askFolder("cf-download_base"));
+
+/** Campos editáveis da tela (espelho do _CFG_EDIT do server.py). */
+const CFG_FIELDS = [
+  "max_concurrent", "max_connections", "segments", "retries",
+  "throttle_bps", "concurrent_fragments", "playlist_limit",
+  "proxy", "cookies_from_browser", "sponsorblock",
+  "use_ytdlp_downloader", "download_archive", "download_base",
+  "android_public_downloads", "verify_signatures", "remote_checksums",
+];
+
+/** Lê o form de configurações -> payload (throttle KB/s -> bytes/s). */
+function cfgPayload() {
+  const p = {};
+  for (const k of CFG_FIELDS) {
+    const el = $(`#cf-${k}`);
+    if (!el) continue;
+    if (k === "throttle_bps") {
+      p[k] = Math.max(0, Math.round((Number(el.value) || 0) * 1024));
+    } else if (el.tagName === "SELECT") {
+      p[k] = el.value === "true" ? true : el.value === "false" ? false
+        : el.value;
+    } else {
+      p[k] = el.value;
+    }
+  }
+  return p;
+}
+
+/** Abre a tela de configurações já preenchida (GET /config). */
+async function openCfg() {
+  let c;
+  try {
+    c = await api("/config");
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  for (const k of CFG_FIELDS) {
+    const el = $(`#cf-${k}`);
+    if (!el || c[k] === undefined) continue;
+    if (k === "throttle_bps") el.value = Math.round((c[k] || 0) / 1024);
+    else if (el.tagName === "SELECT") el.value = String(c[k]);
+    else el.value = c[k];
+  }
+  $("#cfg").hidden = false;
+}
+
+function closeCfg() { $("#cfg").hidden = true; }
+
+$("#cfg-btn").addEventListener("click", openCfg);
+$("#cfg-close").addEventListener("click", closeCfg);
+$("#cfg-cancel").addEventListener("click", closeCfg);
+$("#cfg").addEventListener("click", (ev) => {
+  if (ev.target.id === "cfg") closeCfg();       // clique fora fecha
+});
+
+$("#cfg-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    await post("/config", cfgPayload());
+  } catch (e) {
+    // ex.: "config inválida (max_concurrent: máximo 64)" — nada foi gravado
+    toast(e.message);
+    return;
+  }
+  closeCfg();
+  toast("Configurações salvas");
+  // download_base mudou: recarrega categorias/placeholder do destino
+  loadCategories();
+  tick();
 });
 
 /* -------------------------------------------------------------- início */

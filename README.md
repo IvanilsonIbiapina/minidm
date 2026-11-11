@@ -42,6 +42,8 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Perfis de download** (conceito do YT-DLnis) | `add --profile Música` — perfil define qualidade, formato, pasta e nome |
 | **Escolha de qualidade/formato** | `add --height 720 --ext mp4` (ou o card da extensão, ou a **caixa de qualidades da webui** antes do Baixar) — teto de altura + container, com fallback p/ DASH-only |
 | **Interações da fila na webui** | botão direito/**⋯** no card (estilo IDM): **abrir pasta/arquivo** (`POST /open`, caminho do registro — destino publicado no Android), **copiar URL** (clipboard com fallback), **propriedades** (`GET /task`, registro completo), **↑/↓ subir-descer** e **arrastar** p/ reordenar (`POST /reorder`) |
+| **Configurações na webui** | sheet **⚙** (concorrência/banda, resiliência, yt-dlp, rede/pastas) grava via `POST /config` — **valida tudo antes de aplicar** (atômico), persiste em `config.json` e reconfigura o pool **ao vivo** (`apply_config`: workers/semáforo/archive sem reiniciar); `max_concurrent` é lido a cada claim (descer/suber vale na hora) |
+| **Seletor de pasta no Android** | botões **"Escolher…"** no destino e na base de categorias via SAF (`ACTION_OPEN_DOCUMENT_TREE` → caminho físico com **probe de escrita** — falha honesta cedo se o SO bloquear); ponte `MinidmBridge` só aparece no APK, cancelar é silencioso |
 | **Categorias estilo IDM** (pasta+perfil) | `--category Vídeos` — separa por pastas (Vídeos, Músicas, Programas…); base configurável (`download_base`), Vídeos é a padrão |
 | **Templates de comando yt-dlp** | `CommandTemplate` com `url_regex` de ativação automática (`profiles` no CLI) |
 | **Template de nome de arquivo** | motor `{title} [{id}].{ext}` com preview e sanitização (`nametpl.py`) |
@@ -569,6 +571,12 @@ no app (Chaquopy 17.2, Python 3.11, minSdk 24) e a interface é o próprio
   desligar: `android_public_downloads false`; a fila fica em `~/.minidm`
   (HOME do app); o card da webui mostra o **destino publicado**
   (`Download/…`, caminho completo no tooltip);
+* **pasta destino**: os botões **"Escolher…"** (campo de destino e base
+  de categorias nas ⚙ configurações) abrem o seletor nativo do Android
+  (SAF `ACTION_OPEN_DOCUMENT_TREE`) — a tree URI vira caminho físico com
+  **probe de escrita**: se o sistema bloquear (Android 10 scoped), a
+  webui avisa em vez de prometer pasta que não grava; no navegador
+  (desktop) os botões não aparecem;
 * **nomes de arquivo**: `Content-Disposition` → nome com extensão no
   link → **título da página** (o `<title>` extraído na análise) → o
   segmento do URL — nunca mais o id cru do YouTube (`5dWeeUIZFgA`);
@@ -674,7 +682,8 @@ GET  /task?id=                -> registro completo da tarefa (propriedades:
                                  — campos que o snapshot do /status não tem)
 GET  /                        -> webui (UI no navegador/WebView do APK)
 GET  /webui/<arquivo>         -> assets da webui (style.css, app.js, …)
-GET  /config                  -> configuração efetiva
+GET  /config                  -> configuração efetiva (inclui os campos
+                                 editáveis da tela de configurações)
 GET  /profiles                -> perfis + templates de comando (popup)
 POST /add      {url, filename?, dir?, kind?, referer?, page_title?,
                 quality?|quality_url?, profile?, ytdlp?, mirrors?, sha256?,
@@ -692,6 +701,10 @@ POST /reorder  {ids:[…]}      -> reordena a fila (1º = próxima; arrasto/
 POST /open     {id, what}     -> abre no explorador padrão: what="folder"
                                  (destino publicado ou dest_dir) ou
                                  "file" (published_path || final_path)
+POST /config  {campo: valor}  -> salva e aplica ao vivo (valida a requisição
+                                 inteira antes — 400 nada é gravado; campos
+                                 não editáveis como data_dir/api_port/cookie
+                                 são rejeitados; persiste + apply_config)
 POST /media/analyze {url, referer?, page_title?, cookie?, user_agent?,
                      proxy?, ytdlp?}
                    -> {ok, kind, qualities:[{label,url,bandwidth,
@@ -777,7 +790,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           536 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API (incl. /open + /task), GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila), Android/tray/pub)
+tests/           551 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder + gate de concorrência ao vivo, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API (incl. /open + /task + /config atômico), GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila/configurações), Android (SAF/ponte Java + tray/pub))
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

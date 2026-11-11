@@ -167,6 +167,32 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b".card.dragging", css)           # visual do arrasto
         self.assertIn(b".props-list", css)
 
+    def test_configuracoes_e_seletor_de_pasta(self):
+        """Tela de configurações (POST /config) + botões "Escolher…" do
+        seletor de pastas do Android (ponte MinidmBridge/SAF)."""
+        _, _, html = self._get("/")
+        self.assertIn(b'id="cfg-btn"', html)           # ⚙ no header
+        self.assertIn(b'id="cfg"', html)               # sheet
+        self.assertIn(b'id="cfg-form"', html)
+        self.assertIn(b'id="cf-max_concurrent"', html)
+        self.assertIn(b'id="cf-throttle_bps"', html)   # exibido em KB/s
+        self.assertIn(b'id="cf-proxy"', html)
+        self.assertIn(b'id="cf-download_base"', html)
+        self.assertIn(b'id="dest-pick"', html)         # Escolher… (#dest)
+        self.assertIn(b'id="cfg-pick"', html)          # Escolher… (base)
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"MinidmBridge", js)             # só existe no APK
+        self.assertIn(b"minidmFolderPicked", js)       # callback do Java
+        self.assertIn(b"function openCfg", js)
+        self.assertIn(b"function cfgPayload", js)
+        self.assertIn(b"throttle_bps", js)             # x1024 na saída
+        self.assertIn(b'"/config"', js)
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b".cfg-group", css)
+        self.assertIn(b".fld", css)
+        self.assertIn(b".pick-row", css)
+        self.assertIn(b".sheet-acts", css)
+
 
 if __name__ == "__main__":
     unittest.main()

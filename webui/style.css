@@ -95,6 +95,9 @@ body {
 }
 .conn.off { color: var(--err); }
 
+/* botões do topo (⚙ configurações + tema) */
+.top-acts { display: flex; gap: 8px; }
+
 .icon-btn {
   border: 1px solid var(--border);
   background: var(--card);
@@ -118,7 +121,7 @@ body {
 
 .row.sub { justify-content: space-between; align-items: center; }
 
-#url {
+#url, #dest {
   flex: 1;
   min-width: 0;
   padding: 12px 14px;
@@ -129,7 +132,7 @@ body {
   font-size: 16px;           /* iOS não dá zoom em < 16px */
   outline: none;
 }
-#url:focus { border-color: var(--accent); }
+#url:focus, #dest:focus { border-color: var(--accent); }
 
 button {
   font-family: inherit;
@@ -400,6 +403,66 @@ select {
   margin: 0;
   font-family: var(--mono);
   user-select: all;
+}
+
+/* -------------------------------------------------- tela de configurações */
+#cfg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cfg-group {
+  margin: 0;
+  min-width: 0;              /* fieldset tem min-width:auto por padrão */
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cfg-group legend {
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.fld {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fld > span:not(.pick-row) {
+  font-size: 13px;
+  color: var(--muted);
+}
+.fld input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 16px;           /* iOS não dá zoom em < 16px */
+  outline: none;
+}
+.fld input:focus { border-color: var(--accent); }
+.fld select { width: 100%; }
+
+/* input + botão "Escolher…" na mesma linha (pasta base) */
+.pick-row { display: flex; gap: 8px; }
+.pick-row input { flex: 1; min-width: 0; }
+.pick-row button { flex-shrink: 0; }
+
+.sheet-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
 }
 
 .empty {

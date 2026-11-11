@@ -14,7 +14,11 @@
     <span>miniDM</span>
     <span id="conn" class="conn" title="conexão com a API local">&#9679;</span>
   </div>
-  <button id="theme-btn" class="icon-btn" type="button" aria-label="Alternar tema">&#9684;</button>
+  <span class="top-acts">
+    <button id="cfg-btn" class="icon-btn" type="button"
+            aria-label="Configurações" title="Configurações">&#9881;</button>
+    <button id="theme-btn" class="icon-btn" type="button" aria-label="Alternar tema">&#9684;</button>
+  </span>
 </header>
 
 <section class="add">
@@ -37,6 +41,8 @@
       <input id="dest" name="dest" type="text" spellcheck="false"
              autocomplete="off" aria-label="Pasta de destino"
              placeholder="Pasta padrão da categoria">
+      <!-- só aparece no APK (window.MinidmBridge): SAF escolhe a pasta -->
+      <button id="dest-pick" class="ghost" type="button" hidden>Escolher…</button>
     </div>
   </form>
 </section>
@@ -102,6 +108,115 @@
               aria-label="Fechar">&#10005;</button>
     </div>
     <dl id="props-list" class="props-list"></dl>
+  </div>
+</div>
+
+<!-- configurações (POST /config — persiste e aplica ao vivo) -->
+<div id="cfg" class="sheet-back" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="cfg-title">
+    <div class="sheet-head">
+      <span id="cfg-title">Configurações</span>
+      <button type="button" class="icon-btn" id="cfg-close"
+              aria-label="Fechar">&#10005;</button>
+    </div>
+    <form id="cfg-form" autocomplete="off">
+      <fieldset class="cfg-group">
+        <legend>Concorrência e banda</legend>
+        <label class="fld"><span>Downloads simultâneos</span>
+          <input id="cf-max_concurrent" type="number" inputmode="numeric"
+                 min="1" max="64" step="1"></label>
+        <label class="fld"><span>Conexões no total</span>
+          <input id="cf-max_connections" type="number" inputmode="numeric"
+                 min="1" max="512" step="1"></label>
+        <label class="fld"><span>Segmentos por arquivo (0 = automático)</span>
+          <input id="cf-segments" type="number" inputmode="numeric"
+                 min="0" max="128" step="1"></label>
+        <label class="fld"><span>Fragmentos simultâneos (HLS/DASH)</span>
+          <input id="cf-concurrent_fragments" type="number" inputmode="numeric"
+                 min="0" max="64" step="1"></label>
+        <label class="fld"><span>Limite de velocidade (KB/s, 0 = sem limite)</span>
+          <input id="cf-throttle_bps" type="number" inputmode="numeric"
+                 min="0" step="1"></label>
+      </fieldset>
+
+      <fieldset class="cfg-group">
+        <legend>Resiliência</legend>
+        <label class="fld"><span>Tentativas por segmento</span>
+          <input id="cf-retries" type="number" inputmode="numeric"
+                 min="0" max="100" step="1"></label>
+        <label class="fld"><span>Limite de playlist (yt-dlp)</span>
+          <input id="cf-playlist_limit" type="number" inputmode="numeric"
+                 min="1" max="5000" step="1"></label>
+        <label class="fld"><span>Arquivo de URLs já baixadas</span>
+          <select id="cf-download_archive">
+            <option value="true">ligado (pula repetidas)</option>
+            <option value="false">desligado</option>
+          </select></label>
+        <label class="fld"><span>Verificar assinatura (.exe/.dll)</span>
+          <select id="cf-verify_signatures">
+            <option value="true">sim</option>
+            <option value="false">não</option>
+          </select></label>
+        <label class="fld"><span>Checksum do servidor (.sha256/.md5)</span>
+          <select id="cf-remote_checksums">
+            <option value="true">sim</option>
+            <option value="false">não</option>
+          </select></label>
+      </fieldset>
+
+      <fieldset class="cfg-group">
+        <legend>Vídeos (yt-dlp)</legend>
+        <label class="fld"><span>Baixador in-process</span>
+          <select id="cf-use_ytdlp_downloader">
+            <option value="true">ligado (mais rápido)</option>
+            <option value="false">desligado (CLI externa)</option>
+          </select></label>
+        <label class="fld"><span>Cookies do navegador</span>
+          <select id="cf-cookies_from_browser">
+            <option value="">nenhum</option>
+            <option value="chrome">Chrome</option>
+            <option value="chromium">Chromium</option>
+            <option value="edge">Edge</option>
+            <option value="firefox">Firefox</option>
+            <option value="brave">Brave</option>
+            <option value="opera">Opera</option>
+            <option value="opera_gx">Opera GX</option>
+            <option value="vivaldi">Vivaldi</option>
+          </select></label>
+        <label class="fld"><span>SponsorBlock</span>
+          <select id="cf-sponsorblock">
+            <option value="">desligado</option>
+            <option value="all">tudo</option>
+            <option value="sponsor">só patrocínio</option>
+            <option value="sponsor,selfpromo">patrocínio + autopromoção</option>
+            <option value="sponsor,selfpromo,interaction,intro,outro,preview,music_offtopic">
+              todos os tipos</option>
+          </select></label>
+      </fieldset>
+
+      <fieldset class="cfg-group">
+        <legend>Rede e pastas</legend>
+        <label class="fld"><span>Proxy (http://host:porta, vazio = direto)</span>
+          <input id="cf-proxy" type="text" spellcheck="false"
+                 autocomplete="off" placeholder="http://127.0.0.1:8080"></label>
+        <label class="fld"><span>Pasta base das categorias</span>
+          <span class="pick-row">
+            <input id="cf-download_base" type="text" spellcheck="false"
+                   autocomplete="off" placeholder="~/Downloads">
+            <button id="cfg-pick" class="ghost" type="button" hidden>Escolher…</button>
+          </span></label>
+        <label class="fld"><span>Publicar em Download/ (Android)</span>
+          <select id="cf-android_public_downloads">
+            <option value="true">sim</option>
+            <option value="false">não (só pasta interna)</option>
+          </select></label>
+      </fieldset>
+
+      <div class="sheet-acts">
+        <button type="button" class="ghost" id="cfg-cancel">Cancelar</button>
+        <button type="submit" class="primary">Salvar</button>
+      </div>
+    </form>
   </div>
 </div>
 

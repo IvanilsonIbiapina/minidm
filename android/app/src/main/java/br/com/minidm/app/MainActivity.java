@@ -13,7 +13,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.DocumentsContract;
 import android.provider.MediaStore;
+import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -48,6 +50,10 @@ public class MainActivity extends Activity {
     private static final int DEFAULT_PORT = 9742;   // AppConfig.api_port
     private static final int BOOT_TRIES = 100;      // ~10 s esperando a API
     private static final int PERMISSION_REQ = 1;
+    private static final int PICK_FOLDER_REQ = 2;   // ACTION_OPEN_DOCUMENT_TREE
+
+    /** id do input da webui que pediu a pasta (sobrevive à rotação). */
+    private static volatile String pendingPickId;
 
     /** context da app (sobrevive à Activity) p/ o Python publicar arquivos. */
     private static volatile Context appCtx;
@@ -143,6 +149,10 @@ public class MainActivity extends Activity {
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
         web.setWebViewClient(new WebViewClient());
 
+        // ponte do seletor de pastas (SAF): o webui só mostra os botões
+        // "Escolher…" se window.MinidmBridge existir (ver app.js)
+        web.addJavascriptInterface(new Bridge(), "MinidmBridge");
+
         boot();
 
         // ACTION_SEND (menu "Compartilhar"): só na abertura real — uma
@@ -229,6 +239,128 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> Toast.makeText(getApplicationContext(),
                     toast, Toast.LENGTH_LONG).show());
         }, "minidm-share").start();
+    }
+
+    // --------------------------------------------------- seletor de pastas
+    // SAF (Storage Access Framework) p/ a webui escolher a pasta de
+    // destino no Android — botões "Escolher…" do #dest e da base de
+    // categorias. O ACTION_OPEN_DOCUMENT_TREE devolve uma tree URI; aqui
+    // ela vira um caminho de arquivo (a engine grava por File API) com
+    // um probe de escrita — se o SO bloquear, o webui avisa em vez de
+    // prometer uma pasta que não grava.
+
+    /** Ponte exposta ao JS como {@code window.MinidmBridge}. */
+    public class Bridge {
+
+        /**
+         * Pede o seletor de pastas do sistema. Chamado do JS numa
+         * thread própria — {@code startActivityForResult} exige a UI.
+         *
+         * @param id id do input que pediu ("dest", "cf-download_base")
+         */
+        @JavascriptInterface
+        public void pickFolder(final String id) {
+            runOnUiThread(() -> {
+                pendingPickId = (id == null || id.isEmpty()) ? null : id;
+                try {
+                    startActivityForResult(
+                            new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE),
+                            PICK_FOLDER_REQ);
+                } catch (Throwable t) {
+                    pendingPickId = null;
+                    Toast.makeText(getApplicationContext(),
+                            "Seletor de pastas indisponível",
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+    }
+
+    /** Resposta do seletor: cancelar = sem callback (silencioso). */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode,
+                                    Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_FOLDER_REQ) return;
+        String id = pendingPickId;
+        pendingPickId = null;
+        if (resultCode != RESULT_OK || data == null
+                || data.getData() == null) {
+            return;   // cancelou: nada muda na webui (sem toast)
+        }
+        // path vazio = provedor sem caminho físico ou probe de escrita
+        // falhou — o webui mostra "não deu para usar essa pasta"
+        finishFolderPicker(id, treePath(data.getData()));
+    }
+
+    /**
+     * Converte a tree URI do SAF em caminho de arquivo, com probe de
+     * escrita.
+     *
+     * <p>{@code primary:…} vira {@code Environment.getExternalStorageDirectory()}
+     * + resto (é o caso do seletor do sistema); {@code raw:…} é caminho
+     * direto; qualquer outro provedor (nuvem etc.) não tem caminho
+     * físico — devolve "". O probe cria e apaga um arquivo na pasta:
+     * no Android 11+ o FUSE deixa gravar em pastas públicas via File
+     * API, no Android 10 scoped storage bloqueia — falha honesta cedo.
+     *
+     * @return caminho absoluto gravável, ou "" se não der para usar
+     */
+    private static String treePath(Uri tree) {
+        try {
+            String docId = DocumentsContract.getTreeDocumentId(tree);
+            String path;
+            if (docId.startsWith("primary:")) {
+                String rest = docId.substring("primary:".length());
+                File base = Environment.getExternalStorageDirectory();
+                path = rest.isEmpty() ? base.getAbsolutePath()
+                        : new File(base, rest).getAbsolutePath();
+            } else if (docId.startsWith("raw:")) {
+                path = docId.substring("raw:".length());
+            } else {
+                return "";   // provedor sem caminho físico (ex.: nuvem)
+            }
+            File dir = new File(path);
+            if (!dir.isDirectory()) return "";
+            File probe = new File(dir, ".minidm-probe");
+            if (probe.exists()) probe.delete();   // resto de antes
+            if (!probe.createNewFile()) return "";
+            probe.delete();                       // best-effort
+            return path;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** Manda o resultado ao webui: {@code minidmFolderPicked(id, path)}. */
+    private void finishFolderPicker(String id, String path) {
+        if (id == null || id.isEmpty()) return;
+        evalJs("minidmFolderPicked(" + jsQuote(id) + ","
+                + jsQuote(path == null ? "" : path) + ")");
+    }
+
+    /** Avalia JS na WebView (sempre na thread da UI — estamos nela). */
+    private void evalJs(String js) {
+        try {
+            web.evaluateJavascript(js, null);
+        } catch (Throwable ignore) {
+            // WebView já destruída: o resultado do picker se perde
+        }
+    }
+
+    /** Escapa uma string como literal JS entre aspas duplas. */
+    private static String jsQuote(String s) {
+        StringBuilder b = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' || c == '"') b.append('\\').append(c);
+            else if (c == '\n') b.append("\\n");
+            else if (c == '\r') { /* ignora */ }
+            else if (c == '\u2028') b.append("\\u2028");
+            else if (c == '\u2029') b.append("\\u2029");
+            else b.append(c);
+        }
+        return b.append('"').toString();
     }
 
     // ------------------------------------------------------- Download/ público

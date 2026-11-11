@@ -276,5 +276,62 @@ class TestSchedulerPublica(unittest.TestCase):
             self.assertEqual(row["published_path"], t.published_path)
 
 
+class TestPonteSafJava(unittest.TestCase):
+    """Conteúdo da ponte do seletor de pastas na MainActivity.java.
+
+    Sem Android SDK na máquina de dev (compila só na CI), o teste lê a
+    fonte Java como bytes e confere o contrato com a webui: a ponte
+    `MinidmBridge.pickFolder` abre o ACTION_OPEN_DOCUMENT_TREE e o
+    resultado volta como `minidmFolderPicked(id, path)` — o mesmo
+    callback que o app.js define. O comportamento real (SAF, probe de
+    escrita) só se valida no aparelho.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, "android", "app", "src", "main", "java",
+                            "br", "com", "minidm", "app", "MainActivity.java")
+        with open(path, "rb") as f:
+            cls.src = f.read()
+
+    def test_ponte_exposta_antes_de_carregar_o_webui(self):
+        # a webui lê window.MinidmBridge no parse do app.js: a ponte
+        # tem que estar registrada ANTES do boot()/loadUrl
+        self.assertIn(b'addJavascriptInterface(new Bridge(), "MinidmBridge")',
+                      self.src)
+        self.assertRegex(
+            self.src,
+            rb"addJavascriptInterface\([\s\S]{0,400}?boot\(\);")
+
+    def test_pickFolder_abre_o_seletor_saf(self):
+        self.assertIn(b"@JavascriptInterface", self.src)
+        self.assertIn(b"public void pickFolder(final String id)", self.src)
+        self.assertIn(b"Intent.ACTION_OPEN_DOCUMENT_TREE", self.src)
+        # startActivityForResult exige a thread da UI
+        self.assertRegex(self.src,
+                         rb"public void pickFolder\([\s\S]{0,120}?"
+                         rb"runOnUiThread")
+        self.assertIn(b"PICK_FOLDER_REQ", self.src)
+
+    def test_resultado_volta_como_minidmFolderPicked(self):
+        # o callback global que o app.js define (id do input + path)
+        self.assertIn(b"minidmFolderPicked(", self.src)
+        self.assertIn(b"finishFolderPicker", self.src)
+        self.assertIn(b"onActivityResult", self.src)
+        # cancelar (RESULT_OK ausente) = sem callback, sem toast
+        self.assertRegex(self.src,
+                         rb"if \(resultCode != RESULT_OK[\s\S]{0,120}?"
+                         rb"return;")
+
+    def test_tree_path_com_probe_de_escrita(self):
+        # tree URI -> caminho físico com probe: falha honesta cedo em
+        # vez de prometer pasta que o SO bloqueia (scoped storage)
+        self.assertIn(b"DocumentsContract.getTreeDocumentId", self.src)
+        self.assertIn(b"getExternalStorageDirectory", self.src)
+        self.assertIn(b"createNewFile", self.src)
+        self.assertIn(b'.minidm-probe', self.src)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,39 @@ class Scheduler:
             th.start()
             self._workers.append(th)
 
+    def apply_config(self) -> None:
+        """Reconfigura o pool AO VIVO (tela de configurações da webui).
+
+        * concorrência: nasce mais workers quando o `max_concurrent`
+          subiu — o `_claim` já lê o limite a cada tarefa, então DESCEM
+          vale na hora (workers ociosos só esperam no cv);
+        * semáforo/bucket novos valem para as PRÓXIMAS tarefas (as em
+          andamento seguem com os antigos — sem soltar permissão alheia);
+        * download-archive liga/desliga sem reiniciar.
+
+        Só age em um pool já iniciado (`start()`): um scheduler criado
+        sem workers (testes, CLI) não ganha thread nenhuma aqui.
+        """
+        with self._cv:
+            if self._workers:
+                want = max(1, int(self.config.max_concurrent or 1))
+                while len(self._workers) < want:
+                    i = len(self._workers)
+                    th = threading.Thread(target=self._worker,
+                                          name=f"worker-{i}", daemon=True)
+                    th.start()
+                    self._workers.append(th)
+            self.sem = threading.BoundedSemaphore(
+                max(1, int(self.config.max_connections or 1)))
+            self.bucket = (TokenBucket(self.config.throttle_bps)
+                           if self.config.throttle_bps > 0 else None)
+            if getattr(self.config, "download_archive", False):
+                if self.archive is None:
+                    self.archive = Archive(self.config.data_dir)
+            else:
+                self.archive = None
+            self._cv.notify_all()
+
     def submit(self, task_ids: Optional[list[str]] = None) -> int:
         """Acorda os workers para as tarefas selecionadas.
 
@@ -203,9 +236,20 @@ class Scheduler:
 
         Ordem = `store.all()` (ranqueadas por arrasto primeiro, depois por
         `created_at`) — reordenar a fila na GUI muda quem é o próximo.
+
+        O limite `max_concurrent` é lido AO VIVO da config (a tela de
+        configurações muda sem reiniciar): no limite, devolve None e o
+        worker espera — descer a concorrência vale na hora; subir o pool
+        é `apply_config` nascer mais workers.
         """
         with self._cv:
-            for t in self.store.all():
+            limit = max(1, int(self.config.max_concurrent or 1))
+            tasks = self.store.all()
+            running = sum(1 for t in tasks
+                          if t.state == TaskState.DOWNLOADING)
+            if running >= limit:
+                return None
+            for t in tasks:
                 if t.state == TaskState.QUEUED:
                     t.state = TaskState.DOWNLOADING
                     self.store.save()

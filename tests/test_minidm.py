@@ -344,6 +344,53 @@ class TestScheduler(Base):
         self.assertEqual(sched.submit([t.id]), 1)
         self.assertEqual(store.get(t.id).state, TaskState.QUEUED)
 
+    def _duas_fila(self, **cfg):
+        """Duas tarefas na fila + scheduler SEM start() (gate testável)."""
+        from minidm.scheduler import Scheduler
+        from minidm.store import TaskStore
+
+        store = TaskStore(self.tmp)
+        a = Task(url=self.url, dest_dir=self.tmp, filename="a.bin")
+        b = Task(url=self.url, dest_dir=self.tmp, filename="b.bin")
+        store.add(a)
+        store.add(b)
+        sched = Scheduler(store, test_config(**cfg))
+        return store, sched, a, b
+
+    def test_claim_respeita_o_limite_e_libera_ao_concluir(self):
+        """No limite (max_concurrent) o _claim devolve None; concluir a
+        tarefa ativa libera a vaga p/ a próxima da fila."""
+        store, sched, a, b = self._duas_fila(max_concurrent=1, segments=1)
+        # uma tarefa já ocupando o único slot (depois do __init__, que
+        # rebaixa DOWNLOADING órfãos de execução anterior)
+        a.state = TaskState.DOWNLOADING
+        store.save()
+        self.assertIsNone(sched._claim())
+        # concluiu: a vaga abre e o claim pega a próxima (b)
+        a.state = TaskState.DONE
+        store.save()
+        got = sched._claim()
+        self.assertIsNotNone(got)
+        self.assertEqual(got.id, b.id)
+        self.assertEqual(store.get(b.id).state, TaskState.DOWNLOADING)
+
+    def test_max_concurrent_lido_ao_vivo_sem_reiniciar(self):
+        """Mudar max_concurrent na config vale na hora: descer/sobrepor
+        o limite é lido do config a cada claim (tela de configurações)."""
+        store, sched, a, b = self._duas_fila(max_concurrent=1, segments=1)
+        a.state = TaskState.DOWNLOADING
+        store.save()
+        self.assertIsNone(sched._claim())          # 1 de 1: no limite
+        sched.config.max_concurrent = 2            # subiu na tela
+        got = sched._claim()
+        self.assertIsNotNone(got)
+        self.assertEqual(got.id, b.id)
+        # e descer de volta fecha na hora
+        c = Task(url=self.url, dest_dir=self.tmp, filename="c.bin")
+        store.add(c)
+        sched.config.max_concurrent = 1
+        self.assertIsNone(sched._claim())          # 2 baixando >= 1
+
 
 if __name__ == "__main__":
     unittest.main()
