@@ -36,7 +36,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Mux vídeo+áudio (ffmpeg)** | streams com faixa de áudio separada (DASH/HLS) baixam as duas pernas e o `ffmpeg -c copy` mescla — sem ffmpeg, segue com uma faixa; **embutido no APK** (FFmpeg 8.0 estático, ver `android/setup_ffmpeg.py`) |
 | **Detecção de DRM** (Widevine/FairPlay/PlayReady) | analisa e **recusa** com aviso — nunca tenta contornar (DMCA §1201) |
 | **Faixa de áudio separada** | HLS `EXT-X-MEDIA`/DASH áudio viram qualidade "áudio" (baixar música) |
-| **Nome de arquivo legível** | `Content-Disposition` → URL → título da página (editável no popup) |
+| **Nome de arquivo legível** | `Content-Disposition` → URL → título da página (editável no popup); na fila o **título real chega em paralelo** — o `/add` não segura na extração e o nome troca sozinho |
 | **Pasta de destino escolhida** | popup e `/add` aceitam `dir`; a última pasta fica guardada |
 | **Análise via yt-dlp** (opcional) | `media <url> --ytdlp` — cobre sites complexos (chama a CLI do yt-dlp) |
 | **Perfis de download** (conceito do YT-DLnis) | `add --profile Música` — perfil define qualidade, formato, pasta e nome |
@@ -50,6 +50,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Delegação automática** | link de **página** (YouTube, Instagram…) + yt-dlp instalado → usa yt-dlp **sozinho**, sem flag |
 | **Cookies do navegador** | `add --cookies-from-browser chrome` — usa a sessão do usuário p/ sites com login; a engine própria recebe o mesmo cookie via jar exportado e cacheado (`cookies.py`) |
 | **Caminho exato do arquivo** | `--print after_move` — o yt-dlp informa o arquivo gravado; fim da adivinhação por mtime no `_finalize` |
+| **Nome real no início do download** | `--print before_dl` imprime `<título> [<id>]` quando o download **começa** — o nome na fila deixa de ser o do URL sem esperar o fim (`_apply_title`); e o `/add` resolve o título em **paralelo** (`_resolve_name_bg`, só enquanto a tarefa espera — sem extração duplicada) |
 | **Playlists** | `add --playlist` (ou `/add` com `"playlist": true`) — expande em várias tarefas na fila (`--flat-playlist`, limite `playlist_limit`) |
 | **Trecho do vídeo** | `add --section 01:00-02:00` — baixa só o intervalo (yt-dlp `--download-sections` + keyframes) |
 | **SponsorBlock** | `config set sponsorblock all` (ou `add --sponsorblock all`) — remove trechos de patrocínio no pós-processamento |
@@ -767,7 +768,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           517 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (ordem/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
+tests/           527 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

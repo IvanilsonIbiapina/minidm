@@ -432,5 +432,100 @@ class TestApiIntegration(unittest.TestCase):
                           if "pagina" in t.url])
 
 
+class TestNomeEmParalelo(unittest.TestCase):
+    """(N) a tarefa entra na fila com o nome do URL e o título real
+    chega em segundo plano (`server._resolve_name_bg`).
+
+    É o fix do "entra na fila mas com nome de URL, demora a virar o
+    nome real": o /add NÃO espera a extração — um thread separado
+    resolve o título enquanto a tarefa espera, e o download em si não
+    extraí duas vezes (se já começou, o `--print before_dl` do
+    ytdlpdl resolve).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="minidm-nome-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.cfg = AppConfig(data_dir=self.tmp)
+        self.store = TaskStore(self.tmp)
+        # SEM start(): sem workers — a tarefa fica QUEUED de propósito
+        self.sched = Scheduler(self.store, self.cfg)
+        self.app = App(self.store, self.sched, self.cfg)
+
+    def _queued(self, filename="watch"):
+        t = Task(url="https://www.youtube.com/watch?v=abc123",
+                 dest_dir=self.tmp, filename=filename,
+                 state=TaskState.QUEUED, use_ytdlp_downloader=True)
+        self.store.add(t)
+        return t
+
+    @mock.patch("minidm.ytdlp.describe")
+    def test_titulo_real_substitui_o_nome_do_url(self, desc):
+        from minidm.server import _resolve_name_bg
+
+        desc.return_value = {"title": "Aula de Física", "id": "abc123"}
+        t = self._queued()
+        _resolve_name_bg(self.app, t.id, t.url,
+                         provisional="watch", settle=0)
+        self.assertEqual(t.filename, "Aula de Física [abc123]")
+        # persistido: uma instância nova do store lê o nome novo
+        again = TaskStore(self.tmp)
+        self.assertEqual(again.get(t.id).filename,
+                         "Aula de Física [abc123]")
+
+    @mock.patch("minidm.ytdlp.describe")
+    def test_nao_duplica_extra_quando_ja_esta_baixando(self, desc):
+        """Se o scheduler reivindicou a tarefa (DOWNLOADING), sai SEM
+        chamar o describe — o `--print before_dl` do download resolve."""
+        from minidm.server import _resolve_name_bg
+
+        t = self._queued()
+        t.state = TaskState.DOWNLOADING
+        _resolve_name_bg(self.app, t.id, t.url,
+                         provisional="watch", settle=0)
+        desc.assert_not_called()
+        self.assertEqual(t.filename, "watch")
+
+    @mock.patch("minidm.ytdlp.describe")
+    def test_nao_mexe_se_o_nome_ja_mudou(self, desc):
+        """Análise prévia ou before_dl já nomearam -> resultado descartado."""
+        from minidm.server import _resolve_name_bg
+
+        desc.return_value = {"title": "X", "id": "1"}
+        t = self._queued()
+        t.filename = "Nome Novo"
+        _resolve_name_bg(self.app, t.id, t.url,
+                         provisional="watch", settle=0)
+        desc.assert_not_called()
+        self.assertEqual(t.filename, "Nome Novo")
+
+    @mock.patch("minidm.ytdlp.describe")
+    def test_nao_aplica_se_pausou_no_meio(self, desc):
+        """Pausada/removida durante a extração -> não mexe no nome."""
+        from minidm.server import _resolve_name_bg
+
+        def pausa(*_a, **_k):
+            t.state = TaskState.PAUSED
+            return {"title": "Ignorado", "id": "1"}
+
+        desc.side_effect = pausa
+        t = self._queued()
+        _resolve_name_bg(self.app, t.id, t.url,
+                         provisional="watch", settle=0)
+        self.assertEqual(t.filename, "watch")
+
+    @mock.patch("minidm.ytdlp.describe")
+    def test_falha_na_extracao_e_silenciosa(self, desc):
+        """Sem yt-dlp/site fora: exceção some — o before_dl/_finalize
+        continua sendo o fallback do nome."""
+        from minidm.server import _resolve_name_bg
+
+        desc.side_effect = RuntimeError("yt-dlp não encontrado")
+        t = self._queued()
+        _resolve_name_bg(self.app, t.id, t.url,
+                         provisional="watch", settle=0)
+        self.assertEqual(t.filename, "watch")
+
+
 if __name__ == "__main__":
     unittest.main()

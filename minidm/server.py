@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -67,6 +69,55 @@ def webui_dir() -> str:
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, "webui")
+
+
+# ------------------------------------------------------- nome em paralelo
+def _resolve_name_bg(app: App, task_id: str, url: str, *,
+                     referer: str = "", user_agent: str = "",
+                     cookie: str = "", cookies_from_browser: str = "",
+                     provisional: str = "",
+                     settle: float = 0.8) -> None:
+    """Resolve o NOME REAL da tarefa em paralelo (a fila não espera).
+
+    A tarefa entra na fila NA HORA com o nome provisório do URL (share,
+    "Baixar vídeo desta página", CLI sem `--filename`) e aqui o yt-dlp
+    extrai o título em segundo plano; quando ele chega, o `filename` da
+    tarefa é atualizado — a interface mostra na hora (o snapshot lê as
+    tarefas vivas do store).
+
+    `settle` deixa o scheduler reivindicar a tarefa: se ela já começou
+    a baixar, SAI — o `--print before_dl` do ytdlpdl resolve o nome sem
+    extraír duas vezes. Se o nome já mudou (análise prévia, before_dl),
+    este resultado é descartado; erro/silêncio também — o `_finalize`
+    continua sendo o fallback garantido.
+    """
+    try:
+        time.sleep(settle)
+        t = app.store.get(task_id)
+        if (t is None or t.state != TaskState.QUEUED
+                or t.filename != provisional):
+            return                      # começou/mudou: não duplica extração
+        from minidm.ytdlp import _safe_name, describe
+
+        info = describe(url, referer=referer, user_agent=user_agent,
+                        cookie=cookie,
+                        cookies_from_browser=cookies_from_browser)
+        title = (info.get("title") or "").strip()
+        vid = (info.get("id") or "").strip()
+        # mesmo formato do template `-o` ("%(title)s [%(id)s]"): o stem
+        # bate com o arquivo e uma re-execução (resume) continua achando
+        novo = _safe_name(f"{title} [{vid}]" if vid else title)
+        if not novo:
+            return
+        t = app.store.get(task_id)
+        if t is None or t.filename != provisional:
+            return                      # before_dl/análise já nomeou
+        if t.state not in (TaskState.QUEUED, TaskState.DOWNLOADING):
+            return                      # pausada/removida/erro: não mexe
+        t.filename = novo
+        app.store.save()
+    except Exception:
+        pass                            # conforto: before_dl/_finalize resolve
 
 
 def make_handler(app: App):
@@ -278,6 +329,7 @@ def make_handler(app: App):
             mux_audio = (payload.get("audio")
                          if isinstance(payload.get("audio"), dict) else None)
             analyzed = False
+            nome_url = False       # nome provisório vindo do URL (ver (N))
 
             # ---------------------------- categoria estilo IDM (pasta+perfil):
             # a categoria define a PASTA (base configurável + subpasta) e, se
@@ -361,6 +413,7 @@ def make_handler(app: App):
             if not filename:
                 # usa o nome vindo do servidor/análise, senão o do URL
                 filename = payload.get("filename") or filename_from(quality_url)
+                nome_url = not payload.get("filename")
 
             task = Task(
                 url=quality_url,
@@ -444,6 +497,29 @@ def make_handler(app: App):
             app.store.add(task)
             if payload.get("start", True):
                 app.scheduler.submit([task.id])
+            # (N) nome em paralelo: a tarefa entra NA HORA com o nome do
+            # URL e o título real é extraído em segundo plano enquanto ela
+            # espera na fila (se já começou a baixar, o --print before_dl
+            # do ytdlpdl resolve — aqui não extraímos duas vezes).
+            if (nome_url and task.use_ytdlp_downloader
+                    and payload.get("start", True)
+                    and task.state == TaskState.QUEUED
+                    and task.filename == filename):
+                threading.Thread(
+                    target=_resolve_name_bg, daemon=True,
+                    name=f"minidm-nome-{task.id[:8]}",
+                    args=(app, task.id, url),
+                    kwargs={
+                        "referer": referer,
+                        "user_agent": payload.get("user_agent", "")
+                        or app.config.user_agent,
+                        "cookie": payload.get("cookie", "")
+                        or app.config.cookie,
+                        "cookies_from_browser":
+                            payload.get("cookies_from_browser", "")
+                            or app.config.cookies_from_browser,
+                        "provisional": task.filename,
+                    }).start()
             # (C) modo playlist: acumula o id e NÃO responde (uma resposta
             # só no fim, pelo _add_playlist).
             acc = payload.get("_playlist_ids")

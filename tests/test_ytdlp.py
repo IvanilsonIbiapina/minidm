@@ -457,6 +457,17 @@ class TestYtdlpDownloader(YtdlpBase):
             cmd = d._build_cmd()
         self.assertNotIn("--remote-components", cmd)
 
+    def test_build_cmd_print_before_dl_para_nome_rapido(self):
+        """--print before_dl imprime o título REAL já no INÍCIO do
+        download: o nome na fila deixa de esperar o `_finalize` (fim).
+        Os dois prints coexistem (caminho final + título)."""
+        use_dl_stub(self.tmp)
+        task = self._task()
+        d = YtdlpDownloader(task, AppConfig(data_dir=self.tmp))
+        cmd = d._build_cmd()
+        self.assertIn("before_dl:MINIDM_TITLE:%(title)s [%(id)s]", cmd)
+        self.assertIn("after_move:MINIDM_PATH:%(filepath)s", cmd)
+
 
 # ------------------------------------------------- runner in-process
 class TestRunnerInProcess(unittest.TestCase):
@@ -752,6 +763,59 @@ class TestDownloaderInProcess(unittest.TestCase):
         d._parse_line("yt-dlp sem tag alguma")
         self.assertEqual(d.task.stream["note"],
                          "[youtube] x9: Downloading webpage")
+
+    # ------------------------------------------------- nome real (antes)
+    def test_minidm_title_troca_nome_ja_no_inicio_do_download(self):
+        """A linha MINIDM_TITLE (--print before_dl) troca o nome do URL
+        pelo título REAL assim que o download começa — antes o nome só
+        virava o real no `_finalize` (fim do download; era a "demora a
+        virar o nome real" da fila)."""
+        def main(argv):
+            print("MINIDM_TITLE:Minha Aula [abc123]")
+        self.inject(main)
+        d = self._downloader(filename="watch",
+                             url="https://www.youtube.com/watch?v=abc123")
+        cmd = d._build_cmd()               # stem genérico -> _ytdlp_named
+        self.assertTrue(d._ytdlp_named)
+        d._spawn(cmd)
+        self.assertEqual(d.task.filename, "Minha Aula [abc123]")
+
+    def test_apply_title_nao_mexe_em_nome_escolhido(self):
+        """Nome escolhido pelo usuário/perfil (stem não-genérico) é
+        respeitado: sem `_ytdlp_named`, a linha do título não renomeia."""
+        def main(argv):
+            print("MINIDM_TITLE:Outro Título [x]")
+        self.inject(main)
+        d = self._downloader(filename="meu video.mp4")
+        cmd = d._build_cmd()
+        self.assertFalse(d._ytdlp_named)
+        d._spawn(cmd)
+        self.assertEqual(d.task.filename, "meu video.mp4")
+
+    def test_apply_title_move_meta_antigo_para_o_nome_novo(self):
+        """Pausa anterior gravou `.meta.json` com o nome do URL: ao
+        renomear o arquivo é MOVIDO — não sobra órfão nem some o
+        progresso já gravado."""
+        def main(argv):
+            print("MINIDM_TITLE:Nova Aula [abc123]")
+        self.inject(main)
+        d = self._downloader(filename="watch",
+                             url="https://www.youtube.com/watch?v=abc123")
+        old_meta = d.task.meta_path
+        with open(old_meta, "w", encoding="utf-8") as f:
+            f.write("{}")
+        cmd = d._build_cmd()
+        d._spawn(cmd)
+        self.assertEqual(d.task.filename, "Nova Aula [abc123]")
+        self.assertFalse(os.path.exists(old_meta))
+        self.assertTrue(os.path.exists(d.task.meta_path))
+
+    def test_apply_title_ignora_linha_vazia(self):
+        d = self._downloader(filename="watch",
+                             url="https://www.youtube.com/watch?v=abc123")
+        d._build_cmd()
+        d._apply_title("   ")
+        self.assertEqual(d.task.filename, "watch")
 
     def test_done_sem_progresso_mostra_100_e_os_bytes(self):
         """Tarefa concluída sem stream (tarefas antigas do yt-dlp zeravam

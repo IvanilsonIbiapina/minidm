@@ -286,6 +286,10 @@ class YtdlpDownloader:
                 if line.startswith("MINIDM_PATH:"):
                     self._final_path = line[len("MINIDM_PATH:"):].strip()
                     continue
+                # (N) título real já no início do download (before_dl)
+                if line.startswith("MINIDM_TITLE:"):
+                    self._apply_title(line[len("MINIDM_TITLE:"):])
+                    continue
                 self._parse_line(line)
                 tail.append(line.rstrip())
                 if len(tail) > 30:
@@ -349,6 +353,10 @@ class YtdlpDownloader:
                 # (B) caminho real do arquivo final (linha --print after_move)
                 if line.startswith("MINIDM_PATH:"):
                     self._final_path = line[len("MINIDM_PATH:"):].strip()
+                    continue
+                # (N) título real já no início do download (before_dl)
+                if line.startswith("MINIDM_TITLE:"):
+                    self._apply_title(line[len("MINIDM_TITLE:"):])
                     continue
                 self._parse_line(line)
                 tail.append(line.rstrip())
@@ -430,6 +438,13 @@ class YtdlpDownloader:
         # "MINIDM_PATH:<caminho>" depois de gravar/mover — elimina a
         # adivinhação do `_finalize` (frágil com várias tarefas na pasta).
         args += ["--print", "after_move:MINIDM_PATH:%(filepath)s"]
+        # (N) título real NO INÍCIO do download: a linha
+        # "MINIDM_TITLE:<título> [<id>]" chega em `before_dl` (extração
+        # concluída, download começando) e troca o nome provisório do URL
+        # na hora — sem esperar o `_finalize` (só no fim do download).
+        # `before_dl` está em POSTPROCESS_WHEN[3:] -> o --print NÃO ativa
+        # o --simulate (verificado no yt-dlp 2026.10.26).
+        args += ["--print", "before_dl:MINIDM_TITLE:%(title)s [%(id)s]"]
         # ffmpeg: se existe, aponta o yt-dlp para ele (conversão/embed/mux);
         # se não, remove os argumentos que exigiriam pós-processamento —
         # o download continua no melhor formato nativo em vez de falhar.
@@ -517,6 +532,40 @@ class YtdlpDownloader:
         # "9CtAJ_nw640 [9CtAJ_nw640]" -> genérico; o yt-dlp nomeia melhor.
         base = s.rsplit(" [", 1)[0].strip()
         return base == v or _is_generic(base)
+
+    # ------------------------------------------------------------ nome real
+    def _apply_title(self, raw: str) -> None:
+        """Troca o nome provisório do URL pelo título real, NA HORA.
+
+        A linha vem do `--print before_dl:MINIDM_TITLE:%(title)s [%(id)s]`
+        — o yt-dlp já extraiu e está só começando a baixar, então o
+        nome da tarefa vira o real ali (antes só no `_finalize`, no fim
+        do download — era a "demora a virar o nome real" da fila).
+
+        O stem mantém o " [id]" do template `-o` para uma re-execução
+        (resume) achar o mesmo arquivo. Só nome escolhido pelo próprio
+        yt-dlp (`_ytdlp_named`): nome de usuário/perfil é respeitado.
+        """
+        t = self.task
+        if not self._ytdlp_named:
+            return
+        try:
+            from minidm.ytdlp import _safe_name
+
+            novo = _safe_name(raw.strip())
+            if not novo or novo == t.filename:
+                return
+            old_meta = t.meta_path
+            t.filename = novo
+            # move o meta já gravado (pausa anterior) para o nome novo —
+            # senão sobraria um .meta.json órfão com o nome do URL
+            if os.path.exists(old_meta):
+                try:
+                    os.replace(old_meta, t.meta_path)
+                except OSError:
+                    pass
+        except Exception:
+            pass        # nome é conforto: falhou, o `_finalize` resolve
 
     # -------------------------------------------------------------- parsing
     def _parse_line(self, line: str) -> None:
