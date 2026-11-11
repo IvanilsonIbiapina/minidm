@@ -82,6 +82,29 @@
   </div>
 </div>
 
+<!-- menu de contexto das tarefas (botão direito / botão ⋯ — estilo IDM) -->
+<div id="ctx" class="ctx" role="menu" hidden>
+  <button type="button" data-ctx="open-folder" role="menuitem">Abrir pasta</button>
+  <button type="button" data-ctx="open-file" role="menuitem" hidden>Abrir arquivo</button>
+  <button type="button" data-ctx="copy" role="menuitem">Copiar URL</button>
+  <button type="button" data-ctx="props" role="menuitem">Propriedades</button>
+  <button type="button" data-ctx="up" role="menuitem">&#8593; Subir</button>
+  <button type="button" data-ctx="down" role="menuitem">&#8595; Descer</button>
+  <button type="button" data-ctx="remove" role="menuitem" class="danger">Remover</button>
+</div>
+
+<!-- propriedades da tarefa (GET /task — campos completos do registro) -->
+<div id="props" class="sheet-back" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="props-title">
+    <div class="sheet-head">
+      <span id="props-title">Propriedades</span>
+      <button type="button" class="icon-btn" id="props-close"
+              aria-label="Fechar">&#10005;</button>
+    </div>
+    <dl id="props-list" class="props-list"></dl>
+  </div>
+</div>
+
 <div id="toast" class="toast" role="status" hidden></div>
 
 <script src="/webui/app.js"></script>

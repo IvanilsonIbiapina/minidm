@@ -104,7 +104,9 @@ async function loadCategories() {
 }
 
 /* ---------------------------------------------------------- render (diff) */
-const cards = new Map();   // id -> <article>
+const cards = new Map();     // id -> <article>
+const taskById = new Map();  // id -> tarefa do snapshot (menu/propriedades)
+let lastOrder = [];          // ids na ordem da fila (1º = próxima a baixar)
 
 /* busca + filtro por estado (histórico — as concluídas ficam na fila) */
 let filterState = "all";
@@ -144,6 +146,7 @@ function makeCard(t) {
     <div class="acts">
       <button data-act="start" type="button" title="Iniciar">&#9654;</button>
       <button data-act="pause" type="button" title="Pausar">&#10074;&#10074;</button>
+      <button data-act="menu" type="button" title="Mais ações (abrir, copiar, reordenar)">&#8943;</button>
       <button data-act="remove" type="button" title="Remover da fila">&#10005;</button>
     </div>`;
   cards.set(t.id, el);
@@ -200,6 +203,9 @@ function updateCard(el, t) {
 
 function render(tasks) {
   const list = $("#list");
+  taskById.clear();
+  for (const t of tasks) taskById.set(t.id, t);
+  lastOrder = tasks.map((t) => t.id);   // ordem completa p/ subir/descer
   const seen = new Set();
   let shown = 0;
   for (const t of tasks) {
@@ -208,7 +214,9 @@ function render(tasks) {
     updateCard(el, t);
     el.hidden = !matchesFilter(t);   // busca/chip escondem sem destruir a card
     if (!el.hidden) shown += 1;
-    list.appendChild(el);          // move p/ a ordem do servidor
+    // move p/ a ordem do servidor — menos durante o arrasto, senão o
+    // poll de 1s "snapava" o card de volta para a posição antiga
+    if (!dragId) list.appendChild(el);
   }
   for (const [id, el] of cards) {
     if (!seen.has(id)) { el.remove(); cards.delete(id); }
@@ -383,6 +391,12 @@ $("#list").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-act]");
   if (!btn) return;
   const id = btn.closest(".card").dataset.id;
+  if (btn.dataset.act === "menu") {
+    //⋯ abre o menu de contexto ancorado no botão (estilo IDM)
+    const r = btn.getBoundingClientRect();
+    openCtx(id, r.right, r.bottom + 6);
+    return;
+  }
   try {
     if (btn.dataset.act === "start") {
       await post("/start", { id });
@@ -396,6 +410,215 @@ $("#list").addEventListener("click", async (ev) => {
   } catch (e) {
     toast(e.message);
   }
+});
+
+/* ------------------------------------------------- menu de contexto (⋯) */
+/* botão direito no card ou⋯: abrir pasta/arquivo, copiar URL,
+   propriedades, subir/descer na fila e remover (mesmas ações do
+   menu de contexto da GUI desktop — gui.py). */
+const ctx = { id: null };
+
+function openCtx(id, x, y) {
+  ctx.id = id;
+  const menu = $("#ctx");
+  // "Abrir arquivo" só faz sentido com o arquivo já concluído
+  const t = taskById.get(id);
+  menu.querySelector('[data-ctx="open-file"]').hidden =
+    !t || t.state !== "done";
+  menu.hidden = false;
+  // ancora perto do clique/⋯ sem sair da tela
+  menu.style.left =
+    `${Math.max(6, Math.min(x, innerWidth - menu.offsetWidth - 6))}px`;
+  menu.style.top =
+    `${Math.max(6, Math.min(y, innerHeight - menu.offsetHeight - 6))}px`;
+}
+
+function closeCtx() { $("#ctx").hidden = true; }
+
+document.addEventListener("click", (ev) => {
+  if ($("#ctx").hidden) return;
+  if (ev.target.closest("#ctx") ||
+      ev.target.closest('[data-act="menu"]')) return;
+  closeCtx();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  closeCtx();
+  $("#props").hidden = true;
+});
+
+$("#list").addEventListener("contextmenu", (ev) => {
+  const card = ev.target.closest(".card");
+  if (!card) return;
+  ev.preventDefault();                     // menu nativo não abre
+  openCtx(card.dataset.id, ev.clientX, ev.clientY);
+});
+
+/** Copia o URL da tarefa — clipboard API com fallback execCommand. */
+async function copyUrl(id) {
+  const t = taskById.get(id);
+  const url = (t && t.url) || "";
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast("URL copiada");
+    return;
+  } catch (_) { /* WebView/origem sem permissão: fallback antigo */ }
+  const ta = document.createElement("textarea");
+  ta.value = url;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (_) { /* sem suporte */ }
+  ta.remove();
+  toast(ok ? "URL copiada" : "não deu para copiar a URL");
+}
+
+/** Sobe/desce uma posição na fila (1º = próxima) e persiste. */
+async function moveBy(id, delta) {
+  const order = lastOrder.slice();
+  const i = order.indexOf(id);
+  const j = i + delta;
+  if (i < 0 || j < 0 || j >= order.length) return;   // já está na ponta
+  [order[i], order[j]] = [order[j], order[i]];
+  await post("/reorder", { ids: order });
+  tick();
+}
+
+$("#ctx").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-ctx]");
+  if (!b || !ctx.id) return;
+  const id = ctx.id;
+  const act = b.dataset.ctx;
+  closeCtx();
+  try {
+    if (act === "open-folder") {
+      await post("/open", { id, what: "folder" });
+    } else if (act === "open-file") {
+      await post("/open", { id, what: "file" });
+    } else if (act === "copy") {
+      await copyUrl(id);
+    } else if (act === "props") {
+      await showProps(id);
+    } else if (act === "up") {
+      await moveBy(id, -1);
+    } else if (act === "down") {
+      await moveBy(id, 1);
+    } else if (act === "remove") {
+      if (!confirm("Remover esta tarefa da fila?")) return;
+      await post("/remove", { id });
+      tick();
+    }
+  } catch (e) {
+    toast(e.message);   // ex.: "pasta ainda não existe", sem permissão
+  }
+});
+
+/* ------------------------------------------------ propriedades (GET /task) */
+/* campos do registro completo (to_dict) — o snapshot do /status não
+   tem dest_dir/referer/section/created_at. */
+const PROP_ROWS = [
+  ["filename", "Nome"], ["state", "Estado"], ["kind", "Tipo"],
+  ["profile", "Perfil"], ["category", "Categoria"],
+  ["quality_label", "Qualidade"], ["page_title", "Título da página"],
+  ["origin_url", "Página de origem"], ["url", "URL"],
+  ["referer", "Referer"], ["dest_dir", "Pasta"],
+  ["published_path", "Destino publicado"], ["section", "Seção"],
+  ["total_size", "Tamanho"], ["created_at", "Criada em"],
+  ["sha256", "SHA-256"], ["error", "Erro"],
+];
+
+async function showProps(id) {
+  let t;
+  try {
+    t = await api(`/task?id=${encodeURIComponent(id)}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  const rows = [];
+  for (const [k, label] of PROP_ROWS) {
+    let v = t[k];
+    if (v === undefined || v === null || v === "") continue;
+    if (k === "state") v = STATE[v] || v;
+    else if (k === "total_size") v = fmtBytes(v);
+    else if (k === "created_at") {
+      const d = new Date(Number(v) * 1000);
+      v = Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString("pt-BR");
+    } else v = String(v);
+    rows.push(`<dt>${esc(label)}</dt><dd>${esc(v)}</dd>`);
+  }
+  $("#props-list").innerHTML = rows.join("");
+  $("#props-title").textContent = t.filename || "Propriedades";
+  $("#props").hidden = false;
+}
+
+$("#props-close").addEventListener("click", () => { $("#props").hidden = true; });
+$("#props").addEventListener("click", (ev) => {
+  if (ev.target.id === "props") $("#props").hidden = true;   // clique fora
+});
+
+/* --------------------------------------------- arrastar p/ reordenar (DnD) */
+/* HTML5 drag & drop: soltar entre os cards reordena a fila inteira
+   (ordem do DOM -> POST /reorder). `dragId` congela o render durante
+   o arrasto para o poll não voltar o card para a posição antiga. */
+let dragId = null;
+
+$("#list").addEventListener("dragstart", (ev) => {
+  const card = ev.target.closest(".card");
+  if (!card) return;
+  dragId = card.dataset.id;
+  card.classList.add("dragging");
+  $("#list").classList.add("dragging-active");
+  ev.dataTransfer.effectAllowed = "move";
+  ev.dataTransfer.setData("text/plain", dragId);   // Firefox exige setData
+});
+
+$("#list").addEventListener("dragover", (ev) => {
+  if (!dragId) return;
+  ev.preventDefault();                             // autoriza o drop
+  ev.dataTransfer.dropEffect = "move";
+  const card = ev.target.closest(".card");
+  for (const el of document.querySelectorAll(".card.over")) {
+    if (el !== card) el.classList.remove("over");
+  }
+  if (card && card.dataset.id !== dragId) card.classList.add("over");
+});
+
+$("#list").addEventListener("dragleave", (ev) => {
+  const card = ev.target.closest(".card");
+  if (card && !card.contains(ev.relatedTarget)) card.classList.remove("over");
+});
+
+$("#list").addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  const card = ev.target.closest(".card");
+  for (const el of document.querySelectorAll(".card.over")) {
+    el.classList.remove("over");
+  }
+  if (!card || !dragId || card.dataset.id === dragId) return;
+  // ordem do DOM (visíveis) + as escondidas no fim -> fila completa
+  const visible = [...$("#list").querySelectorAll(".card:not([hidden])")]
+    .map((el) => el.dataset.id);
+  const rest = lastOrder.filter((id) => !visible.includes(id));
+  const from = visible.indexOf(dragId);
+  const to = visible.indexOf(card.dataset.id);
+  if (from < 0 || to < 0) return;
+  visible.splice(to, 0, visible.splice(from, 1)[0]);
+  post("/reorder", { ids: [...visible, ...rest] })
+    .then(() => tick())
+    .catch((e) => toast(e.message));
+});
+
+$("#list").addEventListener("dragend", () => {
+  dragId = null;
+  $("#list").classList.remove("dragging-active");
+  for (const el of document.querySelectorAll(".card.dragging, .card.over")) {
+    el.classList.remove("dragging", "over");
+  }
+  tick();                      // devolve a ordem do servidor (se divergiu)
 });
 
 /* -------------------------------------------------------------- início */

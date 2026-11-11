@@ -41,6 +41,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Análise via yt-dlp** (opcional) | `media <url> --ytdlp` — cobre sites complexos (chama a CLI do yt-dlp) |
 | **Perfis de download** (conceito do YT-DLnis) | `add --profile Música` — perfil define qualidade, formato, pasta e nome |
 | **Escolha de qualidade/formato** | `add --height 720 --ext mp4` (ou o card da extensão, ou a **caixa de qualidades da webui** antes do Baixar) — teto de altura + container, com fallback p/ DASH-only |
+| **Interações da fila na webui** | botão direito/**⋯** no card (estilo IDM): **abrir pasta/arquivo** (`POST /open`, caminho do registro — destino publicado no Android), **copiar URL** (clipboard com fallback), **propriedades** (`GET /task`, registro completo), **↑/↓ subir-descer** e **arrastar** p/ reordenar (`POST /reorder`) |
 | **Categorias estilo IDM** (pasta+perfil) | `--category Vídeos` — separa por pastas (Vídeos, Músicas, Programas…); base configurável (`download_base`), Vídeos é a padrão |
 | **Templates de comando yt-dlp** | `CommandTemplate` com `url_regex` de ativação automática (`profiles` no CLI) |
 | **Template de nome de arquivo** | motor `{title} [{id}].{ext}` com preview e sanitização (`nametpl.py`) |
@@ -668,6 +669,9 @@ qualidades. Botão direito → **Enviar para o minidm**.
 
 ```
 GET  /status                  -> tarefas + config resumida
+GET  /task?id=                -> registro completo da tarefa (propriedades:
+                                 dest_dir, referer, section, created_at, …
+                                 — campos que o snapshot do /status não tem)
 GET  /                        -> webui (UI no navegador/WebView do APK)
 GET  /webui/<arquivo>         -> assets da webui (style.css, app.js, …)
 GET  /config                  -> configuração efetiva
@@ -683,6 +687,11 @@ POST /add      {url, filename?, dir?, kind?, referer?, page_title?,
 POST /start    {id|ids|all}
 POST /pause    {id}
 POST /remove   {id, delete?}
+POST /reorder  {ids:[…]}      -> reordena a fila (1º = próxima; arrasto/
+                                 ↑↓ da webui manda a ordem completa)
+POST /open     {id, what}     -> abre no explorador padrão: what="folder"
+                                 (destino publicado ou dest_dir) ou
+                                 "file" (published_path || final_path)
 POST /media/analyze {url, referer?, page_title?, cookie?, user_agent?,
                      proxy?, ytdlp?}
                    -> {ok, kind, qualities:[{label,url,bandwidth,
@@ -768,7 +777,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           527 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API, GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca), Android/tray/pub)
+tests/           536 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API (incl. /open + /task), GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade), autostart (registro/XDG), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila), Android/tray/pub)
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

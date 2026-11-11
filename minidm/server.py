@@ -3,11 +3,14 @@
 Endpoints:
 
     GET  /status                  -> tarefas + config resumida
+    GET  /task?id=                -> registro completo (propriedades)
     GET  /                        -> webui (UI no navegador/WebView)
     POST /add      {url, ...}     -> adiciona (aceita mirrors/checksum/kind)
     POST /start    {id|all}       -> inicia/pausadas
     POST /pause    {id}           -> pausa uma tarefa ativa
     POST /remove   {id, delete}   -> remove da fila
+    POST /reorder  {ids}          -> reordena a fila (arrasto/subir/descer)
+    POST /open     {id, what}     -> abre pasta ou arquivo no explorador
     GET  /config                  -> configuração efetiva
     POST /media/analyze {url,...} -> lista qualidades de vídeo (HLS/DASH/dir.)
     GET  /update.xml              -> manifest da extensão (política forcelist)
@@ -18,11 +21,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from minidm.extsetup import CRX_NAME, UPDATE_XML_NAME
 from minidm.meta import Task, TaskState
@@ -69,6 +73,25 @@ def webui_dir() -> str:
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, "webui")
+
+
+def _open_path(path: str) -> None:
+    """Abre um caminho com o aplicativo padrão do sistema (estilo IDM).
+
+    * Windows: `os.startfile` (explorer/padrão do sistema);
+    * macOS: `open`;
+    * Linux: `xdg-open`.
+
+    Função de nível de módulo de propósito: os testes fazem
+    `mock.patch("minidm.server._open_path")` e a API não precisa de
+    desktop/gráficos para ser exercitada.
+    """
+    if os.name == "nt":
+        os.startfile(path)  # noqa: S606 — intencional no Windows
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])  # noqa: S606
+    else:
+        subprocess.Popen(["xdg-open", path])  # noqa: S606
 
 
 # ------------------------------------------------------- nome em paralelo
@@ -240,6 +263,17 @@ def make_handler(app: App):
                     # a webui mostra no placeholder do campo de destino
                     "data_dir": app.store.data_dir,
                 })
+            elif path == "/task":
+                # registro COMPLETO da tarefa (diálogo de propriedades):
+                # o snapshot do /status não tem dest_dir/referer/section/
+                # created_at — o to_dict() devolve todos os campos
+                tid = (parse_qs(urlparse(self.path).query).get("id")
+                       or [""])[0]
+                t = app.store.get(tid)
+                if t is None:
+                    self._json({"error": "tarefa não encontrada"}, 404)
+                    return
+                self._json(t.to_dict())
             elif path in ("/update.xml", f"/{UPDATE_XML_NAME}"):
                 # manifest de atualização p/ a política ExtensionInstallForcelist
                 self._file(os.path.join(app.store.data_dir, "ext",
@@ -270,6 +304,9 @@ def make_handler(app: App):
                 self._add(payload)
             elif path == "/media/analyze":
                 self._media_analyze(payload)
+            elif path == "/open":
+                # botão direito/⋯ da webui: abrir pasta ou arquivo
+                self._open_task(payload)
             elif path == "/start":
                 ids = None if payload.get("all") else _ids(payload)
                 n = app.scheduler.submit(ids)
@@ -627,6 +664,42 @@ def make_handler(app: App):
                 use_ytdlp=bool(payload.get("ytdlp")),
             )
             self._json(result, 200 if result.get("ok") else 400)
+
+        # ------------------------------------------------------------ /open
+        def _open_task(self, payload):
+            """Abre a pasta ou o arquivo da tarefa (menu/⋯ da webui).
+
+            O caminho vem SEMPRE do registro da tarefa — pasta =
+            onde o arquivo está (destino publicado no Android, senão
+            `dest_dir`); arquivo = `published_path || final_path`.
+            """
+            t = app.store.get(str(payload.get("id", "")))
+            if t is None:
+                self._json({"error": "tarefa não encontrada"}, 404)
+                return
+            what = payload.get("what") or "folder"
+            if what == "file":
+                path = t.published_path or t.final_path
+                if not path or not os.path.isfile(path):
+                    self._json({"error": "arquivo ainda não existe"}, 404)
+                    return
+            elif what == "folder":
+                # publicado (Android: Download/…): abre a pasta DO
+                # arquivo; senão, a pasta de destino da tarefa
+                path = (os.path.dirname(t.published_path)
+                        if t.published_path else t.dest_dir)
+                if not path or not os.path.isdir(path):
+                    self._json({"error": "pasta ainda não existe"}, 404)
+                    return
+            else:
+                self._json({"error": "what: folder ou file"}, 400)
+                return
+            try:
+                _open_path(path)
+            except OSError as e:
+                self._json({"error": f"não deu para abrir: {e}"}, 500)
+                return
+            self._json({"ok": True, "path": path})
 
     return Handler
 

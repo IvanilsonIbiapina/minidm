@@ -140,6 +140,33 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b".filters", css)
         self.assertIn(b".tab.on", css)
 
+    def test_interacoes_da_fila(self):
+        """Menu de contexto (⋯/botão direito), propriedades, abrir
+        pasta/arquivo, copiar URL e reordenar — as interações da fila
+        estilo IDM estão nos três assets servidos."""
+        _, _, html = self._get("/")
+        # menu de contexto + diálogo de propriedades
+        self.assertIn(b'id="ctx"', html)
+        self.assertIn(b'data-ctx="open-folder"', html)
+        self.assertIn(b'data-ctx="open-file"', html)
+        self.assertIn(b'data-ctx="copy"', html)
+        self.assertIn(b'data-ctx="props"', html)
+        self.assertIn(b'data-ctx="up"', html)
+        self.assertIn(b'data-ctx="down"', html)
+        self.assertIn(b'id="props"', html)
+        self.assertIn(b'id="props-list"', html)
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"function openCtx", js)          # abre o menu
+        self.assertIn(b'"/open"', js)                   # abrir pasta/arquivo
+        self.assertIn(b"/task?id=", js)                 # propriedades
+        self.assertIn(b'"/reorder"', js)                # subir/descer + DnD
+        self.assertIn(b"dragstart", js)                 # arrastar p/ ordenar
+        self.assertIn(b"execCommand", js)               # fallback copiar URL
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b".ctx", css)
+        self.assertIn(b".card.dragging", css)           # visual do arrasto
+        self.assertIn(b".props-list", css)
+
 
 if __name__ == "__main__":
     unittest.main()

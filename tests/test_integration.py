@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
@@ -525,6 +526,130 @@ class TestNomeEmParalelo(unittest.TestCase):
         _resolve_name_bg(self.app, t.id, t.url,
                          provisional="watch", settle=0)
         self.assertEqual(t.filename, "watch")
+
+
+class TestOpenEndpoint(unittest.TestCase):
+    """POST /open (abrir pasta/arquivo no explorador) + GET /task
+    (registro completo p/ o diálogo de propriedades da webui).
+
+    `_open_path` é mockado: a API não precisa de desktop/gráficos —
+    só o CAMINHO escolhido (destino publicado no Android, senão o da
+    tarefa) é o que se valida aqui.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="minidm-open-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.cfg = AppConfig(data_dir=self.tmp)
+        self.store = TaskStore(self.tmp)
+        self.sched = Scheduler(self.store, self.cfg)   # SEM start()
+        self.app = App(self.store, self.sched, self.cfg)
+        self.api = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(self.app))
+        threading.Thread(target=self.api.serve_forever, daemon=True).start()
+        # uma cleanup só: shutdown ANTES de server_close (addCleanup é
+        # LIFO — em duas, o close rodaria primeiro e o select do
+        # serve_forever cairia em socket fechado: WinError 10038)
+        self.addCleanup(self._stop_api)
+        self.base = f"http://127.0.0.1:{self.api.server_address[1]}"
+
+    def _stop_api(self):
+        self.api.shutdown()
+        self.api.server_close()
+
+    def _task(self, **kw):
+        dest = os.path.join(self.tmp, "Downloads")
+        os.makedirs(dest, exist_ok=True)
+        base = dict(url="https://exemplo.com/a.mp4", dest_dir=dest,
+                    filename="a.mp4", state=TaskState.DONE)
+        base.update(kw)
+        t = Task(**base)
+        self.store.add(t)
+        return t
+
+    def _post(self, path, payload):
+        req = urllib.request.Request(
+            f"{self.base}{path}", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    @mock.patch("minidm.server._open_path")
+    def test_open_folder_abre_a_pasta_da_tarefa(self, open_path):
+        t = self._task()
+        status, data = self._post("/open", {"id": t.id, "what": "folder"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        open_path.assert_called_once_with(t.dest_dir)
+
+    @mock.patch("minidm.server._open_path")
+    def test_open_file_usa_o_destino_publicado(self, open_path):
+        # Android: o arquivo foi movido p/ Download/ — o publicado
+        # (não o dest_dir interno) é o que abre
+        pub = os.path.join(self.tmp, "publico", "a.mp4")
+        os.makedirs(os.path.dirname(pub), exist_ok=True)
+        with open(pub, "wb") as f:
+            f.write(b"x")
+        t = self._task(published_path=pub)
+        status, _ = self._post("/open", {"id": t.id, "what": "file"})
+        self.assertEqual(status, 200)
+        open_path.assert_called_once_with(pub)
+
+    @mock.patch("minidm.server._open_path")
+    def test_open_folder_publicada_abre_a_pasta_do_arquivo(self, open_path):
+        pub = os.path.join(self.tmp, "publico", "a.mp4")
+        os.makedirs(os.path.dirname(pub), exist_ok=True)
+        t = self._task(published_path=pub)
+        status, _ = self._post("/open", {"id": t.id, "what": "folder"})
+        self.assertEqual(status, 200)
+        open_path.assert_called_once_with(os.path.dirname(pub))
+
+    @mock.patch("minidm.server._open_path")
+    def test_open_file_sem_arquivo_404(self, open_path):
+        # tarefa concluída mas o arquivo não está em disco: erro claro
+        # em vez de explorador abrindo em vazio
+        t = self._task()
+        status, data = self._post("/open", {"id": t.id, "what": "file"})
+        self.assertEqual(status, 404)
+        self.assertIn("arquivo", data["error"])
+        open_path.assert_not_called()
+
+    @mock.patch("minidm.server._open_path")
+    def test_open_what_invalido_400(self, open_path):
+        t = self._task()
+        status, _ = self._post("/open", {"id": t.id, "what": "xyz"})
+        self.assertEqual(status, 400)
+        open_path.assert_not_called()
+
+    @mock.patch("minidm.server._open_path")
+    def test_open_id_desconhecido_404(self, open_path):
+        status, _ = self._post("/open", {"id": "nope", "what": "folder"})
+        self.assertEqual(status, 404)
+        open_path.assert_not_called()
+
+    def test_task_devolve_o_registro_completo(self):
+        t = self._task(referer="https://p/", section="*0:10",
+                       category="Vídeos", created_at=1700000000.0)
+        with urllib.request.urlopen(f"{self.base}/task?id={t.id}",
+                                    timeout=5) as r:
+            data = json.loads(r.read())
+        # campos que o snapshot do /status NÃO expõe (motivo do /task)
+        self.assertEqual(data["dest_dir"], t.dest_dir)
+        self.assertEqual(data["referer"], "https://p/")
+        self.assertEqual(data["section"], "*0:10")
+        self.assertEqual(data["created_at"], 1700000000.0)
+        with urllib.request.urlopen(f"{self.base}/status",
+                                    timeout=5) as r:
+            snap = json.loads(r.read())["tasks"][0]
+        self.assertNotIn("dest_dir", snap)
+
+    def test_task_id_desconhecido_404(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(f"{self.base}/task?id=nope", timeout=5)
+        self.assertEqual(cm.exception.code, 404)
 
 
 if __name__ == "__main__":
