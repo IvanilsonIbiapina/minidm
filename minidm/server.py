@@ -185,7 +185,11 @@ _CFG_EDIT: dict[str, tuple] = {
                               "sponsor,selfpromo,interaction,intro,outro,"
                               "preview,music_offtopic"), None),
     "proxy": ("str", 0, 300),
+    "user_agent": ("str", 0, 300),
     "download_base": ("str", 0, 400),
+    # tema do servidor: vale p/ QUALQUER cliente (a webui salva aqui em
+    # vez de só no localStorage — a GUI do PC já usava config.theme)
+    "theme": ("enum", ("light", "dark"), None),
 }
 
 
@@ -412,6 +416,8 @@ def make_handler(app: App):
                     # string ("", "http://host:8080") — a tela de
                     # configurações edita o valor real (não o bool)
                     "proxy": c.proxy,
+                    "user_agent": c.user_agent,
+                    "theme": c.theme,       # tema do servidor (tela/toolbar)
                     "api_port": c.api_port,
                     # pasta interna = destino quando não há categoria —
                     # a webui mostra no placeholder do campo de destino

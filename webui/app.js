@@ -17,8 +17,14 @@ try {
 } catch (_) {
   applyTheme("dark");
 }
-$("#theme-btn").addEventListener("click", () =>
-  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+$("#theme-btn").addEventListener("click", () => {
+  const novo = document.documentElement.dataset.theme === "dark"
+    ? "light" : "dark";
+  applyTheme(novo);
+  // persiste no SERVIDOR (vale p/ os outros clientes — a GUI do PC já
+  // usava config.theme); falha é silenciosa: o localStorage guardou
+  post("/config", { theme: novo }).catch(() => {});
+});
 
 /* -------------------------------------------------------------- formatar */
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -114,6 +120,13 @@ async function loadCategories() {
   try {
     const c = await api("/config");
     catDataDir = c.data_dir || "";
+    // tema do SERVIDOR vale quando este aparelho ainda não escolheu um
+    // (localStorage vazio) — abrir no celular mostra o tema do PC
+    let savedTheme = null;
+    try { savedTheme = localStorage.getItem("minidm-theme"); } catch (_) { /* */ }
+    if (!savedTheme && (c.theme === "light" || c.theme === "dark")) {
+      applyTheme(c.theme);
+    }
     refreshDestPlaceholder();
   } catch (_) { /* sem /config novo: placeholder genérico */ }
 }
@@ -761,9 +774,10 @@ $("#cfg-pick").addEventListener("click", () => askFolder("cf-download_base"));
 const CFG_FIELDS = [
   "max_concurrent", "max_connections", "segments", "retries",
   "throttle_bps", "concurrent_fragments", "playlist_limit",
-  "proxy", "cookies_from_browser", "sponsorblock",
+  "proxy", "user_agent", "cookies_from_browser", "sponsorblock",
   "use_ytdlp_downloader", "download_archive", "download_base",
   "android_public_downloads", "verify_signatures", "remote_checksums",
+  "theme",
 ];
 
 /** Lê o form de configurações -> payload (throttle KB/s -> bytes/s). */

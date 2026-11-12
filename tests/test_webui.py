@@ -177,6 +177,8 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b'id="cf-max_concurrent"', html)
         self.assertIn(b'id="cf-throttle_bps"', html)   # exibido em KB/s
         self.assertIn(b'id="cf-proxy"', html)
+        self.assertIn(b'id="cf-user_agent"', html)   # UA (igual à GUI PC)
+        self.assertIn(b'id="cf-theme"', html)        # tema via config
         self.assertIn(b'id="cf-download_base"', html)
         self.assertIn(b'id="dest-pick"', html)         # Escolher… (#dest)
         self.assertIn(b'id="cfg-pick"', html)          # Escolher… (base)

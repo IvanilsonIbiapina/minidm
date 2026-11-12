@@ -824,6 +824,8 @@ class TestConfigEndpoint(unittest.TestCase):
         self.assertIn("cookies_from_browser", d)
         self.assertIn("sponsorblock", d)
         self.assertIn("android_public_downloads", d)
+        self.assertIn("user_agent", d)          # igual à GUI do PC
+        self.assertEqual(d["theme"], "light")   # tema do servidor
         self.assertEqual(d["data_dir"], self.tmp)   # só leitura
 
     def test_salva_aplica_e_persiste(self):
@@ -882,6 +884,30 @@ class TestConfigEndpoint(unittest.TestCase):
         status, data = self._post({"cookies_from_browser": "ie6"})
         self.assertEqual(status, 400)
         self.assertIn("cookies_from_browser", data["error"])
+
+    def test_user_agent_e_tema(self):
+        """Os dois campos novos da tela: `user_agent` (a GUI do PC já
+        editava; a webui não tinha) e `theme` (o tema sai do
+        localStorage do aparelho e vira config do servidor — o celular
+        mostra o tema escolhido no PC)."""
+        status, data = self._post({"user_agent": "Mozilla/5.0 (Teste)",
+                                   "theme": "dark"})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self.cfg.user_agent, "Mozilla/5.0 (Teste)")
+        self.assertEqual(self.cfg.theme, "dark")
+        # persiste (sobrevive a reiniciar)
+        again = AppConfig.load(data_dir=self.tmp)
+        self.assertEqual(again.theme, "dark")
+        self.assertEqual(again.user_agent, "Mozilla/5.0 (Teste)")
+        # tema fora da lista é rejeitado (e nada é aplicado)
+        status, err = self._post({"theme": "pink", "max_concurrent": 9})
+        self.assertEqual(status, 400)
+        self.assertIn("theme", err["error"])
+        self.assertEqual(self.cfg.max_concurrent, 3)
+        # user_agent com limite de tamanho (300, igual ao proxy)
+        status, _ = self._post({"user_agent": "x" * 301})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.cfg.user_agent, "Mozilla/5.0 (Teste)")
 
     def test_payload_vazio_400(self):
         status, _ = self._post({})

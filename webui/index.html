@@ -220,6 +220,10 @@
         <label class="fld"><span>Proxy (http://host:porta, vazio = direto)</span>
           <input id="cf-proxy" type="text" spellcheck="false"
                  autocomplete="off" placeholder="http://127.0.0.1:8080"></label>
+        <label class="fld"><span>User-Agent padrão (vazio = o do minidm)</span>
+          <input id="cf-user_agent" type="text" spellcheck="false"
+                 autocomplete="off"
+                 placeholder="Mozilla/5.0 (Windows NT 10.0; …)"></label>
         <label class="fld"><span>Pasta base das categorias</span>
           <span class="pick-row">
             <input id="cf-download_base" type="text" spellcheck="false"
@@ -230,6 +234,15 @@
           <select id="cf-android_public_downloads">
             <option value="true">sim</option>
             <option value="false">não (só pasta interna)</option>
+          </select></label>
+      </fieldset>
+
+      <fieldset class="cfg-group">
+        <legend>Aparência</legend>
+        <label class="fld"><span>Tema (vale p/ todos os aparelhos)</span>
+          <select id="cf-theme">
+            <option value="light">claro</option>
+            <option value="dark">escuro</option>
           </select></label>
       </fieldset>
 
