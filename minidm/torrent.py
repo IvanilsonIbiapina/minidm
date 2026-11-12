@@ -136,7 +136,12 @@ class TorrentDownloader:
             if self.stop.is_set():
                 raise DownloadError("interrompido (antes de baixar)")
             try:
-                self._rpc("system.getVersion", timeout=1.0)
+                # `aria2.getVersion` (e NÃO `system.getVersion`): builds
+                # reais do aria2 (ex.: winget 1.37.0) só publicam o
+                # prefixo `aria2.` — system.* tem só multicall/listMethods/
+                # listNotifications. O nome errado dava "No such method"
+                # 40x e o boot abortava com "RPC não abriu em 10 s".
+                self._rpc("aria2.getVersion", timeout=1.0)
                 return
             except Exception:
                 if self._proc.poll() is not None:
@@ -300,7 +305,9 @@ class TorrentDownloader:
             return
         if self._port and proc.poll() is None:
             try:
-                self._rpc("system.shutdown", timeout=3.0)
+                # mesmo caso do boot: o método real é `aria2.shutdown`
+                # (system.shutdown não existe nos builds oficiais)
+                self._rpc("aria2.shutdown", timeout=3.0)
             except Exception:
                 pass
             try:

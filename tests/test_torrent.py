@@ -64,8 +64,10 @@ class FakeAria(TorrentDownloader):
 
     def _rpc(self, method, params=None, timeout=5.0):
         self.rpc_calls.append(method)
-        if method == "system.getVersion":
-            return "1.36.0"
+        # nomes EXATOS do aria2 real (1.37.0): o build winget não tem
+        # `system.getVersion`/`system.shutdown` — só os prefixos `aria2.`
+        if method == "aria2.getVersion":
+            return {"version": "1.37.0"}
         if method in ("aria2.addUri", "aria2.addTorrent"):
             return ["gid-1"]
         if method == "aria2.tellStatus":
@@ -74,7 +76,7 @@ class FakeAria(TorrentDownloader):
             st = self.seq[min(self.tell_n, len(self.seq) - 1)]
             self.tell_n += 1
             return st
-        if method in ("aria2.forceRemove", "system.shutdown"):
+        if method in ("aria2.forceRemove", "aria2.shutdown"):
             return None
         raise AssertionError(f"RPC inesperado: {method}")
 
@@ -195,7 +197,7 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(out.stream, {"bytes_done": 100})
         self.assertEqual(out.progress, 1.0)
         self.assertIn("aria2.addUri", dl.rpc_calls)
-        self.assertIn("system.shutdown", dl.rpc_calls)   # teardown via RPC
+        self.assertIn("aria2.shutdown", dl.rpc_calls)   # teardown via RPC
 
     def test_sem_aria2_erro_com_instrucao(self):
         task = Task(url="magnet:?xt=urn:btih:" + "a" * 40,
@@ -263,6 +265,61 @@ class TestRunner(unittest.TestCase):
         dl._watch()
         self.assertTrue(any("metadados" in (n or "") for n in notas))
         self.assertEqual(dl.task.stream["bytes_done"], 100)
+
+
+class TestMetodosRpcReais(unittest.TestCase):
+    """Regressão: os métodos RPC existem no aria2 REAL (build winget 1.37.0).
+
+    O boot chamava `system.getVersion`; esse build só publica o prefixo
+    `aria2.` (system.* = multicall/listMethods/listNotifications) — o
+    "No such method" se repetia40x e o download morria com "aria2 não
+    abriu o RPC local em 10 s". A lista abaixo é o `system.listMethods`
+    capturado do aria2c 1.37.0 (winget): qualquer `_rpc("…")` do código
+    fora dela falha aqui.
+    """
+
+    LISTA_REAL = [
+        "aria2.addUri", "aria2.addTorrent", "aria2.getPeers",
+        "aria2.addMetalink", "aria2.remove", "aria2.pause",
+        "aria2.forcePause", "aria2.pauseAll", "aria2.forcePauseAll",
+        "aria2.unpause", "aria2.unpauseAll", "aria2.forceRemove",
+        "aria2.changePosition", "aria2.tellStatus", "aria2.getUris",
+        "aria2.getFiles", "aria2.getServers", "aria2.tellActive",
+        "aria2.tellWaiting", "aria2.tellStopped", "aria2.getOption",
+        "aria2.changeUri", "aria2.changeOption", "aria2.getGlobalOption",
+        "aria2.changeGlobalOption", "aria2.purgeDownloadResult",
+        "aria2.removeDownloadResult", "aria2.getVersion",
+        "aria2.getSessionInfo", "aria2.shutdown", "aria2.forceShutdown",
+        "aria2.getGlobalStat", "aria2.saveSession",
+        "system.multicall", "system.listMethods", "system.listNotifications",
+    ]
+
+    def test_todo_metodo_usado_no_codigo_existe_no_aria2(self):
+        import re
+
+        import minidm.torrent as mod
+
+        with open(mod.__file__, encoding="utf-8") as fh:
+            src = fh.read()
+        usados = set(re.findall(r'_rpc\(\s*"([^"]+)"', src))
+        self.assertTrue(usados, "nenhum método RPC encontrado no torrent.py")
+        faltando = sorted(usados - set(self.LISTA_REAL))
+        self.assertFalse(
+            faltando,
+            f"métodos inexistentes no aria2 real: {faltando} "
+            "(o build winget 1.37.0 não os publica)")
+
+    def test_boot_e_teardown_usam_os_metodos_certos(self):
+        """Os dois pontos que quebravam: boot e desligamento."""
+        import minidm.torrent as mod
+
+        with open(mod.__file__, encoding="utf-8") as fh:
+            src = fh.read()
+        # a chamada (e não o comentário que cita o nome antigo)
+        self.assertIn('self._rpc("aria2.getVersion"', src)
+        self.assertNotIn('self._rpc("system.getVersion"', src)
+        self.assertIn('self._rpc("aria2.shutdown"', src)
+        self.assertNotIn('self._rpc("system.shutdown"', src)
 
 
 class TestApiAddTorrent(unittest.TestCase):

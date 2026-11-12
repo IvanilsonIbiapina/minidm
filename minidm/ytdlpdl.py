@@ -32,6 +32,12 @@ from minidm.ytdlp import _in_process, _pipe, find as find_ytdlp
 # [download]  12.3% of ~ 10.00MiB at  1.00MiB/s ETA 00:10
 _PROGRESS_RE = re.compile(
     r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+)([KMG]?i?B)")
+# linha de progresso SEM tamanho total (servidor não mandou
+# Content-Length): "[download]   1.23MiB at  1.00MiB/s" — sem este
+# caso a barra ficava parada em 0% o download inteiro e só "virava
+# verde" no fim.
+_PROGRESS_BYTES_RE = re.compile(
+    r"\[download\]\s+([\d.,]+)\s*([KMG]?i?B)\s+at\s+")
 # uma velocidade impressa pelo próprio yt-dlp na mesma linha ("at 1.00MiB/s")
 _SPEED_RE = re.compile(r"\bat\s+([\d.,]+)\s*([KMG]?i?B)/s")
 # linha de fase do yt-dlp ("[youtube] xyz: Downloading webpage",
@@ -41,6 +47,31 @@ _SIZE_UNITS = {"B": 1, "KB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3,
                "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
 # quanto tempo a velocidade impressa vale antes de cair p/ a estimativa
 _SPEED_TTL = 3.0
+
+
+def generic_stem(stem: str, url: str) -> bool:
+    """O nome é genérico (id do URL, 'download', 'watch')? Aí o título
+    real do yt-dlp é melhor.
+
+    Função de módulo (antes era método do downloader) p/ o server decidir
+    se o `--print before_dl` vai renomear sozinho — a thread que resolve
+    o nome em paralelo não duplica a extração nesse caso.
+    """
+    from minidm.profiles import _id_from_url, _is_generic
+
+    s = (stem or "").strip().lower()
+    if _is_generic(s):
+        return True
+    vid = _id_from_url(url)
+    if not vid:
+        return False
+    v = vid.lower()
+    if s == v:
+        return True
+    # template "{title} [{id}]" com title == id (sem título real):
+    # "9CtAJ_nw640 [9CtAJ_nw640]" -> genérico; o yt-dlp nomeia melhor.
+    base = s.rsplit(" [", 1)[0].strip()
+    return base == v or _is_generic(base)
 
 # flags do yt-dlp que exigem ffmpeg (pós-processamento: converter, embed, mux)
 _FFMPEG_FLAGS = {
@@ -221,6 +252,11 @@ class YtdlpDownloader:
         self._stop = threading.Event()
         self._received = 0
         self._total: Optional[float] = None
+        # etapas do yt-dlp (mux vídeo+áudio baixa 2 formatos: o percentual
+        # ZERA no2º). `_stage_done` acumula os bytes das etapas já
+        # concluídas p/ a barra nunca voltar.
+        self._stage_done = 0
+        self._last_pct = 0.0
         self._speed = 0.0            # última velocidade medida/impressa
         self._speed_ts = 0.0         # monotonic da última medição
         self._samples: list[tuple[float, int]] = []  # (monotonic, bytes)
@@ -249,6 +285,8 @@ class YtdlpDownloader:
                 self._drop_cookie = True
                 self._received = 0
                 self._total = None
+                self._stage_done = 0
+                self._last_pct = 0.0
                 with self._lock:
                     self._samples.clear()
                     self._speed = 0.0
@@ -474,6 +512,13 @@ class YtdlpDownloader:
               getattr(self.config, "sponsorblock", ""))
         if sb and ff:       # requer ffmpeg p/ cortar
             args += ["--sponsorblock-remove", sb]
+        # limite de banda da configuração: o token bucket só existe na
+        # engine própria — o yt-dlp é um processo separado e IGNORA o
+        # throttle (testado: 100 MB baixados num relâmpago com limite de
+        # 2 MB/s). Passa o limite direto p/ ele.
+        tb = int(getattr(self.config, "throttle_bps", 0) or 0)
+        if tb > 0:
+            args += ["--limit-rate", str(tb)]
         # saída: se o nome ainda é o id bruto do URL (sem título real),
         # deixa o yt-dlp nomear com o título de verdade. Se o usuário/perfil
         # definiu um nome, respeita (usa o stem como prefixo).
@@ -517,21 +562,7 @@ class YtdlpDownloader:
     def _generic_stem(self, stem: str) -> bool:
         """O nome é genérico (id do URL, 'download', 'watch')? Aí o título
         real do yt-dlp é melhor."""
-        from minidm.profiles import _id_from_url, _is_generic
-
-        s = (stem or "").strip().lower()
-        if _is_generic(s):
-            return True
-        vid = _id_from_url(self.task.url)
-        if not vid:
-            return False
-        v = vid.lower()
-        if s == v:
-            return True
-        # template "{title} [{id}]" com title == id (sem título real):
-        # "9CtAJ_nw640 [9CtAJ_nw640]" -> genérico; o yt-dlp nomeia melhor.
-        base = s.rsplit(" [", 1)[0].strip()
-        return base == v or _is_generic(base)
+        return generic_stem(stem, self.task.url)
 
     # ------------------------------------------------------------ nome real
     def _apply_title(self, raw: str) -> None:
@@ -571,6 +602,10 @@ class YtdlpDownloader:
     def _parse_line(self, line: str) -> None:
         m = _PROGRESS_RE.search(line)
         if not m:
+            mb = _PROGRESS_BYTES_RE.search(line)
+            if mb:
+                self._parse_bytes_line(mb, line)
+                return
             self._note(line)
             return
         pct = float(m.group(1))
@@ -578,8 +613,15 @@ class YtdlpDownloader:
         now = time.monotonic()
         with self._lock:
             prev = self._received
-            self._total = int(total)
-            self._received = int(total * pct / 100.0)
+            # mux (vídeo+áudio): o yt-dlp baixa o2º formato DEPOIS do1º
+            # e o percentual/ZERA o total (200 MB -> 15 MB). Rola a etapa
+            # concluída p/ `_stage_done`: a barra continua subindo em vez
+            # de voltar a 0% no meio do download.
+            if self._last_pct >= 90 and pct < self._last_pct - 10:
+                self._stage_done += int(self._total or 0)
+            self._last_pct = pct
+            self._total = int(self._stage_done + total)
+            self._received = int(self._stage_done + total * pct / 100.0)
             # o yt-dlp imprime a velocidade na própria linha — é a fonte
             # mais direta p/ o ETA; guardamos com o instante (TTL curto).
             sp = _SPEED_RE.search(line)
@@ -591,9 +633,9 @@ class YtdlpDownloader:
                 if num > 0:
                     self._speed = num * _SIZE_UNITS.get(sp.group(2), 1)
                     self._speed_ts = now
-            # bytes recuaram muito -> o yt-dlp trocou de etapa (baixou o
-            # vídeo e começou o áudio num mux); zera a base da estimativa
-            # por amostras (a velocidade impressa nesta linha continua boa).
+            # bytes recuaram muito -> o yt-dlp trocou de etapa sem passar
+            # por 100%; zera a base da estimativa por amostras (a
+            # velocidade impressa nesta linha continua boa).
             if self._received + 1024 < prev:
                 self._samples.clear()
             self._samples.append((now, self._received))
@@ -604,10 +646,63 @@ class YtdlpDownloader:
         t.total_size = self._total
         # received/progress vêm do stream dict para casar com a UI;
         # as outras chaves (ex.: note da fase atual) são preservadas
+        pct_c = int(100.0 * self._received / self._total) \
+            if self._total else int(pct)
         st = dict(t.stream) if isinstance(t.stream, dict) else {}
         st.update({"bytes_done": self._received,
                    "segments_total": 100,
-                   "segments_done": int(pct)})
+                   "segments_done": pct_c})
+        t.stream = st
+
+    def _parse_bytes_line(self, m: "re.Match[str]", line: str) -> None:
+        """Progresso sem tamanho conhecido ("1.23MiB at 1.00MiB/s").
+
+        Servidor sem Content-Length (ou yt-dlp que não sabe o tamanho):
+        não existe percentual, mas os BYTES e a velocidade avançam — sem
+        este caso a linha virava "note" crua, a barra ficava parada em
+        0% o download inteiro e só "virava verde" quando acabava.
+        """
+        try:
+            b = (float(m.group(1).replace(",", "."))
+                 * _SIZE_UNITS.get(m.group(2), 1))
+        except ValueError:
+            self._note(line)
+            return
+        if b <= 0:
+            return
+        now = time.monotonic()
+        with self._lock:
+            prev = self._received
+            # bytes DESTA etapa + base das concluídas (mux)
+            self._received = int(self._stage_done + b)
+            sp = _SPEED_RE.search(line)
+            if sp:
+                try:
+                    num = float(sp.group(1).replace(",", "."))
+                except ValueError:
+                    num = 0.0
+                if num > 0:
+                    self._speed = num * _SIZE_UNITS.get(sp.group(2), 1)
+                    self._speed_ts = now
+            if self._received + 1024 < prev:
+                self._samples.clear()
+            self._samples.append((now, self._received))
+            self._samples = [(st, sv) for st, sv in self._samples
+                             if now - st <= 30.0]
+        t = self.task
+        st = dict(t.stream) if isinstance(t.stream, dict) else {}
+        st["bytes_done"] = self._received
+        if self._total:
+            # alguma etapa já deu o total (mux) -> percentual de verdade
+            t.total_size = self._total
+            st.update({"segments_total": 100,
+                       "segments_done":
+                           int(100.0 * self._received / self._total)})
+        else:
+            # total segue desconhecido: NÃO finja 0/100 — a UI mostra os
+            # bytes crescendo e a barra "indeterminada"
+            st.pop("segments_done", None)
+            st.pop("segments_total", None)
         t.stream = st
 
     def _note(self, line: str) -> None:

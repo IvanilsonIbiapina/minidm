@@ -300,6 +300,43 @@ class TestApiIntegration(unittest.TestCase):
         task = self.store.get(data["id"])
         self.assertFalse(task.use_ytdlp_downloader)
 
+    def test_12_add_sem_analyze_page_title_vira_nome(self):
+        """SEM analyze (o /add comum), o page_title vira o nome
+        PROVISÓRIO na hora — antes o stem cru do URL ("videoplayback")
+        ficava até o yt-dlp terminar de extrair (era a "demora da
+        tradução do nome" na fila)."""
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": "https://cdn.exemplo.com/files/videoplayback",
+             "page_title": "Aula 03 — Cinemática", "start": False})
+        self.assertEqual(status, 201, data)
+        self.assertEqual(data["filename"], "Aula 03 — Cinemática")
+        task = self.store.get(data["id"])
+        self.assertEqual(task.filename, "Aula 03 — Cinemática")
+        self.assertEqual(task.page_title, "Aula 03 — Cinemática")
+
+    def test_13_add_filename_do_payload_vence_o_page_title(self):
+        """Nome escolhido pelo usuário (payload.filename) é sagrado."""
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": "https://cdn.exemplo.com/files/videoplayback",
+             "filename": "meu-video.mp4",
+             "page_title": "Título Ignorado", "start": False})
+        self.assertEqual(status, 201, data)
+        task = self.store.get(data["id"])
+        self.assertEqual(task.filename, "meu-video.mp4")
+
+    def test_14_add_url_com_extensao_vence_o_page_title(self):
+        """URL já é nome de ARQUIVO de verdade (tem extensão legível):
+        mantém — o título da página é plano de fundo."""
+        status, data = post_json(
+            f"{self.api_base}/add",
+            {"url": f"{self.hls_base}/relatorio-final.bin",
+             "page_title": "Página inicial", "start": False})
+        self.assertEqual(status, 201, data)
+        task = self.store.get(data["id"])
+        self.assertEqual(task.filename, "relatorio-final.bin")
+
     # -------------------------------------------------- categorias (IDM)
     def test_12_categories_endpoint(self):
         status, data = get_json(f"{self.api_base}/categories")
@@ -526,6 +563,92 @@ class TestNomeEmParalelo(unittest.TestCase):
         _resolve_name_bg(self.app, t.id, t.url,
                          provisional="watch", settle=0)
         self.assertEqual(t.filename, "watch")
+
+    @mock.patch("minidm.ytdlp.describe")
+    def test_baixando_com_stem_nao_generico_extrai_mesmo_assim(self, desc):
+        """Stem NÃO genérico ("meu-video-do-site"): o `before_dl` NÃO
+        renomeia — com a tarefa já reivindicada a extração roda mesmo
+        assim e o nome vira real no INÍCIO do download (antes só no
+        `_finalize`, no fim: era a "demora da tradução do nome")."""
+        from minidm.server import _resolve_name_bg
+
+        desc.return_value = {"title": "Aula de Física", "id": "abc123"}
+        t = self._queued(filename="meu-video-do-site")
+        # meta gravado com o nome provisório (pausa anterior): o rename
+        # o MOVE — não sobra órfão nem some o progresso
+        with open(t.meta_path, "w", encoding="utf-8") as f:
+            f.write("{}")
+        old_meta = t.meta_path
+        t.state = TaskState.DOWNLOADING
+        _resolve_name_bg(self.app, t.id, t.url,
+                         provisional="meu-video-do-site", settle=0)
+        desc.assert_called_once()
+        self.assertEqual(t.filename, "Aula de Física [abc123]")
+        self.assertFalse(os.path.exists(old_meta))
+        self.assertTrue(os.path.exists(t.meta_path))
+
+    @mock.patch("minidm.ytdlp.describe")
+    def test_stem_generico_baixando_nao_duplica(self, desc):
+        """Stem genérico ("watch") + já baixando: o before_dl renomeia
+        sozinho — a thread de nome sai SEM extrair de novo."""
+        from minidm.server import _resolve_name_bg
+
+        desc.return_value = {"title": "Nunca", "id": "1"}
+        t = self._queued()
+        t.state = TaskState.DOWNLOADING
+        _resolve_name_bg(self.app, t.id, t.url,
+                         provisional="watch", settle=0)
+        desc.assert_not_called()
+        self.assertEqual(t.filename, "watch")
+
+
+class TestEtaNoSnapshot(unittest.TestCase):
+    """`/status` expõe `eta` (segundos até terminar) p/ a webui mostrar
+    o tempo restante — a webui não tinha ETA nenhum (o TUI/GUI tinham)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="minidm-eta-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.cfg = AppConfig(data_dir=self.tmp)
+        self.store = TaskStore(self.tmp)
+        self.sched = Scheduler(self.store, self.cfg)
+
+    def _row(self, task):
+        self.store.add(task)
+        rows = [r for r in self.sched.snapshot() if r["id"] == task.id]
+        return rows[0]
+
+    def test_fila_sem_eta(self):
+        t = Task(url="http://cdn/v.mp4", dest_dir=self.tmp,
+                 filename="v.mp4", state=TaskState.QUEUED)
+        self.assertIsNone(self._row(t)["eta"])
+
+    def test_baixando_com_total_e_velocidade(self):
+        t = Task(url="http://cdn/v.mp4", dest_dir=self.tmp, filename="v.mp4",
+                 state=TaskState.DOWNLOADING, total_size=4000)
+        t.stream = {"bytes_done": 1000}
+        fake = mock.Mock()
+        fake.speed_bps.return_value = 100.0
+        self.sched._active[t.id] = fake
+        row = self._row(t)
+        self.assertEqual(row["received"], 1000)
+        # (4000 - 1000) / 100 B/s = 30 s
+        self.assertEqual(row["eta"], 30)
+
+    def test_baixando_sem_velocidade_sem_eta(self):
+        t = Task(url="http://cdn/v.mp4", dest_dir=self.tmp, filename="v.mp4",
+                 state=TaskState.DOWNLOADING, total_size=4000)
+        t.stream = {"bytes_done": 1000}
+        fake = mock.Mock()
+        fake.speed_bps.return_value = 0.0
+        self.sched._active[t.id] = fake
+        self.assertIsNone(self._row(t)["eta"])
+
+    def test_concluido_sem_eta(self):
+        t = Task(url="http://cdn/v.mp4", dest_dir=self.tmp, filename="v.mp4",
+                 state=TaskState.DONE, total_size=4000)
+        t.stream = {"bytes_done": 4000}
+        self.assertIsNone(self._row(t)["eta"])
 
 
 class TestOpenEndpoint(unittest.TestCase):

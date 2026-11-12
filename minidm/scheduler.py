@@ -167,6 +167,16 @@ class Scheduler:
         for t in self.store.all():
             dl = self._active.get(t.id)
             st = t.stream if isinstance(t.stream, dict) else {}
+            speed = dl.speed_bps() if dl else 0.0
+            # ETA (segundos até terminar): só faz sentido baixando, com
+            # total conhecido e velocidade viva — None = a UI mostra "--".
+            # (o TUI/GUI já calculavam sozinhos; a webui não tinha)
+            eta = None
+            if (t.state == TaskState.DOWNLOADING and speed > 0
+                    and t.total_size):
+                falta = t.total_size - t.received
+                if falta > 0:
+                    eta = int(falta / speed)
             rows.append({
                 "id": t.id,
                 "url": t.url,
@@ -190,7 +200,8 @@ class Scheduler:
                 # fase atual do yt-dlp ("[youtube] Extraindo…") — dá
                 # feedback visual enquanto a barra ainda está em 0%
                 "note": st.get("note", ""),
-                "speed": dl.speed_bps() if dl else 0.0,
+                "speed": speed,
+                "eta": eta,
                 "error": t.error,
                 "sha256": t.sha256,
                 "checksum_ok": t.checksum_ok,

@@ -36,7 +36,7 @@ from minidm.extsetup import (CRX_NAME, UPDATE_XML_NAME,
                              install_policy as _ext_install,
                              status as _ext_status)
 from minidm.meta import Task, TaskState
-from minidm.remote import auto_delegate, filename_from, page_error
+from minidm.remote import auto_delegate, page_error
 from minidm.scheduler import Scheduler
 from minidm.store import TaskStore
 
@@ -232,7 +232,7 @@ def _resolve_name_bg(app: App, task_id: str, url: str, *,
                      referer: str = "", user_agent: str = "",
                      cookie: str = "", cookies_from_browser: str = "",
                      provisional: str = "",
-                     settle: float = 0.8) -> None:
+                     settle: float = 0.3) -> None:
     """Resolve o NOME REAL da tarefa em paralelo (a fila não espera).
 
     A tarefa entra na fila NA HORA com o nome provisório do URL (share,
@@ -242,17 +242,26 @@ def _resolve_name_bg(app: App, task_id: str, url: str, *,
     tarefas vivas do store).
 
     `settle` deixa o scheduler reivindicar a tarefa: se ela já começou
-    a baixar, SAI — o `--print before_dl` do ytdlpdl resolve o nome sem
-    extraír duas vezes. Se o nome já mudou (análise prévia, before_dl),
-    este resultado é descartado; erro/silêncio também — o `_finalize`
-    continua sendo o fallback garantido.
+    a baixar E o `--print before_dl` do ytdlpdl vai renomear sozinho
+    (stem genérico — ver `ytdlpdl.generic_stem`), SAI — sem extraír duas
+    vezes. Se o stem NÃO é genérico, o before_dl não renomeia: segue a
+    extração mesmo depois de reivindicada (o nome vira real no início do
+    download, não só no `_finalize`). Se o nome já mudou (análise prévia,
+    before_dl), este resultado é descartado; erro/silêncio também — o
+    `_finalize` continua sendo o fallback garantido.
     """
     try:
         time.sleep(settle)
         t = app.store.get(task_id)
-        if (t is None or t.state != TaskState.QUEUED
-                or t.filename != provisional):
-            return                      # começou/mudou: não duplica extração
+        if t is None or t.filename != provisional:
+            return                      # mudou: não duplica extração
+        if t.state not in (TaskState.QUEUED, TaskState.DOWNLOADING):
+            return                      # pausada/removida/erro: não mexe
+        if t.state == TaskState.DOWNLOADING:
+            from minidm.ytdlpdl import generic_stem
+
+            if generic_stem(provisional, url):
+                return                  # before_dl resolve (stem genérico)
         from minidm.ytdlp import _safe_name, describe
 
         info = describe(url, referer=referer, user_agent=user_agent,
@@ -270,7 +279,16 @@ def _resolve_name_bg(app: App, task_id: str, url: str, *,
             return                      # before_dl/análise já nomeou
         if t.state not in (TaskState.QUEUED, TaskState.DOWNLOADING):
             return                      # pausada/removida/erro: não mexe
+        old_meta = t.meta_path
         t.filename = novo
+        # move o meta já gravado (pausa anterior) p/ o nome novo — senão
+        # sobraria um .meta.json órfão com o nome provisório (mesmo cuidado
+        # do ytdlpdl._apply_title)
+        if os.path.exists(old_meta):
+            try:
+                os.replace(old_meta, t.meta_path)
+            except OSError:
+                pass
         app.store.save()
     except Exception:
         pass                            # conforto: before_dl/_finalize resolve
@@ -628,8 +646,15 @@ def make_handler(app: App):
             if not kind or kind == "auto":
                 kind = _kind_from_payload(quality_url)
             if not filename:
-                # usa o nome vindo do servidor/análise, senão o do URL
-                filename = payload.get("filename") or filename_from(quality_url)
+                # nome provisório: o vindo do payload/análise já é melhor;
+                # senão monta um aqui na MESMA ordem do analyze —
+                # URL com extensão de arquivo > título da página > stem
+                # do URL. O page_title (extensão/share) vira nome NA HORA
+                # em vez de esperar a extração do yt-dlp traduzir.
+                from minidm.media import _suggest_name
+
+                filename = payload.get("filename") or _suggest_name(
+                    quality_url, "", page_title)
                 nome_url = not payload.get("filename")
 
             task = Task(

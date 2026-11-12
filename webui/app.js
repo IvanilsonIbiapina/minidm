@@ -33,6 +33,16 @@ function fmtBytes(n) {
   return `${nf.format(n)} ${units[i]}`;
 }
 const fmtSpeed = (n) => (Number(n) > 0 ? `${fmtBytes(n)}/s` : "");
+/** ETA em "3:45" / "1:02:33"; null/undefined -> "" (sem estimativa). */
+const fmtEta = (s) => {
+  if (!(Number(s) >= 0)) return "";
+  let t = Math.round(Number(s));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = t % 60;
+  const mm = h ? String(m).padStart(2, "0") : String(m);
+  return `${h ? `${h}:` : ""}${mm}:${String(sec).padStart(2, "0")}`;
+};
 
 const STATE = {
   queued: "na fila",
@@ -143,7 +153,8 @@ function makeCard(t) {
     <div class="bar"><div class="fill"></div></div>
     <div class="meta">
       <span class="pct"></span><span class="size"></span>
-      <span class="speed"></span><span class="seg"></span>
+      <span class="speed"></span><span class="eta"></span>
+      <span class="seg"></span>
       <span class="note"></span>
     </div>
     <div class="chips"><span class="chip cat"></span><span class="chip q"></span><span class="chip path" hidden></span></div>
@@ -166,13 +177,26 @@ function updateCard(el, t) {
   el.querySelector(".badge").textContent = STATE[st] || st;
 
   const pct = Math.round((Number(t.progress) || 0) * 100);
-  el.querySelector(".fill").style.width = `${pct}%`;
-  el.querySelector(".pct").textContent = t.live ? "ao vivo" : `${pct}%`;
+  // total desconhecido (servidor sem Content-Length): em vez de um 0%
+  // eterno, a barra vira "indeterminada" (listras andando) e o tamanho
+  // mostra os bytes crescendo — o "verde" só chega no fim, como deve
+  const indet = st === "downloading" && !(t.total > 0) && t.received > 0;
+  el.querySelector(".bar").classList.toggle("indet", indet);
+  el.querySelector(".fill").style.width = indet ? "100%" : `${pct}%`;
+  el.querySelector(".pct").textContent =
+    t.live ? "ao vivo" : (indet ? "?" : `${pct}%`);
   el.querySelector(".size").textContent = t.total > 0
     ? `${fmtBytes(t.received)} / ${fmtBytes(t.total)}`
     : (t.received > 0 ? fmtBytes(t.received) : "");
   el.querySelector(".speed").textContent =
     st === "downloading" ? fmtSpeed(t.speed) : "";
+  // ETA do servidor (segundos) — sem total ou parado: "--" só quando
+  // dava p/ estimar; fora do download some
+  el.querySelector(".eta").textContent =
+    st === "downloading"
+      ? (t.eta != null ? `~${fmtEta(t.eta)}`
+        : (t.total > 0 ? "--:--" : ""))
+      : "";
   el.querySelector(".seg").textContent =
     t.segments_total > 0 ? `${t.segments_done}/${t.segments_total} seg` : "";
   // fase do yt-dlp (ex.: "[youtube] Extraindo…") — aparece enquanto a

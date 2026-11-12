@@ -214,6 +214,20 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b".ext-guide", css)
         self.assertIn(b".ext-steps", css)
 
+    def test_eta_e_barra_indeterminada(self):
+        """ETA na card (o /status agora manda `eta` em segundos) e barra
+        "listrada" quando o total é desconhecido — antes a barra ficava
+        parada em 0% o download inteiro e só "virava verde" no fim."""
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"class=\"eta\"", js)            # span na meta
+        self.assertIn(b"const fmtEta", js)
+        self.assertIn(b"t.eta", js)                    # lido do /status
+        self.assertIn(b"indet", js)                    # classe da barra
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b".bar.indet .fill", css)
+        self.assertIn(b"indet-slide", css)
+        self.assertIn(b".meta .eta", css)
+
 
 if __name__ == "__main__":
     unittest.main()

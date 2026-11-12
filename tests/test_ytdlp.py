@@ -764,6 +764,71 @@ class TestDownloaderInProcess(unittest.TestCase):
         self.assertEqual(d.task.stream["note"],
                          "[youtube] x9: Downloading webpage")
 
+    # ------------------------------------------------- barra de progresso
+    def test_progresso_sem_total_conhece_os_bytes(self):
+        """Servidor sem Content-Length: a linha "[download] 1.23MiB at
+        1.00MiB/s" (SEM "% of") agora alimenta os bytes — antes virava
+        `note` crua e a barra ficava parada em 0% o download inteiro,
+        "virando verde" só no fim."""
+        d = self._downloader()
+        d._parse_line("[download]   1.23MiB at  1.00MiB/s")
+        t = d.task
+        self.assertEqual(t.stream["bytes_done"], int(1.23 * 1024 * 1024))
+        # total segue desconhecido: NÃO finja segments0/100 nem um total
+        self.assertNotIn("segments_done", t.stream)
+        self.assertNotIn("segments_total", t.stream)
+        self.assertIsNone(t.total_size)
+        self.assertEqual(t.progress, 0.0)      # sem total não há percentual
+        # a velocidade impressa na linha alimenta o ETA
+        self.assertAlmostEqual(d.speed_bps(), 1024 * 1024, delta=1)
+        # bytes continuam avançando (é o que a UI mostra crescer)
+        d._parse_line("[download]   2.50MiB at  1.50MiB/s")
+        self.assertEqual(t.stream["bytes_done"], int(2.50 * 1024 * 1024))
+
+    def test_mux_nao_zera_a_barra(self):
+        """Mux vídeo+áudio: o yt-dlp baixa o2º formato DEPOIS e o
+        percentual/zera o total — as etapas acumulam em `_stage_done` e
+        a barra NUNCA volta a 0% no meio do download."""
+        d = self._downloader()
+        d._parse_line("[download]  50.0% of ~ 100.00MiB at 1.00MiB/s")
+        self.assertEqual(d.task.progress, 0.5)
+        d._parse_line("[download] 100.0% of ~ 100.00MiB at 1.00MiB/s")
+        self.assertEqual(d.task.progress, 1.0)
+        #2º formato (áudio de20 MiB) começa em0% DELE…
+        d._parse_line("[download]   0.0% of ~ 20.00MiB at 1.00MiB/s")
+        # …mas o total vira120 MiB (o que falta + o que já veio) e o
+        # recebido continua em100 MiB — nem perto de voltar a 0
+        self.assertEqual(d.task.total_size, 120 * 1024 * 1024)
+        self.assertGreater(d.task.progress, 0.8)
+        d._parse_line("[download]  50.0% of ~ 20.00MiB at 1.00MiB/s")
+        self.assertGreater(d.task.progress, 0.9)
+        self.assertEqual(d.task.total_size, 120 * 1024 * 1024)
+
+    def test_throttle_vira_limit_rate_no_ytdlp(self):
+        """A engine tem token bucket, mas o yt-dlp é processo separado e
+        IGNORAVA o limite (100 MB num relâmpago com throttle de2 MB/s).
+        Agora a config vira `--limit-rate` no comando."""
+        d = self._downloader()
+        cmd = d._build_cmd()
+        self.assertNotIn("--limit-rate", cmd)          #0 = sem limite
+        d.config.throttle_bps = 2 * 1024 * 1024
+        cmd = d._build_cmd()
+        i = cmd.index("--limit-rate")
+        self.assertEqual(cmd[i + 1], str(2 * 1024 * 1024))
+
+    def test_generic_stem_decide_quem_renomeia(self):
+        """`generic_stem` (módulo, reusado pelo server): stem genérico ->
+        o before_dl renomeia sozinho (sem extração duplicada na fila)."""
+        from minidm.ytdlpdl import generic_stem
+
+        yt = "https://www.youtube.com/watch?v=abc123"
+        self.assertTrue(generic_stem("watch", yt))
+        self.assertTrue(generic_stem("download", yt))
+        self.assertTrue(generic_stem("abc123", yt))          # id cru
+        self.assertTrue(generic_stem("abc123 [abc123]", yt)) # title==id
+        self.assertFalse(generic_stem("meu-cool-video", yt))
+        self.assertFalse(generic_stem("Aula de Física [abc123]", yt))
+
     # ------------------------------------------------- nome real (antes)
     def test_minidm_title_troca_nome_ja_no_inicio_do_download(self):
         """A linha MINIDM_TITLE (--print before_dl) troca o nome do URL

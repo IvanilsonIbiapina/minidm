@@ -314,6 +314,16 @@ select {
 .card[data-state="error"] .fill { background: var(--err); }
 .card[data-state="paused"] .fill { background: var(--warn); }
 
+/* total desconhecido durante o download: listras andando em vez de
+   um 0% parado (a UI mostra os bytes crescendo ao lado) */
+.bar.indet .fill {
+  background: repeating-linear-gradient(45deg,
+    color-mix(in srgb, var(--run) 75%, transparent) 0 10px,
+    color-mix(in srgb, var(--run) 30%, transparent) 10px 20px);
+  animation: indet-slide .8s linear infinite;
+}
+@keyframes indet-slide { to { background-position: 28.3px 0; } }
+
 .meta {
   display: flex;
   flex-wrap: wrap;
@@ -323,6 +333,7 @@ select {
   font-family: var(--mono);
 }
 .meta .pct { color: var(--text); font-weight: 600; min-width: 42px; }
+.meta .eta { color: var(--text); font-variant-numeric: tabular-nums; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
