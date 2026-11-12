@@ -251,25 +251,34 @@ jobs:
 
             Novidades desta versão:
 
-            * **downloads em segundo plano (Android)**: saindo do app, a
-              fila continua num serviço em primeiro plano — notificação
-              de progresso (toque reabre o app), WifiLock + wake lock
-              para a tela desligada não cortar a transferência; o serviço
-              **para sozinho quando a fila esvazia**;
-            * **bandeja no Windows**: fechar a janela some para a bandeja
-              do sistema (os downloads seguem); duplo clique no ícone
-              reabre e o menu **Sair** encerra de verdade
-              (`close_to_tray`, ligado por padrão);
-            * **nomes de arquivo**: o nome vem do `Content-Disposition`,
-              do nome com extensão no link ou do **título da página**
-              (não mais o id cru do YouTube, ex.: `5dWeeUIZFgA`);
-            * **nada de download vazio**: servidor sem tamanho (o YouTube
-              responde `Content-Length: 0` no HEAD) vira erro claro e
-              arquivos de 0 bytes não são publicados no MediaStore;
-            * **yt-dlp embutido (zip e APK)**: colar um link de página
-              (YouTube, Instagram…) **baixa direto**, sem Termux e sem
-              `pip install` — a extração roda in-process dentro do app
-              (licença Unlicense/GPLv2 do yt-dlp respeitada: só
-              invocamos a CLI e lemos o JSON);
-            * a webui mostra o **destino publicado** (`Download/…`) no
-              card de cada tarefa concluída no Android.
+            * **torrents**: colar um magnet ou `.torrent` baixa direto
+              (aria2 externo via JSON-RPC local — `minidm deps` mostra
+              se falta);
+            * **configurações na webui**: concorrência, banda, proxy,
+              User-Agent, tema (vale para todos os aparelhos) e as
+              pastas — sem reiniciar; no Android o seletor de pasta é o
+              nativo do sistema (SAF);
+            * **fila interativa na webui**: abrir a pasta/arquivo,
+              copiar link, propriedades e **reordenar** arrastando;
+            * **busca + filtro por estado** na lista (histórico estilo
+              YTDLnis) — achar um download antigo é digitar;
+            * **nome do arquivo na hora**: a fila **não espera** a
+              extração terminar — o título da página vira o nome
+              provisório na hora e o real aparece quando chega;
+            * **autostart**: o minidm abre sozinho no login (Windows e
+              Linux; `minidm autostart --off` desliga);
+            * **extensão do navegador**: popup estilo IDM que já abre
+              com a caixa de qualidades em cima da mídia detectada +
+              banner guiado de primeiro uso na webui;
+            * **ffmpeg 8.0 embutido no APK**: mux vídeo+áudio e
+              extrair áudio (mp3/m4a) em qualquer aparelho, sem instalar
+              nada;
+            * **GUI mais leve**: a janela nunca mais congela (snapshot
+              da fila em thread separada);
+            * **correções desta rodada**: barra de progresso presa em
+              0% no caminho yt-dlp (o `--print` colocava o yt-dlp em
+              modo quiet e ele descartava as linhas — `--progress`
+              resolve); torrent não abria o RPC com builds reais do
+              aria2 (`aria2.getVersion`); limite de velocidade
+              (`--limit-rate`) agora vale também no yt-dlp; ETA e barra
+              "indeterminada" quando o total é desconhecido.
