@@ -816,6 +816,22 @@ class TestDownloaderInProcess(unittest.TestCase):
         i = cmd.index("--limit-rate")
         self.assertEqual(cmd[i + 1], str(2 * 1024 * 1024))
 
+    def test_progress_flag_vence_o_quiet_dos_prints(self):
+        """Regressão: `--print` (caminho/título) põe o yt-dlp em modo
+        quiet e ele DESCARTA as linhas de progresso — a barra ficava
+        presa em 0% o download inteiro (testado ao vivo: cmd completo
+        com os dois --print devolve ZERO linhas "[download]"; sem eles,
+        38). `--progress` é o flag oficial que força o progresso em
+        modo quiet."""
+        d = self._downloader()
+        cmd = d._build_cmd()
+        self.assertIn("--print", cmd)                  # premise do bug
+        self.assertIn("--progress", cmd)
+        self.assertLess(cmd.index("--newline"),
+                        cmd.index("--progress"))        # juntos no início
+        # e continua com newline p/ o pipe
+        self.assertIn("--newline", cmd)
+
     def test_generic_stem_decide_quem_renomeia(self):
         """`generic_stem` (módulo, reusado pelo server): stem genérico ->
         o before_dl renomeia sozinho (sem extração duplicada na fila)."""

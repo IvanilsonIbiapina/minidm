@@ -471,7 +471,12 @@ class YtdlpDownloader:
             raise YtdlpError("yt-dlp não encontrado")
         t = self.task
         args = list(cmd)
-        args += ["--newline", "--no-playlist", "--no-mtime"]
+        # `--progress`: os --print abaixo (caminho do arquivo e título)
+        # colocam o yt-dlp em modo QUIET e ele DESCARTA todas as linhas de
+        # progresso — a barra ficava presa em 0% o download inteiro (testado:
+        # mesmo cmd sem os --print devolve 38 linhas, com eles, ZERO).
+        # `--newline` mantém as linhas separadas p/ o pipe.
+        args += ["--newline", "--progress", "--no-playlist", "--no-mtime"]
         # (B) caminho exato do arquivo final: o yt-dlp imprime a linha
         # "MINIDM_PATH:<caminho>" depois de gravar/mover — elimina a
         # adivinhação do `_finalize` (frágil com várias tarefas na pasta).
