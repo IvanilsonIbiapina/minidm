@@ -1,0 +1,13 @@
+minidm em modo PORTABLE
+========================
+Este arquivo muda a pasta de dados do minidm: a fila, a configuração
+e os downloads padrão ficam em  .\data  (ao lado deste arquivo) em
+vez de ~/.minidm — extraia o zip em qualquer pasta ou pendrive e
+leva tudo junto para outra máquina.
+
+Apague este arquivo para voltar ao padrão (~/.minidm).
+
+Obs.: atalhos/autostart (minidm shortcuts on / minidm autostart on)
+ficam apontando para ESTA pasta — em pendrive, crie só onde o drive
+mantém a mesma letra; `minidm shortcuts status` avisa se ficou
+desatualizado.

@@ -5,8 +5,21 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, asdict, fields
+from typing import Optional
+
+from minidm import portable
 
 DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".minidm")
+
+
+def default_data_dir() -> str:
+    """Onde mora a fila/config por padrão.
+
+    ``<flag>/data`` com o modo portable (ver ``portable.flag``), senão
+    ``~/.minidm``. É o ponto único de decisão — CLI, GUI e daemon
+    passam por aqui para nunca dividir a fila entre duas pastas.
+    """
+    return portable.data_dir() or DEFAULT_DATA_DIR
 
 
 @dataclass
@@ -96,7 +109,11 @@ class AppConfig:
         return os.path.join(self.data_dir, "config.json")
 
     @classmethod
-    def load(cls, data_dir: str = DEFAULT_DATA_DIR) -> "AppConfig":
+    def load(cls, data_dir: Optional[str] = None) -> "AppConfig":
+        """Carrega a config de ``data_dir`` (None = o padrão do momento:
+        portable se houver ``portable.flag``, senão ``~/.minidm``)."""
+        if data_dir is None:
+            data_dir = default_data_dir()
         cfg = cls(data_dir=data_dir)
         try:
             with open(cfg.config_path, "r", encoding="utf-8") as f:

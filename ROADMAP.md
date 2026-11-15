@@ -44,11 +44,14 @@ integração com o sistema:
   LEIA-ME e reavaliar se o projeto crescer.
 
 ### 3. Versões portable
-O onedir já é quase portátil (extraia e rode). Falta o modo completo:
+O onedir já é quase portátil (extraia e rode). O modo completo:
 
-* arquivo `portable.flag` ao lado do exe → config/fila **ao lado do
-  exe** (em vez de `~/.minidm`);
-* empacotar um zip "portable" distinto (sem atalhos/inicialização);
+* **feito**: arquivo `portable.flag` ao lado do bundle → config/fila
+  em `<flag>/data` (em vez de `~/.minidm`) — detecção sobe a árvore do
+  exe, GUI/CLI/daemon compartilham a mesma pasta (`minidm/portable.py`);
+* **feito**: zip "portable" distinto na release
+  (`minidm-portable-win64.zip`, mesmo bundle + flag; o normal não tem
+  a flag);
 * candidato opcional: build `onefile` p/ uso avulso (inicia mais lento
   que onedir — medir antes de trocar).
 

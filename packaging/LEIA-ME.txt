@@ -26,6 +26,18 @@ LINHA DE COMANDO (minidm.exe / minidm)
    minidm deps            o que falta (yt-dlp, ffmpeg...)
    minidm gui             abre a interface (idem duplo clique)
 
+PORTABLE (minidm-portable-win64.zip)
+------------------------------------
+O zip "portable" traz o arquivo  portable.flag  na raiz: a fila, a
+configuração e os downloads padrão ficam em  .\data  (ao lado do
+flag) em vez de ~/.minidm — extraia em qualquer pasta ou pendrive e
+leva tudo junto para outra máquina. Apague o portable.flag para
+voltar ao padrão. (O zip normal não tem a flag: ele continua usando
+~/.minidm.)
+Obs.: atalhos/autostart ficam apontando para a pasta — em pendrive
+crie só onde o drive mantém a mesma letra; `minidm shortcuts status`
+avisa se o atalho ficou desatualizado.
+
 DEPENDÊNCIAS EXTERNAS (licenças próprias)
 -----------------------------------------
    yt-dlp   vídeos (YouTube etc.)   https://yt-dlp.org

@@ -130,6 +130,11 @@ jobs:
           cp packaging/LEIA-ME.txt dist/
           if [ "${{ runner.os }}" = "Windows" ]; then
             (cd dist && 7z a "../${{ matrix.pkg }}" minidm minidm-gui LEIA-ME.txt)
+            # zip PORTÁTIL distinto (item 3 do ROADMAP): mesmo bundle +
+            # portable.flag — fila/config em ./data ao lado do exe.
+            # O flag entra DEPOIS do zip normal, que não o deve conter.
+            cp packaging/portable.flag dist/
+            (cd dist && 7z a "../minidm-portable-win64.zip" minidm minidm-gui LEIA-ME.txt portable.flag)
           else
             tar -czf "${{ matrix.pkg }}" -C dist minidm minidm-gui LEIA-ME.txt
           fi
@@ -139,6 +144,14 @@ jobs:
         with:
           name: minidm-${{ matrix.os }}
           path: ${{ matrix.pkg }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: minidm-portable-win64
+          path: minidm-portable-win64.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -232,6 +245,7 @@ jobs:
             | Pacote | Sistema |
             |---|---|
             | `minidm-win64.zip` | Windows x64 |
+            | `minidm-portable-win64.zip` | Windows x64 **portable** (flag ao lado do exe: fila/config em `./data`, ideal p/ pendrive) |
             | `minidm-linux-x86_64.tar.gz` | Linux x86_64 |
             | `minidm-macos-arm64.tar.gz` | macOS Apple Silicon |
             | `minidm-android.apk` | Android (arm64-v8a + x86_64) |

@@ -7,7 +7,7 @@ import os
 import sys
 
 from minidm import __version__
-from minidm.config import AppConfig, DEFAULT_DATA_DIR
+from minidm.config import AppConfig
 from minidm.dashboard import human
 from minidm.meta import Task, TaskState
 from minidm.profiles import ProfileStore, apply_profile
@@ -17,7 +17,9 @@ from minidm.store import TaskStore
 
 # ---------------------------------------------------------------- utilitários
 def _cfg(args) -> AppConfig:
-    cfg = AppConfig.load(getattr(args, "data_dir", None) or DEFAULT_DATA_DIR)
+    # data_dir None/"" → padrão do momento: <flag>/data se há
+    # portable.flag, senão ~/.minidm (ver minidm/portable.py)
+    cfg = AppConfig.load(getattr(args, "data_dir", None) or None)
     return cfg.apply_flags(args)
 
 
@@ -601,8 +603,18 @@ def cmd_config(args) -> int:
         import json
         from dataclasses import asdict
 
+        from minidm import portable
+
         d = asdict(cfg)
         d.pop("data_dir", None)
+        # a pasta de dados não é editável por aqui (é o "onde moro"):
+        # ela é onde ficam config.json + fila — portable flag muda ela.
+        # A marca só aparece se ESTA config mora na pasta portable
+        # (--data-dir explícito com flag presente não é portable).
+        pd = portable.data_dir()
+        modo = "   [portable: portable.flag]" if pd and cfg.data_dir == pd \
+            else ""
+        print(f"data_dir: {cfg.data_dir}{modo}")
         print(json.dumps(d, indent=2))
         return 0
     # set
@@ -723,7 +735,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"minidm {__version__}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--data-dir", default=None,
-                        help="diretório de estado (padrão: ~/.minidm)")
+                        help="diretório de estado (padrão: ~/.minidm, "
+                             "ou ./data na raiz com portable.flag)")
     common.add_argument("--throttle", type=int, default=None,
                         help="limite global de banda em bytes/segundo")
     common.add_argument("--retries", type=int, default=None,

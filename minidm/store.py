@@ -26,7 +26,7 @@ import json
 import os
 import threading
 import time
-from typing import Iterator
+from typing import Iterator, Optional
 
 from minidm.meta import Task, TaskState
 
@@ -72,8 +72,13 @@ def _copy_fields(dst: Task, src: Task) -> None:
 
 
 class TaskStore:
-    def __init__(self, data_dir: str = DEFAULT_DATA_DIR,
+    def __init__(self, data_dir: Optional[str] = None,
                  lock_timeout: float = 15.0):
+        if not data_dir:
+            # mesmo ponto de decisão da config: portable se houver o
+            # flag, senão ~/.minidm — GUI/CLI/daemon sempre juntos
+            from minidm.config import default_data_dir
+            data_dir = default_data_dir()
         self.data_dir = data_dir
         self.path = os.path.join(data_dir, "tasks.json")
         self._lock = threading.Lock()          # entre threads deste processo
