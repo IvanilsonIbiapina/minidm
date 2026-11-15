@@ -170,7 +170,9 @@ def _run_ps(script: str, *, expect: bool = False) -> Optional[str]:
 
 def _lnk_write(path: str, target: str, args: str, desc: str) -> None:
     """Cria o ``.lnk`` via COM ``WScript.Shell`` (PowerShell)."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pasta = os.path.dirname(path)
+    if pasta:                   # caminho sem pasta (ou POSIX c/ '\')?
+        os.makedirs(pasta, exist_ok=True)
     wd = os.path.dirname(os.path.abspath(target)) or os.getcwd()
     script = (
         "$s=New-Object -ComObject WScript.Shell;"
