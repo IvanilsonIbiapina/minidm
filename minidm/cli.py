@@ -663,6 +663,52 @@ def cmd_autostart(args) -> int:
     return 2
 
 
+def cmd_shortcuts(args) -> int:
+    """Atalhos no Menu Iniciar (Windows) / menu de aplicativos (Linux) —
+    o zip é portátil e sem instalador; este comando cria os atalhos do
+    usuário (GUI + LEIA-ME) sem admin."""
+    from minidm import shortcuts
+
+    if not shortcuts.supported():
+        print("atalhos indisponíveis nesta plataforma — só Windows "
+              "(Menu Iniciar) e Linux (menu de aplicativos).",
+              file=sys.stderr)
+        return 1
+
+    act = args.action
+    if act == "status":
+        st = shortcuts.status()
+        print(f"atalhos: {'ATIVOS' if st['enabled'] else 'desligados'}"
+              f"   ({st['backend']})")
+        for p in st["paths"]:
+            falta = "  (falta — rode `minidm shortcuts on`)" \
+                if p in st["missing"] else ""
+            print(f"  {p}{falta}")
+        if st["stale"]:
+            print(f"ATENÇÃO: atalho aponta para outra instalação — "
+                  f"rode `minidm shortcuts on` de novo para corrigir "
+                  f"(atual: {st['command']})")
+        return 0
+    if act == "on":
+        try:
+            paths = shortcuts.enable()
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print("atalhos criados:")
+        for p in paths:
+            print(f"  {p}")
+        return 0
+    if act == "off":
+        if shortcuts.disable():
+            print("atalhos removidos.")
+        else:
+            print("nenhum atalho para remover.")
+        return 0
+    print(f"ação desconhecida: {act}", file=sys.stderr)
+    return 2
+
+
 # --------------------------------------------------------------------- main
 def _add_net_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--proxy", help="proxy http://host:port ou socks5://host:port")
@@ -828,6 +874,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "desktop entry no Linux)")
     a.add_argument("action", choices=["on", "off", "status"])
     a.set_defaults(func=cmd_autostart)
+
+    a = sub.add_parser("shortcuts",
+                       help="atalhos no Menu Iniciar (Windows) / "
+                            "aplicativos (Linux)")
+    a.add_argument("action", choices=["on", "off", "status"])
+    a.set_defaults(func=cmd_shortcuts)
 
     return p
 

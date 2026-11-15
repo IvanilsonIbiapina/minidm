@@ -48,23 +48,34 @@ def _backend() -> str:
     return ""
 
 
-def command() -> str:
-    """Linha de comando que abre a GUI do minidm no login.
+def target() -> tuple[str, str]:
+    """``(executável, argumentos)`` que abrem a GUI do minidm.
 
-    Sempre entre aspas (caminhos com espaços: "C:\\Program Files\\…").
+    É o alvo compartilhado pelo autostart e pelos atalhos do Menu
+    Iniciar (`shortcuts.py`); `command()` só formata isso entre aspas.
     """
     exe = sys.executable
     if getattr(sys, "frozen", False):
         # PyInstaller: nosso próprio executável — sem argumentos abre a
         # GUI nos dois binários (ver packaging/minidm.spec).
-        return f'"{exe}"'
+        return exe, ""
     # desenvolvimento: pythonw não abre console; `-m minidm` sem args
     # já cai na GUI (cli.main → cmd_gui).
     if _backend() == "win":
         pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
         if os.path.isfile(pythonw):
             exe = pythonw
-    return f'"{exe}" -m minidm'
+    return exe, "-m minidm"
+
+
+def command() -> str:
+    """Linha de comando que abre a GUI do minidm no login.
+
+    Sempre entre aspas (caminhos com espaços: "C:\\Program Files\\…").
+    """
+    exe, args = target()
+    quoted = f'"{exe}"'
+    return quoted if not args else f"{quoted} {args}"
 
 
 # --------------------------------------------------------------- windows

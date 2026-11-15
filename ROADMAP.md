@@ -32,7 +32,11 @@ integração com o sistema:
 * **bandeja (tray)** + fechar-para-bandeja na GUI (feito);
 * **autostart** (feito: chave `Run` do registro no Windows + desktop
   entry XDG no Linux — `minidm autostart on|off|status` e menu Arquivo);
-  faltam os **atalhos no Menu Iniciar**;
+* **atalhos no Menu Iniciar** (feito: `minidm shortcuts on|off|status`
+  e menu Arquivo — `.lnk` no Menu Iniciar do usuário no Windows via
+  PowerShell embutido, desktop entry XDG no Linux; o zip portátil
+  ganha atalho sem instalador, e o `status` avisa quando o atalho
+  aponta para outra instalação);
 * **extensão do navegador instalada por padrão** no primeiro uso
   (`minidm ext guided` automatizado, com consentimento);
 * **SmartScreen/assinatura**: exe sem assinatura é bloqueado uma vez;

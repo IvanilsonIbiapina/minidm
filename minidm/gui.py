@@ -444,15 +444,27 @@ class MinidmApp(_Root):
         m_file.add_command(label="Adicionar URL…", command=self._dlg_add,
                            accelerator="Ctrl+N")
         m_file.add_separator()
-        # iniciar com o sistema (autostart): só onde existe backend
-        # (Windows = chave Run do registro, Linux = desktop entry XDG)
-        from minidm import autostart
+        # iniciar com o sistema (autostart) e atalhos no Menu Iniciar:
+        # só onde existe backend (Windows = registro + .lnk, Linux = XDG)
+        from minidm import autostart, shortcuts
+        tem_marcas = False
         if autostart.supported():
+            tem_marcas = True
             self._var_autostart = tk.BooleanVar(
                 value=autostart.status()["enabled"])
             m_file.add_checkbutton(label="Iniciar com o sistema",
                                    variable=self._var_autostart,
                                    command=self._toggle_autostart)
+        # readback=False: no Windows ler o alvo do .lnk é um subprocesso
+        # do PowerShell — o check só precisa saber se o arquivo existe
+        if shortcuts.supported():
+            tem_marcas = True
+            self._var_shortcuts = tk.BooleanVar(
+                value=shortcuts.status(readback=False)["enabled"])
+            m_file.add_checkbutton(label="Atalhos no Menu Iniciar",
+                                   variable=self._var_shortcuts,
+                                   command=self._toggle_shortcuts)
+        if tem_marcas:
             m_file.add_separator()
         m_file.add_command(label="Sair", command=self._really_quit)
         menubar.add_cascade(label="Arquivo", menu=m_file)
@@ -487,6 +499,32 @@ class MinidmApp(_Root):
             except tk.TclError:
                 pass
             self._status(f"Autostart: {exc}")
+
+    def _toggle_shortcuts(self):
+        """Checkbutton 'Atalhos no Menu Iniciar' do menu Arquivo.
+
+        Cria/remove os .lnk do Menu Iniciar do usuário (Windows) ou a
+        desktop entry XDG (Linux) — o zip é portátil, sem instalador.
+        Se o sistema negar a escrita, o check volta ao estado real e a
+        barra de status explica — nunca um traceback na UI.
+        """
+        from minidm import shortcuts
+
+        on = bool(self._var_shortcuts.get())
+        try:
+            if on:
+                paths = shortcuts.enable()
+                self._status(f"Atalhos criados ({len(paths)}) no Menu "
+                             f"Iniciar")
+            else:
+                shortcuts.disable()
+                self._status("Atalhos do Menu Iniciar removidos")
+        except Exception as exc:         # noqa: BLE001 — sistema nega?
+            try:
+                self._var_shortcuts.set(not on)   # volta o check
+            except tk.TclError:
+                pass
+            self._status(f"Atalhos: {exc}")
 
     def _build_sidebar(self):
         """Barra lateral de categorias estilo IDM (Todas + categorias + contagem)."""
