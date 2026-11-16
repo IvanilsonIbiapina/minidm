@@ -58,6 +58,10 @@ O onedir já é quase portátil (extraia e rode). O modo completo:
 ## Já feito (referência)
 
 * Rodadas A–F do yt-dlp (CLI/subprocesso, nunca embutido).
+* **Spotify** (`minidm spotify <url>`): metadados públicos (embed/oEmbed,
+  sem Web API) → busca `ytsearch10` com match por duração → fila com
+  perfil Música (mp3) — e recusa de DRM em todas as entradas (add/media/
+  `/add`, DMCA §1201 / Lei 9.610); streams do Spotify nunca são tocadas.
 * **Downloads Android visíveis no sistema**: arquivo concluído é movido
   para `Download/<categoria>/` via MediaStore (API 29+, sem permissão) ou
   escrita direta + `WRITE_EXTERNAL_STORAGE` (24–28, pedido em runtime) —

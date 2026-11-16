@@ -37,6 +37,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Torrents (magnet/.torrent)** | `add "magnet:?xt=…"` — delega ao **aria2 externo** (JSON-RPC local com token, só 127.0.0.1); `--seed-time=0`, pausa preserva o parcial, sem aria2 o `/add` recusa com a instrução de instalação; **watchdog de metadados**: magnet sem `totalLength` mostra o tempo decorrido (`resolvendo metadados… (30s)`) e após 120 s vira erro acionável (sem peers — DHT/UDP bloqueado pelo firewall) em vez de travar em 0% para sempre |
 | **Mux vídeo+áudio (ffmpeg)** | streams com faixa de áudio separada (DASH/HLS) baixam as duas pernas e o `ffmpeg -c copy` mescla — sem ffmpeg, segue com uma faixa; **embutido no APK** (FFmpeg 8.0 estático, ver `android/setup_ffmpeg.py`) |
 | **Detecção de DRM** (Widevine/FairPlay/PlayReady) | analisa e **recusa** com aviso — nunca tenta contornar (DMCA §1201) |
+| **Spotify (música/playlist)** | `spotify <link>` — metadados **públicos** (página `embed/…` + oEmbed, sem login e sem Web API) → busca `ytsearch10:"Artista - Título"` → melhor candidato por **duração** (tolerância 10 s: `--tolerance`, `--strict`, `--no-match`) → fila com perfil **Música** (bestaudio→mp3 com capa/metadados) e `origin_url` do link original; track/album/playlist (teto ~100 do embed, avisa); **as streams do Spotify são DRM — `add`/`media`/`POST /add` recusam** (DMCA §1201 / Lei 9.610) apontando este comando; podcasts (episode/show) fora do escopo |
 | **Faixa de áudio separada** | HLS `EXT-X-MEDIA`/DASH áudio viram qualidade "áudio" (baixar música) |
 | **Nome de arquivo legível** | `Content-Disposition` → URL → título da página (editável no popup); na fila o **título real chega em paralelo** — o `/add` não segura na extração e o nome troca sozinho |
 | **Pasta de destino escolhida** | popup e `/add` aceitam `dir`; a última pasta fica guardada |
@@ -424,10 +425,44 @@ isso. O `minidm` apenas **detecta** e recusa com aviso claro:
   `SAMPLE-AES`/`KEYFORMAT` de DRM na playlist;
 * DASH: `<ContentProtection schemeIdUri="urn:uuid:…">` (Widevine, PlayReady,
   FairPlay, Marlin) no `AdaptationSet` ou `Representation`;
+* Spotify: qualquer link de `open.spotify.com` (e prévia `p.scdn.co`) é
+  recusado em **todas as entradas** (`media`, `add`, `POST /add`) com a
+  explicação e o caminho legítimo (`minidm spotify`) — o próprio yt-dlp
+  também os recusa (`KnownDRMIE`);
 * a recusa acontece na análise **e** no downloader (defesa em profundidade).
 
 Streams com **AES-128 comum** (sem DRM) continuam totalmente suportados —
 é o caso típico de CDN que só quer criptografar a entrega.
+
+### Spotify: música e playlist (`minidm spotify`)
+
+Cola o link do Spotify: o minidm lê os **metadados públicos** e baixa de
+uma fonte **não-DRM** (YouTube, via yt-dlp) — é o fluxo do spotdl, sem
+login, sem Web API e sem configuração:
+
+```bat
+python -m minidm spotify "https://open.spotify.com/track/3n3Ppam7…"
+python -m minidm spotify "https://open.spotify.com/playlist/37i9dQZ…" --start
+python -m minidm spotify "https://open.spotify.com/album/1DFixLW…" --dry-run
+```
+
+* **metadados**: página `open.spotify.com/embed/…` (`__NEXT_DATA__` com
+  artistas, duração em ms e o `trackList`) + oEmbed de reserva — a Web API
+  oficial nem lista playlists de terceiros sem o dono, por isso sem token;
+* **busca**: `ytsearch10:"Artista - Título"` numa chamada só e escolha do
+  candidato com **menor diferença de duração** (regra do spotdl); falhou a
+  comparação → aviso, e `--strict` recusa em vez de baixar errado;
+* **fila**: perfil **Música** (bestaudio → mp3 com `-x --embed-thumbnail
+  --embed-metadata`) na categoria **Músicas** (pasta `Músicas/`); o
+  `origin_url` guarda o link do Spotify e o nome do arquivo vem dos
+  metadados de lá, não do YouTube;
+* **limites honestos**: álbum/playlist até ~100 faixas (teto do embed,
+  avisa quando chega), faixa indisponível na sua região é pulada com o
+  motivo, podcast (episode/show) e página de artista ficam de fora, e
+  `--limit N` corta a lista;
+* **DRM**: nada aqui contorna proteção nenhuma — só metadados públicos +
+  mídia de fonte livre; tentar baixar o stream direto continua sendo
+  recusado (ver acima).
 
 ### Áudio (música)
 
@@ -648,6 +683,9 @@ python -m minidm config set max_concurrent 4
 
 :: revalidar um arquivo já baixado (hash + assinatura)
 python -m minidm verify C:\Downloads\app.exe --url https://exemplo.com/app.exe
+
+:: música do Spotify (metadados públicos -> busca em fonte não-DRM)
+python -m minidm spotify "https://open.spotify.com/playlist/…" --start
 ```
 
 ### Extensão do navegador
@@ -813,7 +851,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           628 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder + gate de concorrência ao vivo, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC + watchdog de metadados), API (incl. /open + /browse + /task + /config atômico + /ext), GUI/ETA/progresso/tema/DnD/player/snapshot em thread/seletor de pastas, extensão do navegador + conteúdo do popup (caixa em cima/qualidade) + guia 1º uso (X-MiniDM-Ext), autostart (registro/XDG), atalhos no Menu Iniciar (PowerShell COM/XDG), modo portable (portable.flag → ./data), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila/configurações/guia da extensão), Android (SAF/ponte Java + tray/pub))
+tests/           671 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis/templates de nome (ponto no título × extensão), categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder + gate de concorrência ao vivo, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC + watchdog de metadados), spotify (metadados embed/oEmbed + match por duração + recusa DRM em todas as entradas), API (incl. /open + /browse + /task + /config atômico + /ext), GUI/ETA/progresso/tema/DnD/player/snapshot em thread/seletor de pastas, extensão do navegador + conteúdo do popup (caixa em cima/qualidade) + guia 1º uso (X-MiniDM-Ext), autostart (registro/XDG), atalhos no Menu Iniciar (PowerShell COM/XDG), modo portable (portable.flag → ./data), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila/configurações/guia da extensão), Android (SAF/ponte Java + tray/pub))
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)
@@ -840,7 +878,10 @@ integração yt-dlp (stub), **perfis + templates de nome + archive**,
 link direto × página**, **FTP/SFTP** (servidor FTP mínimo em Python puro
 que registra os offsets de `REST` + servidor SFTP em processo com paramiko:
 segmentação, retomada, retry de 550, credenciais URL > config > anônimo,
-`known_hosts` estrita × auto-add, paramiko ausente) e a API
+`known_hosts` estrita × auto-add, paramiko ausente), **Spotify**
+(metadados públicos do embed/oEmbed, match por duração com
+`ytsearch` + tolerância, enfileiramento com perfil Música e recusa de
+DRM em todas as entradas: CLI, análise e API) e a API
 (`/media/analyze`, `/add` kind=auto e
 `/profiles`) de ponta a ponta.
 

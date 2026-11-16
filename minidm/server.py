@@ -585,6 +585,15 @@ def make_handler(app: App):
                 self._json({"error": "url http(s)/ftp/sftp obrigatória"}, 400)
                 return
 
+            # Spotify: recusa (DRM) ANTES de analisar/enfileirar — corpo no
+            # formato que a extensão e a webui já leem ({ok:false, drm, error})
+            from minidm.spotify import refuse_if_spotify
+
+            refused = refuse_if_spotify(str(url))
+            if refused:
+                self._json(refused, 400)
+                return
+
             # (C) modo playlist: expande em várias tarefas e sai — cada
             # entrada vira uma tarefa na fila (mesmo caminho do modo single).
             if payload.get("playlist"):

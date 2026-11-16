@@ -35,6 +35,16 @@ def _print_task_line(t: Task) -> None:
 # ------------------------------------------------------------------- comandos
 def cmd_add(args) -> int:
     cfg = _cfg(args)
+    # (0) Spotify: recusa ANTES de tudo (streams com DRM próprio) — nada de
+    # enfileirar tarefa que o yt-dlp rejeitaria com erro técnico; a mensagem
+    # aponta o fluxo legítimo (`minidm spotify <url>`).
+    from minidm.spotify import refuse_if_spotify
+
+    for u in args.urls:
+        r = refuse_if_spotify(u)
+        if r:
+            print(r["error"], file=sys.stderr)
+            return 2
     # (A) flag --cookies-from-browser sobrepõe a config p/ ESTA execução
     if getattr(args, "cookies_from_browser", ""):
         cfg.cookies_from_browser = args.cookies_from_browser
@@ -364,7 +374,10 @@ def cmd_media(args) -> int:
                 use_ytdlp=bool(getattr(args, "ytdlp", False)))
     if not r.get("ok"):
         if r.get("drm"):
-            print(f"DRM ({r['drm']}): conteúdo protegido — "
+            # com explicação completa (Spotify: aponta o `minidm spotify`)
+            # ou o resumo de sempre (HLS/DASH com Widevine…)
+            print(r.get("error") or
+                  f"DRM ({r['drm']}): conteúdo protegido — "
                   f"não é possível baixar.", file=sys.stderr)
         else:
             print(f"falha: {r.get('error')}", file=sys.stderr)
@@ -426,6 +439,140 @@ def cmd_media(args) -> int:
         if args.start:
             return _run_inline(store, cfg, [task.id])
     return 0
+
+
+def cmd_spotify(args) -> int:
+    """Spotify -> metadados públicos -> busca em fonte NÃO-DRM -> fila.
+
+    Fluxo (spotdl-style, sem Web API e sem login):
+      URL -> página embed/oEmbed (título, artistas, duração, trackList)
+          -> `ytsearch<n>:"Artista - Título"` (yt-dlp.describe)
+          -> melhor candidato por |Δ duração| (gate de DRM de novo)
+          -> Task com perfil "Música" (bestaudio -> mp3) na categoria
+             "Músicas", com `origin_url` apontando pro link do Spotify.
+    """
+    from minidm import spotify as sp
+
+    cfg = _cfg(args)
+    kind, sid = sp.is_spotify_url(args.url)
+    if not kind:
+        print("URL do Spotify inválida — cole um link como "
+              "https://open.spotify.com/track/… (track, album ou playlist).",
+              file=sys.stderr)
+        return 2
+    if kind in ("episode", "show"):
+        print("podcast (episode/show) do Spotify fica fora do escopo por "
+              "ora — use track, album ou playlist.", file=sys.stderr)
+        return 2
+    if kind == "artist":
+        print("URL de artista: use uma playlist ou track do artista "
+              "(a lista de top-tracks exige OAuth).", file=sys.stderr)
+        return 2
+
+    # categoria estilo IDM: define pasta (base+subpasta) e perfil
+    category = getattr(args, "category", "") or ""
+    dest_dir = args.dir or cfg.data_dir
+    profile = args.profile or ""
+    if category:
+        from minidm.categories import (category_folder, ensure_folder,
+                                       get_category)
+
+        cat = get_category(category)
+        if not cat:
+            print(f"categoria desconhecida: {category} "
+                  "(use: Vídeos, Músicas, Programas, Documentos, "
+                  "Imagens, Comprimidos)", file=sys.stderr)
+            return 2
+        if not args.dir:
+            dest_dir = ensure_folder(category_folder(cat, cfg))
+        if not profile:
+            profile = cat.profile
+    if not profile:
+        profile = "Música"
+
+    print(f"metadados do Spotify ({kind}) …")
+    try:
+        meta = sp.metadata(kind, sid, args.url)
+    except Exception as exc:
+        print(f"falha: {exc}", file=sys.stderr)
+        return 1
+
+    all_tracks = meta["tracks"]
+    tracks = [t for t in all_tracks if t.get("playable", True)]
+    skipped = len(all_tracks) - len(tracks)
+    if args.limit and args.limit > 0:
+        tracks = tracks[:args.limit]
+    if meta.get("truncated"):
+        print(f"aviso: lista chegou no teto do embed (~{100} faixas) — "
+              "só o que coube será processado")
+    if skipped:
+        motivos = sorted({t.get("reason") or "indisponível"
+                          for t in all_tracks if not t.get("playable", True)})
+        print(f"aviso: {skipped} faixa(s) não tocável(is) na sua região/"
+              f"conta ({', '.join(motivos)}) — pulada(s)")
+    if not tracks:
+        print("nenhuma faixa tocável nessa URL.", file=sys.stderr)
+        return 1
+    print(f"{meta['title']} — {len(tracks)} faixa(s) -> busca em fonte "
+          f"não-DRM (perfil {profile})")
+
+    store = TaskStore(cfg.data_dir)
+    pstore = ProfileStore(cfg.data_dir)
+    created: list[Task] = []
+    erros = 0
+    total = len(tracks)
+    for i, tr in enumerate(tracks, 1):
+        prefix = f"[{i}/{total}]"
+        try:
+            r = sp.resolve(tr, tolerance=args.tolerance,
+                           strict=args.strict, no_match=args.no_match,
+                           referer=args.referer or "",
+                           user_agent=args.user_agent or cfg.user_agent,
+                           cookie=args.cookie or cfg.cookie,
+                           cookies_from_browser=cfg.cookies_from_browser)
+        except sp.ResolveError as exc:
+            print(f"{prefix} {tr['title']}: {exc}", file=sys.stderr)
+            erros += 1
+            continue
+        except RuntimeError as exc:        # yt-dlp ausente / fora do ar
+            print(f"{prefix} falha: {exc}", file=sys.stderr)
+            return 1
+        fname = sp.filename_for(tr)
+        delta = ("" if r["diff"] is None else f"  Δ{r['diff']:.0f}s")
+        if r["mismatch"]:
+            delta += f" (fora da tolerância de {args.tolerance:g}s)"
+        if args.dry_run:
+            print(f"{prefix} {r['query']}  ->  {r['url']}{delta}")
+            continue
+        task = Task(url=r["url"], dest_dir=dest_dir, filename=fname,
+                    state=TaskState.QUEUED, kind="file",
+                    origin_url=args.url, page_title=meta["title"],
+                    category=category,
+                    referer="", proxy=args.proxy or "",
+                    cookie=args.cookie or "",
+                    user_agent=args.user_agent or "",
+                    cookies_from_browser=cfg.cookies_from_browser)
+        # perfil "Música": bestaudio -> mp3 (embed de metadados/capa);
+        # info com o TÍTULO do Spotify p/ o template de nome não cair
+        # no nome genérico do YouTube (watch, id do vídeo…)
+        apply_profile(task, pstore, profile, info={"title": fname})
+        task.use_ytdlp_downloader = True   # perfil não delega sozinho
+        task.origin_url = args.url
+        store.add(task)
+        created.append(task)
+        print(f"{prefix} [{task.id}] {task.filename}  <- {r['url']}  "
+              f"[{task.profile}]{delta}")
+    if args.dry_run:
+        if erros:
+            return 1
+        print("dry-run: nada foi enfileirado.")
+        return 0
+    if not created:
+        return 1
+    if args.start:
+        return _run_inline(store, cfg, [t.id for t in created])
+    print("Use `python -m minidm start --all` ou `python -m minidm daemon`.")
+    return 1 if erros else 0
 
 
 def cmd_deps(args) -> int:
@@ -874,6 +1021,36 @@ def build_parser() -> argparse.ArgumentParser:
                    help="analisa com o yt-dlp instalado (sites complexos)")
     _add_net_flags(a)
     a.set_defaults(func=cmd_media)
+
+    a = sub.add_parser("spotify",
+                       help="música/playlist do Spotify -> fila (metadados "
+                            "públicos + busca em fonte não-DRM)",
+                       parents=[common])
+    a.add_argument("url", help="link do Spotify (track, album ou playlist)")
+    a.add_argument("--dir", help="diretório de destino")
+    a.add_argument("--profile", help="perfil de download (padrão: Música)")
+    a.add_argument("--category", metavar="CAT", default="Músicas",
+                   help="categoria estilo IDM (padrão: Músicas = pasta "
+                        "Músicas + perfil Música -> mp3)")
+    a.add_argument("--start", action="store_true",
+                   help="começa já a baixar as faixas resolvidas")
+    a.add_argument("--limit", type=int, default=0, metavar="N",
+                   help="máximo de faixas (0 = todas; o embed vai até ~100)")
+    a.add_argument("--dry-run", action="store_true",
+                   help="só mostra a busca e o vídeo escolhido, "
+                        "sem enfileirar nada")
+    a.add_argument("--tolerance", type=float, default=10.0, metavar="SEG",
+                   help="diferença máxima de duração aceita vs. o Spotify "
+                        "(padrão: 10 s)")
+    a.add_argument("--strict", action="store_true",
+                   help="falha se nenhum candidato casar na duração")
+    a.add_argument("--no-match", action="store_true",
+                   help="não compara duração: confia no 1º resultado")
+    a.add_argument("--cookies-from-browser", dest="cookies_from_browser",
+                   metavar="NAV",
+                   help="usa a sessão do navegador do usuário (yt-dlp)")
+    _add_net_flags(a)
+    a.set_defaults(func=cmd_spotify)
 
     a = sub.add_parser("config", help="mostra/edita configuração",
                        parents=[common])

@@ -31,6 +31,9 @@ from typing import Optional
 
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# extensão de verdade: só letras/números, curta e não-todo-número — o
+# ponto de um TÍTULO ("Mr. Brightside", "video.2024") não é extensão
+_REAL_EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
 MAX_STEM = 120
 
 
@@ -58,6 +61,11 @@ def render(template: str, context: dict, fallback_ext: str = "") -> str:
         name = "download"
     # separa extensão para cortar o stem com segurança
     stem, ext = _split_ext(name)
+    if ext and not _is_real_ext(ext):
+        # o "ext" achado é o ponto do TÍTULO ("Mr. Brightside" ->
+        # ". Brightside"): o nome inteiro é o stem e o fallback volta
+        # a valer (sem isso, música com ponto nunca ganhava .mp3)
+        stem, ext = name, ""
     if not ext and fallback_ext:
         ext = "." + fallback_ext.lstrip(".")
     stem = stem[:MAX_STEM].rstrip(" .")
@@ -83,6 +91,8 @@ def preview(template: str, context: dict, fallback_ext: str = "") -> str:
     if not name:
         name = "download"
     stem, ext = _split_ext(name)
+    if ext and not _is_real_ext(ext):
+        stem, ext = name, ""
     if not ext and fallback_ext:
         ext = "." + fallback_ext.lstrip(".")
     return stem[:MAX_STEM] + ext
@@ -126,3 +136,9 @@ def _split_ext(name: str) -> tuple[str, str]:
         i = name.rfind(".")
         return name[:i], name[i:]
     return name, ""
+
+
+def _is_real_ext(ext: str) -> bool:
+    """`.mp4`/`.7z`/`.m3u8` sim; `. Brightside`/`.2024` não (título)."""
+    body = ext[1:]
+    return bool(_REAL_EXT_RE.match(ext)) and not body.isdigit()

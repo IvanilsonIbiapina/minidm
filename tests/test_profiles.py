@@ -75,6 +75,28 @@ class TestNameTemplate(unittest.TestCase):
         got = render("{title}", {"title": "filme"}, fallback_ext="mp4")
         self.assertEqual(got, "filme.mp4")
 
+    def test_render_ponto_no_titulo_nao_e_extensao(self):
+        # bug: "Mr. Brightside" => _split_ext achava ". Brightside" e o
+        # fallback de extensão nunca era aplicado (música sem .mp3)
+        got = render("{title}.{ext}",
+                     {"title": "The Killers - Mr. Brightside", "ext": ""},
+                     fallback_ext="mp3")
+        self.assertEqual(got, "The Killers - Mr. Brightside.mp3")
+
+    def test_render_ext_somente_digitos_nao_e_extensao(self):
+        got = render("{title}.{ext}", {"title": "video.2024", "ext": ""},
+                     fallback_ext="mp4")
+        self.assertEqual(got, "video.2024.mp4")
+        # e sem fallback o nome volta inteiro (nada de cortar no ponto)
+        self.assertEqual(render("{title}.{ext}",
+                                {"title": "video.2024", "ext": ""}),
+                         "video.2024")
+
+    def test_render_reais_extensoes_continuam_normais(self):
+        for ext in ("mp4", "7z", "m3u8", "MP3", "tar"):
+            got = render("{title}.{ext}", {"title": "aula", "ext": ext})
+            self.assertEqual(got, f"aula.{ext}")
+
     def test_render_corta_stem_longo(self):
         got = render("{title}.{ext}", {"title": "x" * 500, "ext": "mp4"})
         self.assertTrue(got.endswith(".mp4"))

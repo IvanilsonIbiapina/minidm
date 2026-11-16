@@ -664,6 +664,15 @@ def analyze(url: str, referer: str = "", user_agent: str = "",
     sites complexos; se falhar, cai no parser HLS/DASH próprio.
     `cookies_from_browser`: usa a sessão do navegador do usuário (yt-dlp).
     """
+    # Spotify: streams com DRM próprio -> recusa ANTES de qualquer
+    # requisição, em TODAS as entradas que analisam URL (CLI `media`,
+    # `add` com kind=auto, GUI e POST /add da webui). A mensagem aponta
+    # o fluxo legítimo (`minidm spotify <url>`).
+    from minidm.spotify import refuse_if_spotify
+
+    refused = refuse_if_spotify(url)
+    if refused:
+        return refused
     # FTP/SFTP: não há "site" nem manifesto — o que existe é um arquivo
     # remoto com tamanho conhecido (SIZE/stat). Devolve a forma de "file"
     # direto p/ a interface mostrar tamanho e nome antes de baixar.
