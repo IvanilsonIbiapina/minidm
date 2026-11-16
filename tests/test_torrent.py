@@ -266,6 +266,55 @@ class TestRunner(unittest.TestCase):
         self.assertTrue(any("metadados" in (n or "") for n in notas))
         self.assertEqual(dl.task.stream["bytes_done"], 100)
 
+    def test_nota_conta_os_segundos_esperados(self):
+        """A nota mostra o tempo decorrido — sinal de vida na UI
+        ('resolvendo metadados… (60s)' em vez de colar em 0%)."""
+        notas = []
+        relogio = {"t": 0.0}
+
+        def tick():
+            relogio["t"] += 30.0
+            return relogio["t"]
+
+        dl = _spawn(FakeAria, self.tmp, seq=[
+            {"status": "waiting", "completedLength": "0",
+             "totalLength": "0", "downloadSpeed": "0"},
+            {"status": "waiting", "completedLength": "0",
+             "totalLength": "0", "downloadSpeed": "0"},
+            {"status": "complete", "completedLength": "100",
+             "totalLength": "100", "downloadSpeed": "0"},
+        ], on_progress=lambda t: notas.append(
+            (t.stream or {}).get("note")))
+        dl._gid = "gid-1"
+        with mock.patch("minidm.torrent.time.monotonic", side_effect=tick):
+            dl._watch()
+        self.assertTrue(any("metadados" in (n or "") for n in notas))
+        # 2ª varredura: 60 s desde o 1º poll sem totalLength
+        self.assertTrue(any("(60s)" in (n or "") for n in notas), notas)
+
+    def test_metadados_presos_viram_erro_acionavel(self):
+        """Watchdog: totalLength nunca chega (sem peers — DHT/UDP
+        bloqueado ou torrent sem sementes) → erro com instrução em
+        vez de a tarefa congelar para sempre em 'resolvendo…'."""
+        relogio = {"t": 0.0}
+
+        def tick():
+            relogio["t"] += 60.0
+            return relogio["t"]
+
+        dl = _spawn(FakeAria, self.tmp, seq=[
+            {"status": "active", "completedLength": "0",
+             "totalLength": "0", "downloadSpeed": "0"},
+        ])
+        with mock.patch("minidm.torrent.time.monotonic", side_effect=tick):
+            with self.assertRaises(DownloadError) as ctx:
+                dl.run()
+        msg = str(ctx.exception)
+        self.assertIn("metadados", msg)
+        self.assertIn("firewall", msg)              # ação sugerida
+        self.assertEqual(dl.task.state, TaskState.ERROR)
+        self.assertIn("metadados", dl.task.error)
+
 
 class TestMetodosRpcReais(unittest.TestCase):
     """Regressão: os métodos RPC existem no aria2 REAL (build winget 1.37.0).

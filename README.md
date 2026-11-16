@@ -34,7 +34,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Download de stream HLS/DASH** | `media <url>` — segmentos `.ts`/`.m4s` em paralelo, concatena e decifra AES-128 |
 | **HLS ao vivo** (playlist sem `#EXT-X-ENDLIST`) | a engine re-busca a playlist no período do `#EXT-X-TARGETDURATION` até o `ENDLIST`/limite de duração; pausa/retoma salva; segmento que sai da janela vira `lost`, não erro |
 | **Download FTP/SFTP** | `add ftp://…` / `add sftp://…` — mesma engine segmentada (retomada, retry, mirrors, throttle); FTP é nativo, SFTP precisa de `pip install paramiko` |
-| **Torrents (magnet/.torrent)** | `add "magnet:?xt=…"` — delega ao **aria2 externo** (JSON-RPC local com token, só 127.0.0.1); `--seed-time=0`, pausa preserva o parcial, sem aria2 o `/add` recusa com a instrução de instalação |
+| **Torrents (magnet/.torrent)** | `add "magnet:?xt=…"` — delega ao **aria2 externo** (JSON-RPC local com token, só 127.0.0.1); `--seed-time=0`, pausa preserva o parcial, sem aria2 o `/add` recusa com a instrução de instalação; **watchdog de metadados**: magnet sem `totalLength` mostra o tempo decorrido (`resolvendo metadados… (30s)`) e após 120 s vira erro acionável (sem peers — DHT/UDP bloqueado pelo firewall) em vez de travar em 0% para sempre |
 | **Mux vídeo+áudio (ffmpeg)** | streams com faixa de áudio separada (DASH/HLS) baixam as duas pernas e o `ffmpeg -c copy` mescla — sem ffmpeg, segue com uma faixa; **embutido no APK** (FFmpeg 8.0 estático, ver `android/setup_ffmpeg.py`) |
 | **Detecção de DRM** (Widevine/FairPlay/PlayReady) | analisa e **recusa** com aviso — nunca tenta contornar (DMCA §1201) |
 | **Faixa de áudio separada** | HLS `EXT-X-MEDIA`/DASH áudio viram qualidade "áudio" (baixar música) |
@@ -45,6 +45,7 @@ porém com código próprio e sem qualquer mecanismo de licenciamento.
 | **Escolha de qualidade/formato** | `add --height 720 --ext mp4` (ou o card da extensão, ou a **caixa de qualidades da webui** antes do Baixar) — teto de altura + container, com fallback p/ DASH-only |
 | **Interações da fila na webui** | botão direito/**⋯** no card (estilo IDM): **abrir pasta/arquivo** (`POST /open`, caminho do registro — destino publicado no Android), **copiar URL** (clipboard com fallback), **propriedades** (`GET /task`, registro completo), **↑/↓ subir-descer** e **arrastar** p/ reordenar (`POST /reorder`) |
 | **Configurações na webui** | sheet **⚙** (concorrência/banda, resiliência, yt-dlp, rede/pastas) grava via `POST /config` — **valida tudo antes de aplicar** (atômico), persiste em `config.json` e reconfigura o pool **ao vivo** (`apply_config`: workers/semáforo/archive sem reiniciar); `max_concurrent` é lido a cada claim (descer/suber vale na hora) |
+| **Escolher a pasta sem digitar** | o campo de destino (e a pasta base das categorias) da webui tem botão **Escolher…** em qualquer lugar: no desktop o servidor abre o **seletor nativo do sistema** (`POST /browse` — diálogo no mainloop da GUI; sem GUI, Tk temporário; macOS sem GUI pede para digitar) e no APK o SAF da ponte Java — cancelar não preenche o campo |
 | **Seletor de pasta no Android** | botões **"Escolher…"** no destino e na base de categorias via SAF (`ACTION_OPEN_DOCUMENT_TREE` → caminho físico com **probe de escrita** — falha honesta cedo se o SO bloquear); ponte `MinidmBridge` só aparece no APK, cancelar é silencioso |
 | **Extensão guiada no 1º uso** | a webui mostra um banner "Conecte a extensão" que **some sozinho** quando a API recebe `X-MiniDM-Ext` (visto em `ext_seen.json`, re-verificado a cada 10 s): **Instalar agora** (`POST /ext` → política forcelist com a porta da própria API, sem admin), **Guia manual** (copia a pasta + passos) ou **Já instalei — verificar**; dispensa fica no `localStorage`; escondido no celular |
 | **Categorias estilo IDM** (pasta+perfil) | `--category Vídeos` — separa por pastas (Vídeos, Músicas, Programas…); base configurável (`download_base`), Vídeos é a padrão |
@@ -710,6 +711,11 @@ POST /reorder  {ids:[…]}      -> reordena a fila (1º = próxima; arrasto/
 POST /open     {id, what}     -> abre no explorador padrão: what="folder"
                                  (destino publicado ou dest_dir) ou
                                  "file" (published_path || final_path)
+POST /browse   {initial?}     -> seletor de pastas NATIVO p/ o campo de
+                                 destino: o servidor abre o diálogo (GUI
+                                 registra o Tk principal; sem GUI, Tk
+                                 temporário) e devolve {path} ("" =
+                                 cancelou) ou {error} (503 acionável)
 POST /config  {campo: valor}  -> salva e aplica ao vivo (valida a requisição
                                  inteira antes — 400 nada é gravado; campos
                                  não editáveis como data_dir/api_port/cookie
@@ -807,7 +813,7 @@ minidm/
   dashboard.py   TUI (rich)
   daemon.py      scheduler + clipboard + API
   browser_ext/   extensão MV3 (captura + Salvar como + perfil + API)
-tests/           621 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder + gate de concorrência ao vivo, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC), API (incl. /open + /task + /config atômico + /ext), GUI/ETA/progresso/tema/DnD/player/snapshot em thread, extensão do navegador + conteúdo do popup (caixa em cima/qualidade) + guia 1º uso (X-MiniDM-Ext), autostart (registro/XDG), atalhos no Menu Iniciar (PowerShell COM/XDG), modo portable (portable.flag → ./data), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila/configurações/guia da extensão), Android (SAF/ponte Java + tray/pub))
+tests/           628 testes (engine, stream, mídia, DRM, yt-dlp (CLI + runner + downloader in-process), integrações yt-dlp A–F, perfis, categorias, deps (incl. runtime JS e ffmpeg do APK), fila multi-processo + reorder + gate de concorrência ao vivo, nome em paralelo (before_dl + resolve em segundo plano), mux, HLS ao vivo, FTP/SFTP, torrent (aria2 RPC + watchdog de metadados), API (incl. /open + /browse + /task + /config atômico + /ext), GUI/ETA/progresso/tema/DnD/player/snapshot em thread/seletor de pastas, extensão do navegador + conteúdo do popup (caixa em cima/qualidade) + guia 1º uso (X-MiniDM-Ext), autostart (registro/XDG), atalhos no Menu Iniciar (PowerShell COM/XDG), modo portable (portable.flag → ./data), share ACTION_SEND, webui (qualidade/destino/busca/interações da fila/configurações/guia da extensão), Android (SAF/ponte Java + tray/pub))
 e2e_mux_real.py  E2E real do mux (ffmpeg gera a mídia e mescla)
 e2e_live_real.py E2E real do HLS ao vivo (playlist que cresce + mux ao vivo)
 e2e_ftp_real.py  E2E real de FTP/SFTP (scheduler -> engine remota -> retry 550)

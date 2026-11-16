@@ -41,6 +41,11 @@ POLL_SECONDS = 1.0
 # subida do RPC: 40 tentativas × 0,25 s = 10 s
 BOOT_TRIES = 40
 BOOT_DELAY = 0.25
+# watchdog dos METADADOS (magnet sem totalLength): sem peers o aria2
+# espera para sempre em 0% — DHT/UDP bloqueado pelo firewall ou
+# torrent sem sementes. Depois de META_TIMEOUT s viramos erro com a
+# instrução em vez de congelar a tarefa em "resolvendo metadados…"
+META_TIMEOUT = 120.0
 
 _MAGNET_BTIH = re.compile(r"xt=urn:btih:([0-9a-fA-F]{40}|[A-Za-z2-7]{32})",
                           re.IGNORECASE)
@@ -219,6 +224,7 @@ class TorrentDownloader:
         """Polling do tellStatus: espelha bytes/total/velocidade na task."""
         t = self.task
         last_save = 0.0
+        meta_since: Optional[float] = None   # 1º poll sem totalLength
         while True:
             if self.stop.is_set():
                 self._remove_current()
@@ -234,18 +240,29 @@ class TorrentDownloader:
             except (TypeError, ValueError):
                 self._speed = 0.0
             self._speed_ts = time.monotonic()
+            now = time.monotonic()
+            # nome real assim que o aria2 conhece os metadados (o nome
+            # provisório é torrent-<hash> — a UI passa a mostrar o título)
+            nome = ((st.get("bittorrent") or {}).get("info") or {}) \
+                .get("name")
+            if isinstance(nome, str) and nome:
+                t.filename = nome
             if total:
                 self._total = total
                 t.total_size = total
                 t.stream = {"bytes_done": done,
                             "segments_total": 100,
                             "segments_done": int(done * 100 / total)}
+                meta_since = None
             else:
                 # magnet ainda resolve os metadados (infohash -> nome)
+                if meta_since is None:
+                    meta_since = now
+                elapsed = now - meta_since
                 st_dict = dict(t.stream) if isinstance(t.stream, dict) else {}
-                st_dict["note"] = "torrent: resolvendo metadados…"
+                st_dict["note"] = ("torrent: resolvendo metadados… "
+                                   f"({int(elapsed)}s)")
                 t.stream = st_dict
-            now = time.monotonic()
             if now - last_save >= POLL_SECONDS:
                 t.save_meta()
                 if self.on_progress:
@@ -256,6 +273,16 @@ class TorrentDownloader:
             if status in ("error", "removed"):
                 msg = st.get("errorMessage") or "falha no torrent"
                 raise DownloadError(f"torrent: {msg}")
+            # watchdog: metadados que nunca chegam = sem peers (DHT/UDP
+            # bloqueado pelo firewall/VPN ou torrent sem sementes) —
+            # erro acionável em vez de esperar para sempre em 0%
+            if meta_since is not None and now - meta_since > META_TIMEOUT:
+                raise DownloadError(
+                    f"torrent: metadados não resolveram em "
+                    f"{int(META_TIMEOUT)} s — sem peers? DHT/UDP "
+                    "bloqueado pelo firewall/VPN ou torrent sem "
+                    "sementes; libere o aria2c no firewall ou tente "
+                    "outro link")
             time.sleep(POLL_SECONDS)
 
     def _finish(self) -> None:

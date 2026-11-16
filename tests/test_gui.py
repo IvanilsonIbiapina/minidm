@@ -435,5 +435,57 @@ class TestSnapshotThread(unittest.TestCase):
         self.assertEqual(f._snap_last, [{"id": "nova"}])
 
 
+class TestBrowseViaGui(unittest.TestCase):
+    """POST /browse da webui: o askdirectory da GUI roda no mainloop.
+
+    A API atende numa thread HTTP e o `filedialog` precisa do thread
+    que owns o root — `_browse_via_gui` encaia o diálogo via `after`
+    e devolve o caminho pela fila (aqui o `after` é síncrono e o Tk
+    é mockado: sem janela de verdade).
+    """
+
+    @staticmethod
+    def _app(after_dispara=True):
+        f = MinidmApp.__new__(MinidmApp)
+        f.after = (lambda ms, fn: fn()) if after_dispara \
+            else (lambda ms, fn: None)     # mainloop "dormindo"
+        return f
+
+    def test_devolve_o_caminho_escolhido(self):
+        f = self._app()
+        inicial = tempfile.gettempdir()             # existe de verdade
+        with mock.patch("minidm.gui.filedialog.askdirectory",
+                        return_value="/Downloads/Filmes") as ad:
+            d = MinidmApp._browse_via_gui(f, inicial)
+        self.assertEqual(d, "/Downloads/Filmes")
+        # initialdir só entra se o caminho existe (evita TclError)
+        self.assertEqual(ad.call_args[1]["initialdir"], inicial)
+
+    def test_initial_morto_ca_na_home(self):
+        f = self._app()
+        morto = os.path.join(tempfile.gettempdir(), "nao-existe-minidm")
+        with mock.patch("minidm.gui.filedialog.askdirectory",
+                        return_value="/x") as ad:
+            MinidmApp._browse_via_gui(f, morto)
+        self.assertEqual(ad.call_args[1]["initialdir"],
+                         os.path.expanduser("~"))
+
+    def test_cancelar_devolve_vazio(self):
+        # "" = usuário cancelou: o JS não preenche o campo
+        f = self._app()
+        with mock.patch("minidm.gui.filedialog.askdirectory",
+                        return_value=""):
+            self.assertEqual(MinidmApp._browse_via_gui(f), "")
+
+    def test_mainloop_dormindo_vira_mensagem_clara(self):
+        # after nunca dispara (mainloop parado) → timeout vira erro
+        # acionável p/ o 503 do /browse, sem travar a thread p/ sempre
+        f = self._app(after_dispara=False)
+        with mock.patch("queue.Queue.get", side_effect=queue.Empty):
+            with self.assertRaises(RuntimeError) as ctx:
+                MinidmApp._browse_via_gui(f)
+        self.assertIn("não respondeu", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

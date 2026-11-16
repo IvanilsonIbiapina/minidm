@@ -738,14 +738,14 @@ $("#ext-install").addEventListener("click", () => extAction("install"));
 $("#ext-guided").addEventListener("click", () => extAction("guided"));
 $("#ext-check").addEventListener("click", () => checkExt());
 
-/* ------------------------------------------- configurações + SAF (APK) */
-/* Botões "Escolher…" só existem de verdade no APK: a ponte Java
-   (window.MinidmBridge) só está lá — no navegador ficam ocultos. */
+/* ------------------------------------------- seletor de pastas nativo */
+/* Botões "Escolher…": em vez de DIGITAR o caminho, o usuário escolhe.
+   No APK a ponte Java (window.MinidmBridge) abre o SAF; no desktop o
+   servidor abre o seletor do sistema na máquina do minidm (POST
+   /browse) — os dois botões estão visíveis em qualquer lugar. */
 const ANDROID = !!window.MinidmBridge;
-if (ANDROID) {
-  $("#dest-pick").hidden = false;
-  $("#cfg-pick").hidden = false;
-}
+$("#dest-pick").hidden = false;
+$("#cfg-pick").hidden = false;
 
 /** Callback do seletor de pastas do Android (ACTION_OPEN_DOCUMENT_TREE).
    id = input que pediu; path vazio = cancelou/não deu para usar. */
@@ -761,11 +761,32 @@ window.minidmFolderPicked = (id, path) => {
   toast("pasta escolhida");
 };
 
-/** Pede ao Android para abrir o seletor de pastas (SAF). */
+/** Pede o seletor de pastas NATIVO: SAF no Android, POST /browse no
+    desktop (o servidor abre o diálogo na máquina do minidm e devolve
+    o caminho escolhido; "" = cancelou). */
 function askFolder(inputId) {
-  if (!ANDROID) return;
-  try { window.MinidmBridge.pickFolder(inputId); }
-  catch (_) { toast("seletor de pastas indisponível"); }
+  if (ANDROID) {
+    try { window.MinidmBridge.pickFolder(inputId); }
+    catch (_) { toast("seletor de pastas indisponível"); }
+    return;
+  }
+  const el = document.getElementById(inputId);
+  fetch("/browse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initial: (el && el.value) || "" })
+  })
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.error) { toast(d.error); return; }
+      if (!d.path) return;                 // cancelou o diálogo
+      if (el) {
+        el.value = d.path;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      toast("pasta escolhida");
+    })
+    .catch(() => toast("seletor indisponível — digite o caminho"));
 }
 $("#dest-pick").addEventListener("click", () => askFolder("dest"));
 $("#cfg-pick").addEventListener("click", () => askFolder("cf-download_base"));

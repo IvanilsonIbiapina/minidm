@@ -41,7 +41,8 @@
       <input id="dest" name="dest" type="text" spellcheck="false"
              autocomplete="off" aria-label="Pasta de destino"
              placeholder="Pasta padrão da categoria">
-      <!-- só aparece no APK (window.MinidmBridge): SAF escolhe a pasta -->
+      <!-- escolha nativa em qualquer lugar: SAF no APK (MinidmBridge),
+           seletor do sistema no desktop (POST /browse) -->
       <button id="dest-pick" class="ghost" type="button" hidden>Escolher…</button>
     </div>
   </form>

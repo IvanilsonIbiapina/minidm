@@ -17,6 +17,7 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest import mock
 
 from minidm.config import AppConfig
 from minidm.scheduler import Scheduler
@@ -47,6 +48,17 @@ class WebuiServeTest(unittest.TestCase):
                 return r.status, r.headers.get("Content-Type", ""), r.read()
         except urllib.error.HTTPError as e:
             return e.code, e.headers.get("Content-Type", ""), e.read()
+
+    def _post(self, path: str, obj):
+        """POST JSON → (status, dict) — mesmo formato dos testes da API."""
+        req = urllib.request.Request(
+            self.base + path, data=json.dumps(obj).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
 
     # ------------------------------------------------------------------ UI
     def test_index_served(self):
@@ -169,7 +181,7 @@ class WebuiServeTest(unittest.TestCase):
 
     def test_configuracoes_e_seletor_de_pasta(self):
         """Tela de configurações (POST /config) + botões "Escolher…" do
-        seletor de pastas do Android (ponte MinidmBridge/SAF)."""
+        seletor de pastas nativo (SAF no APK, POST /browse no desktop)."""
         _, _, html = self._get("/")
         self.assertIn(b'id="cfg-btn"', html)           # ⚙ no header
         self.assertIn(b'id="cfg"', html)               # sheet
@@ -183,8 +195,9 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b'id="dest-pick"', html)         # Escolher… (#dest)
         self.assertIn(b'id="cfg-pick"', html)          # Escolher… (base)
         _, _, js = self._get("/webui/app.js")
-        self.assertIn(b"MinidmBridge", js)             # só existe no APK
+        self.assertIn(b"MinidmBridge", js)             # ponte do APK
         self.assertIn(b"minidmFolderPicked", js)       # callback do Java
+        self.assertIn(b'"/browse"', js)                # seletor do desktop
         self.assertIn(b"function openCfg", js)
         self.assertIn(b"function cfgPayload", js)
         self.assertIn(b"throttle_bps", js)             # x1024 na saída
@@ -194,6 +207,28 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b".fld", css)
         self.assertIn(b".pick-row", css)
         self.assertIn(b".sheet-acts", css)
+
+    def test_browse_seletor_de_pasta_nativo(self):
+        """POST /browse: o servidor abre o seletor nativo e devolve o
+        caminho — o usuário ESCOLHE a pasta em vez de digitar."""
+        with mock.patch("minidm.server._browse_dialog",
+                        return_value="/Downloads/Filmes"):
+            status, data = self._post("/browse", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["path"], "/Downloads/Filmes")
+
+        # sem Tk/display: erro MENSURÁVEL (503 com causa, sem traceback)
+        with mock.patch("minidm.server._browse_dialog",
+                        side_effect=RuntimeError("sem display")):
+            status, data = self._post("/browse", {})
+        self.assertEqual(status, 503)
+        self.assertIn("sem display", data["error"])
+
+        # cancelar o diálogo devolve path vazio (o JS não preenche)
+        with mock.patch("minidm.server._browse_dialog", return_value=""):
+            status, data = self._post("/browse", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["path"], "")
 
     def test_guia_da_extensao(self):
         """Guia de primeiro uso da extensão: banner some quando a API

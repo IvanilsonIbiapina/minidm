@@ -1253,6 +1253,10 @@ class MinidmApp(_Root):
         from http.server import ThreadingHTTPServer
 
         app = App(self.store, self.sched, self.config_app)
+        # "Escolher…" da webui: o askdirectory precisa do thread que tem
+        # o root do Tk — a API registra este caminho e o diálogo abre no
+        # mainloop (POST /browse → aqui → caminho de volta p/ o campo)
+        app.browse = self._browse_via_gui
         httpd = ThreadingHTTPServer(
             ("127.0.0.1", self.config_app.api_port), make_handler(app))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -1260,6 +1264,32 @@ class MinidmApp(_Root):
         self._status(f"API do navegador ativa em "
                      f"http://127.0.0.1:{self.config_app.api_port} — "
                      f"a extensão já pode enviar links")
+
+    def _browse_via_gui(self, initial: str = "") -> str:
+        """Seletor de pastas da webui no Tk PRINCIPAL (POST /browse).
+
+        A API atende numa thread HTTP e o `filedialog` precisa do
+        thread que owns o root — o `after` encaixa o diálogo no
+        mainloop e a fila devolve o caminho escolhido ("" = cancelou).
+        """
+        q: "queue.Queue[str]" = queue.Queue(maxsize=1)
+
+        def job():
+            try:
+                d = filedialog.askdirectory(
+                    parent=self, title="Escolher pasta de destino",
+                    initialdir=initial if os.path.isdir(initial)
+                    else os.path.expanduser("~"))
+            except Exception:
+                d = ""
+            q.put(d or "")
+
+        self.after(0, job)
+        try:
+            return q.get(timeout=300)
+        except queue.Empty:
+            raise RuntimeError("a interface gráfica não respondeu — "
+                               "tente de novo") from None
 
     def _stop_api(self):
         if self._api_server:

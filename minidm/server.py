@@ -48,6 +48,10 @@ class App:
         self.store = store
         self.scheduler = scheduler
         self.config = config
+        # seletor de pastas da webui (POST /browse): a GUI registra o
+        # diálogo do Tk PRINCIPAL aqui; None = servidor sem GUI → o
+        # servidor tenta um Tk temporário (ou devolve erro acionável)
+        self.browse = None
         # última vez que a extensão do navegador falhou com a API
         # (header X-MiniDM-Ext) — vira ext_seen.json, vê o guia da webui
         self.ext_lock = threading.Lock()
@@ -104,6 +108,33 @@ def _open_path(path: str) -> None:
         subprocess.Popen(["open", path])  # noqa: S606
     else:
         subprocess.Popen(["xdg-open", path])  # noqa: S606
+
+
+def _browse_dialog(initial: str = "") -> str:
+    """Seletor de pastas NATIVO do sistema (campo de destino da webui).
+
+    Abre ``filedialog.askdirectory`` num Tk temporário — a thread da API
+    não tem janela. Quem tem a GUI no mesmo processo nem chega aqui: a
+    GUI registra ``App.browse`` e o diálogo roda no mainloop do Tk
+    principal (thread-safe). Devolve "" se o usuário cancelar; sem
+    display/tkinter o problema vira mensagem JSON (nunca traceback).
+
+    macOS exige Tk na thread principal — lá só a rota da GUI serve; sem
+    GUI a mensagem pede para digitar o caminho.
+    """
+    if sys.platform == "darwin":
+        raise RuntimeError("sem interface gráfica — digite o caminho")
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        inicial = initial if os.path.isdir(initial) else os.path.expanduser("~")
+        return filedialog.askdirectory(
+            initialdir=inicial, title="Escolher pasta de destino") or ""
+    finally:
+        root.destroy()
 
 
 # ------------------------------------------ extensão do navegador (visto)
@@ -508,6 +539,9 @@ def make_handler(app: App):
             elif path == "/open":
                 # botão direito/⋯ da webui: abrir pasta ou arquivo
                 self._open_task(payload)
+            elif path == "/browse":
+                # "Escolher…" do destino: seletor de pastas nativo
+                self._browse(payload)
             elif path == "/config":
                 # tela de configurações da webui (persiste + aplica ao vivo)
                 self._set_config(payload)
@@ -911,6 +945,25 @@ def make_handler(app: App):
                 self._json({"error": f"não deu para abrir: {e}"}, 500)
                 return
             self._json({"ok": True, "path": path})
+
+        # --------------------------------------------------------- /browse
+        def _browse(self, payload):
+            """Seletor de pastas nativo p/ o campo de destino da webui.
+
+            `app.browse` (GUI no mesmo processo) abre o diálogo no
+            mainloop do Tk; sem GUI o `_browse_dialog` tenta um Tk
+            temporário. Devolve `{"path"}` ("" = cancelou) ou
+            `{"error"}` — o botão "Escolher…" só preenche o campo com
+            um caminho de verdade, em vez de o usuário digitar.
+            """
+            inicial = str(payload.get("initial") or "")
+            fn = app.browse or _browse_dialog
+            try:
+                caminho = fn(inicial)
+            except Exception as e:
+                self._json({"error": f"seletor indisponível: {e}"}, 503)
+                return
+            self._json({"path": caminho or ""})
 
         # --------------------------------------------------------- /config
         def _set_config(self, payload):
