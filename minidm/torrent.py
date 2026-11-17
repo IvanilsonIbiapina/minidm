@@ -163,9 +163,12 @@ class TorrentDownloader:
             gids = self._rpc("aria2.addUri", [[t.url]], timeout=15.0)
         else:
             # URL de .torrent: baixa os bytes e entrega via addTorrent
-            # (addUri num .torrent baixaria o próprio arquivo .torrent)
+            # (addUri num .torrent baixaria o próprio arquivo .torrent);
+            # o TOKEN já entra no _rpc — mandar None junto virava
+            # [token, null, b64, []] e o aria2 real 1.37.0 respondia
+            # HTTP 400 em todo .torrent. Forma certa: [b64, uris]
             raw = self._torrent_bytes(t.url)
-            gids = self._rpc("aria2.addTorrent", [None, raw, []],
+            gids = self._rpc("aria2.addTorrent", [raw, []],
                              timeout=15.0)
         gid = gids[0] if isinstance(gids, list) else gids
         return str(gid)

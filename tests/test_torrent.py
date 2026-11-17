@@ -53,6 +53,7 @@ class FakeAria(TorrentDownloader):
     def __init__(self, *args, seq=None, files=None, **kw):
         super().__init__(*args, **kw)
         self.rpc_calls = []
+        self.rpc_params = []        # (método, params) p/ asserir a forma
         self.seq = list(seq if seq is not None else [
             {"status": "active", "completedLength": "50",
              "totalLength": "100", "downloadSpeed": "10"},
@@ -64,6 +65,7 @@ class FakeAria(TorrentDownloader):
 
     def _rpc(self, method, params=None, timeout=5.0):
         self.rpc_calls.append(method)
+        self.rpc_params.append((method, list(params or [])))
         # nomes EXATOS do aria2 real (1.37.0): o build winget não tem
         # `system.getVersion`/`system.shutdown` — só os prefixos `aria2.`
         if method == "aria2.getVersion":
@@ -199,6 +201,65 @@ class TestRunner(unittest.TestCase):
         self.assertIn("aria2.addUri", dl.rpc_calls)
         self.assertIn("aria2.shutdown", dl.rpc_calls)   # teardown via RPC
 
+    def test_add_uri_repassa_magnet_inteiro(self):
+        """O magnet chega ao aria2 byte a byte: o conteúdo vem só do
+        `xt=` — `dn`/`tr` não podem ser cortados, decodificados nem
+        re-encodados no caminho (webui/CLI/addUri)."""
+        magnet = ("magnet:?xt=urn:btih:" + "ab" * 20
+                  + "&dn=Meu+Filme%20(2026)"
+                  + "&tr=udp%3A%2F%2Ftracker.example%3A6969%2Fannounce")
+        task = Task(url=magnet, dest_dir=self.tmp,
+                    filename="torrent-abababab", kind="torrent")
+        dl = FakeAria(task)
+        self.assertEqual(dl._add(), "gid-1")
+        self.assertEqual(dl.rpc_params[-1],
+                         ("aria2.addUri", [[magnet]]))
+
+    def test_add_torrent_envia_params_do_aria2(self):
+        """Regressão do HTTP 400: o `_rpc` já prepende o token, então o
+        `_add` manda [base64, uris] SEM None — o formato antigo
+        [token, null, b64, []] era recusado pelo aria2 real 1.37.0
+        (reproduzido offline) e quebrava TODO download de `.torrent`."""
+        task = Task(url="http://ex.com/a.torrent", dest_dir=self.tmp,
+                    filename="a.torrent", kind="torrent")
+        dl = FakeAria(task)
+        with mock.patch.object(FakeAria, "_torrent_bytes",
+                               return_value="YWJjZA=="):
+            self.assertEqual(dl._add(), "gid-1")
+        self.assertEqual(dl.rpc_params[-1],
+                         ("aria2.addTorrent", ["YWJjZA==", []]))
+
+    def test_rpc_prepoe_o_token_uma_vez_so(self):
+        """O payload real leva [token, …params] com o token exatamente
+        uma vez — é essa composição que somava o None do bug."""
+        task = Task(url="magnet:?xt=urn:btih:" + "a" * 40,
+                    dest_dir=self.tmp, filename="x")
+        dl = TorrentDownloader(task)
+        dl._port = 12345
+        corpo = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"result": ["gid-1"]}'
+
+        def fake_urlopen(req, timeout=None):
+            corpo["payload"] = req.data
+            return _Resp()
+
+        with mock.patch("minidm.torrent.urllib.request.urlopen",
+                        side_effect=fake_urlopen):
+            out = dl._rpc("aria2.addTorrent", ["b64", []])
+        payload = json.loads(corpo["payload"])
+        self.assertEqual(out, ["gid-1"])
+        self.assertEqual(payload["params"],
+                         [f"token:{dl._token}", "b64", []])
+
     def test_sem_aria2_erro_com_instrucao(self):
         task = Task(url="magnet:?xt=urn:btih:" + "a" * 40,
                     dest_dir=self.tmp, filename="x")
@@ -249,6 +310,21 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(t.stream["segments_done"], 100)
         # velocidade instantânea registrada (o último poll vale 10 s)
         self.assertGreaterEqual(dl.speed_bps(), 0.0)
+
+    def test_nome_real_vem_do_info_do_torrent(self):
+        """Assim que o aria2 conhece os metadados, `bittorrent.info.name`
+        vira o nome da tarefa (regressão do bônus do e5827ca: o provisório
+        torrent-<hash> some da UI e o título real aparece)."""
+        dl = _spawn(FakeAria, self.tmp, seq=[
+            {"status": "active", "completedLength": "50",
+             "totalLength": "100", "downloadSpeed": "10",
+             "bittorrent": {"info": {"name": "Filme (2026)"}}},
+            {"status": "complete", "completedLength": "100",
+             "totalLength": "100", "downloadSpeed": "0"},
+        ])
+        dl._gid = "gid-1"
+        dl._watch()
+        self.assertEqual(dl.task.filename, "Filme (2026)")
 
     def test_magnet_sem_total_mostra_nota(self):
         """Antes dos metadados do magnet chegar (totalLength=0), a nota
