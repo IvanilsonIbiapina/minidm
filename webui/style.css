@@ -30,7 +30,9 @@
   --text: #1b2530;
   --muted: #5f6b7a;
   --border: #dde3ea;
-  --accent: #2f7dff;
+  /* contraste WCAG: branco sobre acento/erro ≥ 4.5 (era 3.82/3.70) */
+  --accent: #1f6feb;
+  --err: #cf3b34;
   --accent-text: #fff;
 }
 
@@ -147,6 +149,18 @@ button {
   touch-action: manipulation;
 }
 button:active { transform: scale(.97); }
+
+/* resposta ao ponteiro (só onde há mouse de verdade) + foco de
+   teclado sempre visível — piso de acessibilidade */
+@media (hover: hover) {
+  button:hover { border-color: var(--accent); }
+  .tab:not(.on):hover { color: var(--text); }
+  .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .primary {
   background: var(--accent);
@@ -527,6 +541,7 @@ select {
   font-size: 14px;
 }
 .empty[hidden] { display: none; }
+.empty p { margin: 0 0 14px; }
 
 /* ------------------------------------------------------------------ toast */
 .toast {
@@ -535,7 +550,8 @@ select {
   bottom: calc(18px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   max-width: min(92vw, 520px);
-  background: var(--err);
+  /* fundo próprio (não o --err do tema): texto branco ≥4.5 nos 2 temas */
+  background: #c93830;
   color: #fff;
   padding: 11px 16px;
   border-radius: 12px;
@@ -545,6 +561,8 @@ select {
   word-break: break-word;
 }
 .toast[hidden] { display: none; }
+.toast.ok { background: #1a8048; }     /* verde: branco 4.97 */
+.toast.info { background: #1f6feb; }   /* azul: branco 4.63 */
 
 /* ------------------------------------------------- escolher qualidade */
 .sheet-back {
@@ -612,4 +630,14 @@ select {
 
 @media (min-width: 700px) {
   .name { font-size: 15.5px; }
+}
+
+/* acessibilidade: quem pediu menos movimento recebe o conteúdo sem
+   transições nem animação (as listras da barra param no lugar) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }

@@ -72,9 +72,12 @@ const post = (path, body) => api(path, {
 });
 
 let toastTimer = 0;
-function toast(msg) {
+/** Mensagem efêmera. kind: "ok" (verde), "info" (azul) ou "error" (padrão). */
+function toast(msg, kind) {
   const el = $("#toast");
   el.textContent = msg;
+  el.classList.toggle("ok", kind === "ok");
+  el.classList.toggle("info", kind === "info");
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 4500);
@@ -275,9 +278,12 @@ function render(tasks) {
   if (filtering) parts.push(`<b>${shown}</b> exibido${shown === 1 ? "" : "s"}`);
   $("#counts").innerHTML = parts.length ? parts.join(" &middot; ") : "&nbsp;";
   $("#empty").hidden = shown > 0;
-  $("#empty").textContent = tasks.length === 0
+  const vazia = tasks.length === 0;
+  $("#empty-msg").textContent = vazia
     ? "Nada na fila ainda — cole um link acima."
     : "Nada bate com a busca/filtro — limpe ou troque a aba.";
+  // convite à ação só quando não há nada na fila (senão é só filtro)
+  $("#empty-paste").hidden = !vazia;
 }
 
 function setConn(ok) {
@@ -493,6 +499,7 @@ document.addEventListener("keydown", (ev) => {
   closeCtx();
   $("#props").hidden = true;
   closeCfg();
+  if (pickResolve) pickResolve(null);   // Esc cancela a escolha de qualidade
 });
 
 $("#list").addEventListener("contextmenu", (ev) => {
@@ -509,7 +516,7 @@ async function copyUrl(id) {
   if (!url) return;
   try {
     await navigator.clipboard.writeText(url);
-    toast("URL copiada");
+    toast("URL copiada", "ok");
     return;
   } catch (_) { /* WebView/origem sem permissão: fallback antigo */ }
   const ta = document.createElement("textarea");
@@ -521,7 +528,8 @@ async function copyUrl(id) {
   let ok = false;
   try { ok = document.execCommand("copy"); } catch (_) { /* sem suporte */ }
   ta.remove();
-  toast(ok ? "URL copiada" : "não deu para copiar a URL");
+  toast(ok ? "URL copiada" : "não deu para copiar a URL",
+        ok ? "ok" : "error");
 }
 
 /** Sobe/desce uma posição na fila (1º = próxima) e persiste. */
@@ -723,9 +731,10 @@ async function extAction(action) {
     ol.hidden = false;
     toast(r.copied_to_clipboard
       ? "Pasta copiada — é ela que o navegador vai pedir (Ctrl+V)"
-      : "Siga os passos abaixo");
+      : "Siga os passos abaixo",
+      r.copied_to_clipboard ? "ok" : "info");
   } else {
-    toast("Política gravada — abra o Chrome/Edge para instalar");
+    toast("Política gravada — abra o Chrome/Edge para instalar", "ok");
     setTimeout(checkExt, 3000);   // instalação automática demora um pouco
   }
 }
@@ -758,7 +767,7 @@ window.minidmFolderPicked = (id, path) => {
   }
   el.value = path;
   el.dispatchEvent(new Event("input", { bubbles: true }));
-  toast("pasta escolhida");
+  toast("pasta escolhida", "ok");
 };
 
 /** Pede o seletor de pastas NATIVO: SAF no Android, POST /browse no
@@ -784,7 +793,7 @@ function askFolder(inputId) {
         el.value = d.path;
         el.dispatchEvent(new Event("input", { bubbles: true }));
       }
-      toast("pasta escolhida");
+      toast("pasta escolhida", "ok");
     })
     .catch(() => toast("seletor indisponível — digite o caminho"));
 }
@@ -857,10 +866,26 @@ $("#cfg-form").addEventListener("submit", async (ev) => {
     return;
   }
   closeCfg();
-  toast("Configurações salvas");
+  toast("Configurações salvas", "ok");
   // download_base mudou: recarrega categorias/placeholder do destino
   loadCategories();
   tick();
+});
+
+/* fila vazia: um clique lê a área de transferência e segue o fluxo
+   normal do form (análise/qualidade/DRM); sem permissão ou sem link,
+   foca a caixa p/ colar à mão */
+$("#empty-paste").addEventListener("click", async () => {
+  let txt = "";
+  try {
+    txt = (await navigator.clipboard.readText()).trim();
+  } catch (_) {
+    toast("não deu para ler a área de transferência — cole com Ctrl+V",
+          "info");
+  }
+  if (!txt) { $("#url").focus(); return; }
+  $("#url").value = txt;
+  $("#add-form").requestSubmit();
 });
 
 /* -------------------------------------------------------------- início */
