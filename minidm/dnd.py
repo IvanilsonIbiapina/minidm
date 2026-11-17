@@ -9,6 +9,7 @@ string bruto que o SO entrega e devolve URLs prontas — testável sem GUI.
 
 Formatos aceitos no drop (Windows/macOS/Linux):
 * `http://… https://…`           → direto;
+* `magnet:?xt=urn:btih:…`        → direto (aria2);
 * `{C:\\Users\\a\\video.url}`    → atalho do Windows, lê o `URL=` dentro;
 * `/caminho/arquivo.desktop`     → launcher Linux, lê `URL=`;
 * arquivo de mídia local         → ignorado (o minidm baixa de URLs).
@@ -20,7 +21,7 @@ import os
 import re
 
 _BRACE_RE = re.compile(r"\{([^{}]*)\}")
-_URL_PREFIX = ("http://", "https://")
+_URL_PREFIX = ("http://", "https://", "magnet:")
 
 
 def _tokens_from_drop(data: str) -> list[str]:
@@ -56,7 +57,7 @@ def read_url_file(path: str) -> str:
 
 
 def urls_from_drop(data: str) -> list[str]:
-    """Converte o payload de um drop em URLs http(s) válidas (na ordem)."""
+    """Converte o payload de um drop em URLs http(s)/magnet válidas (na ordem)."""
     out: list[str] = []
     for tok in _tokens_from_drop(data):
         low = tok.lower()
@@ -70,7 +71,7 @@ def urls_from_drop(data: str) -> list[str]:
 
 
 def urls_from_clipboard(text: str) -> list[str]:
-    """URLs http(s) num texto colado (uma por linha; colas múltiplas ok)."""
+    """URLs http(s)/magnet num texto colado (uma por linha; colas múltiplas ok)."""
     out: list[str] = []
     for line in (text or "").splitlines():
         tok = line.strip().strip('"').strip("'")

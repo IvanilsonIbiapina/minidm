@@ -271,6 +271,14 @@ class TestDndParsing(unittest.TestCase):
         self.assertEqual(urls_from_clipboard(None), [])
         self.assertEqual(urls_from_clipboard(""), [])
 
+    def test_magnet_no_drop_e_na_colagem(self):
+        m = ("magnet:?xt=urn:btih:" + "a" * 40 +
+             "&dn=Meu+Filme&tr=udp%3A%2F%2Ft.ex%3A6969")
+        self.assertEqual(urls_from_drop(m), [m])
+        self.assertEqual(urls_from_clipboard(m), [m])
+        # linhas de contexto são ignoradas; o magnet sai byte a byte
+        self.assertEqual(urls_from_clipboard("olha:\n" + m), [m])
+
     def test_atalho_url_lê_o_interno(self):
         tmp = tempfile.mkdtemp(prefix="minidm-dnd-")
         p = os.path.join(tmp, "video.url")

@@ -956,12 +956,18 @@ class MinidmApp(_Root):
             self._status("Nenhuma URL válida no item soltado/colado.")
             return
         from minidm.categories import classify_url
+        from minidm.torrent import is_torrent_url, torrent_name
 
         added = 0
         for u in urls:
             try:
-                task = Task(url=u, dest_dir=self._last_dir,
-                            filename=filename_from(u))
+                torrent = is_torrent_url(u)
+                fname = filename_from(u)
+                if torrent and not fname.endswith(".torrent"):
+                    fname = torrent_name(u)   # infohash curto (igual CLI)
+                task = Task(url=u, dest_dir=self._last_dir, filename=fname)
+                if torrent:
+                    task.kind = "torrent"     # aria2 externo
                 task.category = classify_url(u)
                 auto_delegate(task)
                 self.store.add(task)
@@ -1092,6 +1098,8 @@ class MinidmApp(_Root):
         if not dlg.result:
             return
         spec = dlg.result
+        from minidm.torrent import is_torrent_url
+
         task = Task(
             url=spec["url"],
             dest_dir=spec["dir"],
@@ -1102,6 +1110,8 @@ class MinidmApp(_Root):
             proxy=spec["proxy"],
             cookie=spec["cookie"],
         )
+        if is_torrent_url(spec["url"]):
+            task.kind = "torrent"   # magnet/.torrent -> aria2 (igual CLI/API)
         auto_delegate(task)     # link de página (YouTube…) -> yt-dlp
         self.store.add(task)
         self._last_dir = spec["dir"]
@@ -1486,13 +1496,20 @@ class AddDialog(tk.Toplevel):
 
     def _ok(self):
         url = self.var_url.get().strip()
-        if not url.lower().startswith(("http://", "https://")):
+        if not url.lower().startswith(("http://", "https://", "magnet:")):
             messagebox.showerror("URL inválida",
-                                 "Informe uma URL http:// ou https://",
+                                 "Informe uma URL http://, https:// ou "
+                                 "magnet:?xt=…",
                                  parent=self)
             return
         d = self.var_dir.get().strip() or self.var_dir.get()
         name = self.var_name.get().strip() or filename_from(url)
+        from minidm.torrent import is_torrent_url, torrent_name
+
+        if is_torrent_url(url) and not name.endswith(".torrent"):
+            # magnet não tem nome no URL: infohash curto até o aria2
+            # entregar o nome real dos metadados (igual à CLI)
+            name = torrent_name(url)
         mirrors = [m.strip() for m in
                    self.var_mirrors.get().splitlines() if m.strip()]
         sha = self.var_sha.get().strip().lower()

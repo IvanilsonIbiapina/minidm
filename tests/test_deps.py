@@ -375,6 +375,16 @@ class TestAutoDelegation(unittest.TestCase):
             t = self._task("https://cdn.ex/master.m3u8", kind=kind)
             self.assertFalse(auto_delegate(t), kind)
 
+    def test_magnet_e_torrent_nunca_delega(self):
+        # bittorrent vai ao aria2 externo — yt-dlp não tem extractor
+        # dele e magnet não é "página" (antes ficava marcado à toa)
+        self._with_ytdlp(True)
+        t = self._task("magnet:?xt=urn:btih:" + "a" * 40)
+        self.assertFalse(auto_delegate(t))
+        self.assertFalse(t.use_ytdlp_downloader)
+        t2 = self._task("http://ex.com/a.torrent", kind="torrent")
+        self.assertFalse(auto_delegate(t2))
+
     def test_pedido_explicito_e_mantido(self):
         self._with_ytdlp(False)   # nem precisa existir
         t = self._task("https://cdn.ex/f.mp4")
