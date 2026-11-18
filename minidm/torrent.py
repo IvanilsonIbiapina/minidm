@@ -30,6 +30,7 @@ import threading
 import time
 import urllib.request
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlsplit
 
 from minidm.deps import aria2_bin, hidden_kwargs
 from minidm.downloader import DownloadError
@@ -68,6 +69,23 @@ def torrent_name(url: str) -> str:
     return base or "torrent"
 
 
+def _magnet_dn(url: str) -> str:
+    """`dn=` do magnet: o nome que o LINK promete (display name).
+
+    No protocolo `dn` é só sugestão de exibição — a verdade é o
+    `info.name` vindo dos metadados do torrent. Se os dois divergem,
+    mostramos o nome real e avisamos em vez de prometer o do link.
+    """
+    u = url or ""
+    if not u.lower().startswith("magnet:"):
+        return ""
+    try:
+        query = urlsplit(u).query
+        return (parse_qs(query).get("dn") or [""])[0].strip()
+    except ValueError:
+        return ""
+
+
 class TorrentDownloader:
     """Roda o `aria2c` com RPC e espelha o progresso na task."""
 
@@ -85,6 +103,7 @@ class TorrentDownloader:
         self._speed = 0.0
         self._speed_ts = 0.0
         self._total = 0
+        self._files_done = False      # lista de arquivos já pedida 1×
 
     # ------------------------------------------------------------------ RPC
     def _rpc(self, method: str, params: Optional[list] = None,
@@ -223,6 +242,33 @@ class TorrentDownloader:
         return 0.0
 
     # --------------------------------------------------------------- watch
+    def _load_files(self) -> list:
+        """Lista de arquivos do torrent (`aria2.getFiles`), uma única vez.
+
+        Caminho relativo à pasta de destino (é o que a UI mostra: o
+        pacote tem N arquivos, não "um arquivo só") + tamanho de cada
+        um. Falha aqui é opcional: não pode derrubar o download.
+        """
+        try:
+            raw = self._rpc("aria2.getFiles", [self._gid]) or []
+        except Exception:
+            return []
+        dest = os.path.abspath(self.task.dest_dir or ".")
+        out = []
+        for f in raw:
+            p = (f or {}).get("path") or ""
+            if not p:
+                continue
+            rel = os.path.relpath(p, dest)
+            if rel.startswith(".."):
+                rel = os.path.basename(p)
+            try:
+                size = int((f or {}).get("length") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            out.append({"path": rel.replace(os.sep, "/"), "bytes": size})
+        return out
+
     def _watch(self) -> None:
         """Polling do tellStatus: espelha bytes/total/velocidade na task."""
         t = self.task
@@ -250,22 +296,36 @@ class TorrentDownloader:
                 .get("name")
             if isinstance(nome, str) and nome:
                 t.filename = nome
+            # stream ACUMULADO (antes era recriado do zero a cada poll e
+            # perdia files/warn/note gravados na varredura anterior)
+            st_dict = dict(t.stream) if isinstance(t.stream, dict) else {}
             if total:
                 self._total = total
                 t.total_size = total
-                t.stream = {"bytes_done": done,
-                            "segments_total": 100,
-                            "segments_done": int(done * 100 / total)}
+                st_dict.update({"bytes_done": done,
+                                "segments_total": 100,
+                                "segments_done": int(done * 100 / total)})
+                st_dict.pop("note", None)    # metadados chegaram
                 meta_since = None
             else:
                 # magnet ainda resolve os metadados (infohash -> nome)
                 if meta_since is None:
                     meta_since = now
                 elapsed = now - meta_since
-                st_dict = dict(t.stream) if isinstance(t.stream, dict) else {}
                 st_dict["note"] = ("torrent: resolvendo metadados… "
                                    f"({int(elapsed)}s)")
-                t.stream = st_dict
+            # lista de arquivos + aviso dn≠info.name: 1× só, quando o
+            # aria2 já conhece o conteúdo (nome OU total = metadados ok)
+            if not self._files_done and (nome or total):
+                self._files_done = True
+                files = self._load_files()
+                if files:
+                    st_dict["files"] = files
+                dn = _magnet_dn(t.url)
+                if dn and nome and dn != nome:
+                    st_dict["warn"] = (f"o link promete «{dn}» mas o "
+                                       f"torrent entrega «{nome}»")
+            t.stream = st_dict
             if now - last_save >= POLL_SECONDS:
                 t.save_meta()
                 if self.on_progress:
@@ -313,7 +373,12 @@ class TorrentDownloader:
                 else os.path.basename(best)
         total = self._total or t.total_size or best_size or 0
         t.total_size = total
-        t.stream = {"bytes_done": total}
+        # preserva a lista de arquivos e o aviso dn≠nome coletados no
+        # watch (o resto do stream é do download em si e zera aqui)
+        prev = t.stream if isinstance(t.stream, dict) else {}
+        novo = {k: prev[k] for k in ("files", "warn") if k in prev}
+        novo["bytes_done"] = total
+        t.stream = novo
         t.state = TaskState.DONE
         t.finished_at = time.time()
         t.save_meta()

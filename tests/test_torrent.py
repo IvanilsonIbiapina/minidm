@@ -25,7 +25,8 @@ from minidm.deps import aria2_available, aria2_bin, invalidate_cache
 from minidm.downloader import DownloadError
 from minidm.meta import Task, TaskState
 from minidm.stream import make_downloader
-from minidm.torrent import (TorrentDownloader, is_torrent_url, torrent_name)
+from minidm.torrent import (TorrentDownloader, _magnet_dn, is_torrent_url,
+                            torrent_name)
 
 
 class _FakeProc:
@@ -50,7 +51,7 @@ class _FakeProc:
 class FakeAria(TorrentDownloader):
     """TorrentDownloader com RPC em memória (sequência controlada)."""
 
-    def __init__(self, *args, seq=None, files=None, **kw):
+    def __init__(self, *args, seq=None, files=None, files_rpc=None, **kw):
         super().__init__(*args, **kw)
         self.rpc_calls = []
         self.rpc_params = []        # (método, params) p/ asserir a forma
@@ -61,6 +62,10 @@ class FakeAria(TorrentDownloader):
              "totalLength": "100", "downloadSpeed": "0"},
         ])
         self.files = list(files or [])
+        # aria2.getFiles (formato real: path + length) — por padrão
+        # espelha os mesmos caminhos do tellStatus do _finish
+        self.files_rpc = list(files_rpc if files_rpc is not None
+                              else self.files)
         self.tell_n = 0
 
     def _rpc(self, method, params=None, timeout=5.0):
@@ -72,6 +77,17 @@ class FakeAria(TorrentDownloader):
             return {"version": "1.37.0"}
         if method in ("aria2.addUri", "aria2.addTorrent"):
             return ["gid-1"]
+        if method == "aria2.getFiles":
+            out = []
+            for f in self.files_rpc:
+                ent = dict(f)
+                if "length" not in ent and ent.get("path"):
+                    try:
+                        ent["length"] = str(os.path.getsize(ent["path"]))
+                    except OSError:
+                        ent["length"] = "0"
+                out.append(ent)
+            return out
         if method == "aria2.tellStatus":
             if len(params or []) >= 2:        # chamada do _finish
                 return {"files": self.files, "completedLength": "100"}
@@ -107,6 +123,18 @@ class TestUrls(unittest.TestCase):
         self.assertEqual(torrent_name("http://ex.com/filme.torrent"),
                          "filme.torrent")
         self.assertEqual(torrent_name(""), "torrent")
+
+    def test_dn_do_magnet_e_decodificado(self):
+        """`dn=` é o nome que o link promete: sai percent+plus-decodado;
+        sem `dn` (ou fora de magnet) devolve vazio."""
+        h = "0123456789abcdef0123456789abcdef01234567"
+        self.assertEqual(
+            _magnet_dn(f"magnet:?xt=urn:btih:{h}&dn=Meu+Filme%20(2026)"),
+            "Meu Filme (2026)")
+        self.assertEqual(_magnet_dn(f"magnet:?xt=urn:btih:{h}"), "")
+        self.assertEqual(_magnet_dn("http://ex.com/filme.torrent"), "")
+        self.assertEqual(_magnet_dn("magnetismo?dn=X"), "")   # sem "magnet:"
+        self.assertEqual(_magnet_dn(""), "")
 
 
 class TestDeps(unittest.TestCase):
@@ -196,7 +224,10 @@ class TestRunner(unittest.TestCase):
                                      os.path.join("Meu Torrent",
                                                   "video.mp4")))
         self.assertEqual(out.total_size, 100)
-        self.assertEqual(out.stream, {"bytes_done": 100})
+        # a lista de arquivos (relativa à pasta) sobrevive ao _finish
+        self.assertEqual(out.stream["bytes_done"], 100)
+        self.assertEqual({f["path"] for f in out.stream.get("files", [])},
+                         {"Meu Torrent/video.mp4", "meu arquivo.bin"})
         self.assertEqual(out.progress, 1.0)
         self.assertIn("aria2.addUri", dl.rpc_calls)
         self.assertIn("aria2.shutdown", dl.rpc_calls)   # teardown via RPC
@@ -325,6 +356,90 @@ class TestRunner(unittest.TestCase):
         dl._gid = "gid-1"
         dl._watch()
         self.assertEqual(dl.task.filename, "Filme (2026)")
+
+    def test_watch_carrega_a_lista_de_arquivos_uma_vez(self):
+        """Assim que o aria2 conhece os metadados, a lista de arquivos
+        (caminho relativo + tamanho) entra no stream — é o que mostra
+        ao usuário que o torrent é um PACOTE de N arquivos."""
+        alvo = os.path.join(self.tmp, "Pacote", "video.mp4")
+        os.makedirs(os.path.dirname(alvo), exist_ok=True)
+        with open(alvo, "wb") as fh:
+            fh.write(b"v" * 50)
+        dl = _spawn(FakeAria, self.tmp, seq=[
+            {"status": "active", "completedLength": "50",
+             "totalLength": "100", "downloadSpeed": "10",
+             "bittorrent": {"info": {"name": "Pacote"}}},
+            {"status": "complete", "completedLength": "100",
+             "totalLength": "100", "downloadSpeed": "0",
+             "bittorrent": {"info": {"name": "Pacote"}}},
+        ], files=[{"path": alvo}])
+        dl._gid = "gid-1"
+        dl._watch()
+        self.assertEqual(dl.task.stream.get("files"),
+                         [{"path": "Pacote/video.mp4", "bytes": 50}])
+        # pediu 1× só — não repete o RPC a cada poll
+        self.assertEqual(dl.rpc_params.count(
+            ("aria2.getFiles", ["gid-1"])), 1)
+
+    def test_aviso_quando_dn_difere_do_nome_real(self):
+        """`dn=` é só sugestão de exibição: se o link promete um nome
+        que o torrent não entrega, o stream leva o aviso (a UI mostra)."""
+        magnet = ("magnet:?xt=urn:btih:" + "ab" * 20
+                  + "&dn=Nome+Prometido+no+Link")
+        task = Task(url=magnet, dest_dir=self.tmp,
+                    filename="torrent-abababab", kind="torrent")
+        dl = FakeAria(task, seq=[
+            {"status": "active", "completedLength": "50",
+             "totalLength": "100", "downloadSpeed": "10",
+             "bittorrent": {"info": {"name": "Nome Real do Torrent"}}},
+            {"status": "complete", "completedLength": "100",
+             "totalLength": "100", "downloadSpeed": "0"},
+        ])
+        dl._gid = "gid-1"
+        dl._watch()
+        warn = dl.task.stream.get("warn", "")
+        self.assertIn("Nome Prometido no Link", warn)
+        self.assertIn("Nome Real do Torrent", warn)
+
+    def test_sem_aviso_quando_dn_igual_ao_nome_real(self):
+        magnet = ("magnet:?xt=urn:btih:" + "ab" * 20 + "&dn=Filme+Bonito")
+        task = Task(url=magnet, dest_dir=self.tmp,
+                    filename="torrent-abababab", kind="torrent")
+        dl = FakeAria(task, seq=[
+            {"status": "complete", "completedLength": "100",
+             "totalLength": "100", "downloadSpeed": "0",
+             "bittorrent": {"info": {"name": "Filme Bonito"}}},
+        ])
+        dl._gid = "gid-1"
+        dl._watch()
+        self.assertNotIn("warn", dl.task.stream)
+
+    def test_conclui_preservando_lista_e_aviso(self):
+        """O `_finish` recriava o stream e jogava fora files/warn —
+        agora chegam inteiros ao DONE (a UI mostra os arquivos e o
+        aviso mesmo depois de concluído)."""
+        magnet = ("magnet:?xt=urn:btih:" + "ab" * 20
+                  + "&dn=Nome+Prometido")
+        alvo = os.path.join(self.tmp, "Pacote", "video.mp4")
+        os.makedirs(os.path.dirname(alvo), exist_ok=True)
+        with open(alvo, "wb") as fh:
+            fh.write(b"v" * 100)
+        task = Task(url=magnet, dest_dir=self.tmp,
+                    filename="torrent-abababab", kind="torrent")
+        dl = FakeAria(task, seq=[
+            {"status": "active", "completedLength": "50",
+             "totalLength": "100", "downloadSpeed": "10",
+             "bittorrent": {"info": {"name": "Nome Real"}}},
+            {"status": "complete", "completedLength": "100",
+             "totalLength": "100", "downloadSpeed": "0"},
+        ], files=[{"path": alvo}])
+        out = dl.run()
+        self.assertEqual(out.state, TaskState.DONE)
+        self.assertIn("Nome Prometido", out.stream["warn"])
+        self.assertIn("Nome Real", out.stream["warn"])
+        self.assertEqual(out.stream["files"],
+                         [{"path": "Pacote/video.mp4", "bytes": 100}])
+        self.assertEqual(out.stream["bytes_done"], 100)
 
     def test_magnet_sem_total_mostra_nota(self):
         """Antes dos metadados do magnet chegar (totalLength=0), a nota

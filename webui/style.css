@@ -33,6 +33,8 @@
   /* contraste WCAG: branco sobre acento/erro ≥ 4.5 (era 3.82/3.70) */
   --accent: #1f6feb;
   --err: #cf3b34;
+  /* âmbar do escuro (#e0a33a) reprovava como TEXTO no claro (1,9:1) */
+  --warn: #9a6a00;
   --accent-text: #fff;
 }
 
@@ -370,6 +372,13 @@ select {
 .err {
   font-size: 13px;
   color: var(--err);
+  word-break: break-word;
+}
+
+/* aviso fiel ao protocolo: dn= prometeu nome que o torrent não entrega */
+.warn {
+  font-size: 13px;
+  color: var(--warn);
   word-break: break-word;
 }
 

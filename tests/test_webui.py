@@ -265,6 +265,20 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b"indet-slide", css)
         self.assertIn(b".meta .eta", css)
 
+    def test_torrent_lista_de_arquivos_e_aviso_dn(self):
+        """Fidelidade torrent na webui: chip "N arquivos" (tooltip com
+        os nomes), aviso quando o `dn=` do magnet promete nome que o
+        torrent não entrega, e as duas coisas nas propriedades."""
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"class=\"chip files\"", js)     # chip no card
+        self.assertIn(b"t.files", js)                  # lido do /status
+        self.assertIn(b"t.warn", js)                   # aviso no card
+        self.assertIn(b"s.files", js)                  # lista nas props
+        self.assertIn(b"s.warn", js)
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b".warn", css)
+        self.assertIn(b"--warn: #9a6a00", css)         # contraste no claro
+
 
 if __name__ == "__main__":
     unittest.main()

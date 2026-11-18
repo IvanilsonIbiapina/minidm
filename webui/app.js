@@ -173,7 +173,8 @@ function makeCard(t) {
       <span class="seg"></span>
       <span class="note"></span>
     </div>
-    <div class="chips"><span class="chip cat"></span><span class="chip q"></span><span class="chip path" hidden></span></div>
+    <div class="chips"><span class="chip cat"></span><span class="chip q"></span><span class="chip files" hidden></span><span class="chip path" hidden></span></div>
+    <div class="warn" hidden></div>
     <div class="err" hidden></div>
     <div class="acts">
       <button data-act="start" type="button" title="Iniciar">&#9654;</button>
@@ -226,6 +227,19 @@ function updateCard(el, t) {
   const q = el.querySelector(".chip.q");
   q.textContent = t.quality_label || "";
   q.hidden = !t.quality_label;
+
+  // torrent: nº de arquivos do pacote (tooltip lista todos os nomes)
+  const files = Array.isArray(t.files) ? t.files : [];
+  const fchip = el.querySelector(".chip.files");
+  fchip.textContent = files.length
+    ? `${files.length} arquivo${files.length > 1 ? "s" : ""}` : "";
+  fchip.title = files.map((f) => f.path || "").join("\n");
+  fchip.hidden = !files.length;
+
+  // dn= prometeu um nome que o torrent não entrega
+  const warn = el.querySelector(".warn");
+  warn.textContent = t.warn ? `⚠ ${t.warn}` : "";
+  warn.hidden = !t.warn;
 
   // destino público (Android: Download/ do sistema) — encurta o
   // prefixo de armazenamento e deixa o caminho completo no tooltip
@@ -606,6 +620,16 @@ async function showProps(id) {
     } else v = String(v);
     rows.push(`<dt>${esc(label)}</dt><dd>${esc(v)}</dd>`);
   }
+  // torrent: lista de arquivos do pacote + aviso dn≠info.name
+  // (vivem em `stream`, que o to_dict persiste ao lado do progresso)
+  const s = t.stream && typeof t.stream === "object" ? t.stream : {};
+  if (Array.isArray(s.files) && s.files.length) {
+    for (const f of s.files) {
+      const v = f.bytes ? `${f.path} · ${fmtBytes(f.bytes)}` : (f.path || "");
+      rows.push(`<dt>Arquivo</dt><dd>${esc(v)}</dd>`);
+    }
+  }
+  if (s.warn) rows.push(`<dt>Aviso</dt><dd class="warn">${esc(s.warn)}</dd>`);
   $("#props-list").innerHTML = rows.join("");
   $("#props-title").textContent = t.filename || "Propriedades";
   $("#props").hidden = false;

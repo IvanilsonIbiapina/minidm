@@ -212,6 +212,10 @@ class Scheduler:
                 # HLS ao vivo: total desconhecido até o ENDLIST chegar
                 "live": bool(st.get("live")),
                 "lost": int(st.get("lost") or 0),
+                # torrent: lista de arquivos do pacote e aviso quando o
+                # `dn=` do magnet promete nome que o torrent não entrega
+                "files": st.get("files"),
+                "warn": st.get("warn") or "",
             })
         return rows
 
