@@ -1,8 +1,13 @@
 """Paletas de tema da GUI (claro/escuro) — um único lugar com as cores.
 
 `gui.py` lê o `Palette` escolhido e aplica via `ttk.Style` + tags do
-Treeview + widgets `tk` puros (Listbox/fundo de janela). Trocar o tema em
-tempo de execução é só reaplicar (`MinidmApp._apply_theme`).
+Treeview (listras odd/even + realce de hover) + widgets `tk` puros
+(Listbox/fundo de janela). Trocar o tema em tempo de execução é só
+reaplicar (`MinidmApp._apply_theme`).
+
+Contraste: os pares de texto do claro ficam em ≥4.5:1 (WCAG 2.1 AA,
+luminância relativa) sobre qualquer fundo da paleta — inclusive
+`select_bg` — e o texto branco dos toasts sobre `accent/success/warn`.
 
 `resolve("auto")` hoje cai no claro (deteccao de tema do SO pode entrar
 depois); nome desconhecido também cai no claro — a GUI nunca fica sem
@@ -29,6 +34,8 @@ class Palette:
     error: str
     row_even: str        # listra par do Treeview
     row_odd: str         # listra ímpar do Treeview
+    hover_even: str      # realce de hover da listra par (mesma família)
+    hover_odd: str       # realce de hover da listra ímpar
     heading_bg: str
     heading_fg: str
     entry_bg: str
@@ -44,9 +51,12 @@ LIGHT = Palette(
     name="light",
     window="#f0f2f5", frame="#e8eaee", surface="#ffffff",
     text="#1b1d21", text_dim="#5f6470",
-    accent="#0a7bd8", accent_dark="#0a6bb5",
-    success="#1a8a3c", warn="#c07a00", error="#c02020",
+    # azul/verde/âmbar escurecidos p/ ≥4.5:1 (WCAG) sobre TODOS os fundos
+    # claros — inclusive select_bg (#cfe4f7) e o texto branco dos toasts
+    accent="#0866b3", accent_dark="#0a67ae",
+    success="#167332", warn="#8c5900", error="#c02020",
     row_even="#ffffff", row_odd="#f2f5f9",
+    hover_even="#e9f3fb", hover_odd="#e2edf8",
     heading_bg="#e8eaee", heading_fg="#3a3d44",
     entry_bg="#ffffff", entry_fg="#1b1d21",
     list_bg="#f7f8fa", list_fg="#1b1d21", select_bg="#cfe4f7",
@@ -60,6 +70,7 @@ DARK = Palette(
     accent="#3d9be9", accent_dark="#5cb0f5",
     success="#3fbe6a", warn="#e0a030", error="#e05555",
     row_even="#2a2d33", row_odd="#242730",
+    hover_even="#2e3845", hover_odd="#2b3544",
     heading_bg="#26292e", heading_fg="#c3c8d2",
     entry_bg="#1a1c20", entry_fg="#e7e9ee",
     list_bg="#24272c", list_fg="#e7e9ee", select_bg="#33465c",

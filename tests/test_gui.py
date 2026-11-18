@@ -9,6 +9,8 @@ Só a lógica pura e o construtor de comando do player — sem abrir janelas
 * `dashboard.eta` calcula o tempo restante (casos-limite);
 * `dnd.urls_from_*` convertem drop/colagem em URLs (formato Windows);
 * `theme.resolve`/`next_theme` alternam claro/escuro;
+* contraste WCAG do tema CLARO (≥4.5:1) em todo par de texto;
+* hover da fila: realce por linha, seleção vence, sem repintar à toa;
 * API local vem **ligada por padrão** (`api_enabled`);
 * `player._fit_box` escala mantendo proporção e pares;
 * `player.play_in_frame` monta o comando do ffmpeg e sobe sem ffmpeg.
@@ -314,9 +316,138 @@ class TestTema(unittest.TestCase):
     def test_paletas_têm_todas_as_cores(self):
         for pal in (resolve("light"), resolve("dark")):
             for field in ("window", "frame", "surface", "text", "accent",
-                          "row_even", "row_odd", "select_bg", "entry_bg"):
+                          "row_even", "row_odd", "hover_even", "hover_odd",
+                          "select_bg", "entry_bg"):
                 self.assertTrue(getattr(pal, field).startswith("#"),
                                 f"{pal.name}.{field}")
+
+
+def _contraste(a: str, b: str) -> float:
+    """WCAG 2.1 — razão de contraste pela luminância relativa (puro)."""
+    def _lum(h: str) -> float:
+        h = h.lstrip("#")
+        ch = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+        ch = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+              for c in ch]
+        return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+    la, lb = _lum(a), _lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+class TestContrasteLight(unittest.TestCase):
+    """WCAG AA (≥4.5:1) em TODO par de texto do tema claro.
+
+    Fundos = onde a cor aparece na UI, inclusive `select_bg` (a tag de
+    estado pode pintar por cima do estilo `selected`) e as listras de
+    hover. Texto branco dos toasts mede o MESMO nº (razão é simétrica).
+    """
+
+    FUNDOS = ("window", "frame", "surface", "row_even", "row_odd",
+              "select_bg", "entry_bg", "list_bg", "hover_even", "hover_odd")
+    TEXTO = ("text", "text_dim", "accent", "accent_dark", "success", "warn",
+             "error")
+    PARES_EXTRAS = (("heading_fg", "heading_bg"), ("entry_fg", "entry_bg"),
+                    ("list_fg", "list_bg"), ("list_fg", "select_bg"),
+                    ("text", "heading_bg"))
+
+    def test_cor_de_texto_sobre_qualquer_fundo(self):
+        for fg in self.TEXTO:
+            for bg in self.FUNDOS:
+                with self.subTest(fg=fg, bg=bg):
+                    r = _contraste(getattr(LIGHT, fg), getattr(LIGHT, bg))
+                    self.assertGreaterEqual(
+                        r, 4.5, f"{fg} {getattr(LIGHT, fg)} sobre {bg} "
+                        f"{getattr(LIGHT, bg)} = {r:.2f}:1")
+
+    def test_rótulos_de_widget(self):
+        for fg, bg in self.PARES_EXTRAS:
+            with self.subTest(fg=fg, bg=bg):
+                r = _contraste(getattr(LIGHT, fg), getattr(LIGHT, bg))
+                self.assertGreaterEqual(r, 4.5, f"{fg} sobre {bg} = {r:.2f}")
+
+    def test_texto_branco_dos_toasts(self):
+        for campo in ("accent", "success", "warn", "error"):
+            with self.subTest(campo=campo):
+                r = _contraste("#ffffff", getattr(LIGHT, campo))
+                self.assertGreaterEqual(
+                    r, 4.5, f"branco sobre {campo} "
+                    f"{getattr(LIGHT, campo)} = {r:.2f}:1")
+
+
+class TestHoverLinha(unittest.TestCase):
+    """Hover da fila (Treeview): realce por linha + seleção vence.
+
+    Sem janelas: uma árvore falsa só com o que `_hover_set`/`_retag_row`
+    tocam (`item`/`selection`).
+    """
+
+    class _Tree:
+        def __init__(self):
+            self.tags = {"r1": ("even",), "r2": ("odd", "down"),
+                         "r3": ("even", "error")}
+            self.sel = ()
+            self.item_calls = 0
+
+        def item(self, iid, option=None, **kw):
+            self.item_calls += 1
+            if iid not in self.tags:          # linha deletada: igual ao tk
+                raise tkinter.TclError("invalid item id")
+            if option == "tags":
+                return list(self.tags[iid])
+            if "tags" in kw:
+                self.tags[iid] = tuple(kw["tags"])
+
+        def selection(self):
+            return self.sel
+
+    def _app(self):
+        f = MinidmApp.__new__(MinidmApp)
+        f._hover_iid = None
+        f._update_toolbar_state = mock.Mock()
+        f.tree = self._Tree()
+        return f
+
+    def test_realça_a_linha_e_devolve_a_anterior_ao_normal(self):
+        f = self._app()
+        MinidmApp._hover_set(f, "r1")
+        self.assertEqual(f.tree.tags["r1"], ("hover-even",))
+        MinidmApp._hover_set(f, "r2")
+        self.assertEqual(f.tree.tags["r1"], ("even",))
+        # tag de estado intacto + realce na mesma paridade (ímpar)
+        self.assertEqual(f.tree.tags["r2"], ("hover-odd", "down"))
+
+    def test_mesma_linha_não_repinta(self):
+        f = self._app()
+        MinidmApp._hover_set(f, "r1")
+        chamadas = f.tree.item_calls
+        MinidmApp._hover_set(f, "r1")     # Motion sem trocar de linha
+        self.assertEqual(f.tree.item_calls, chamadas)
+
+    def test_seleção_vence_o_hover(self):
+        f = self._app()
+        f.tree.sel = ("r1",)
+        MinidmApp._hover_set(f, "r1")
+        self.assertEqual(f.tree.tags["r1"], ("even",), "selecionada não realça")
+        # selecionar depois de realçar tira o realce na hora
+        f2 = self._app()
+        MinidmApp._hover_set(f2, "r3")
+        self.assertEqual(f2.tree.tags["r3"], ("hover-even", "error"))
+        f2.tree.sel = ("r3",)
+        MinidmApp._on_tree_select(f2, None)
+        self.assertEqual(f2.tree.tags["r3"], ("even", "error"))
+
+    def test_sair_da_lista_limpa_o_realce(self):
+        f = self._app()
+        MinidmApp._hover_set(f, "r2")
+        MinidmApp._on_row_leave(f, None)
+        self.assertIsNone(f._hover_iid)
+        self.assertEqual(f.tree.tags["r2"], ("odd", "down"))
+
+    def test_linha_sumida_não_explode(self):
+        f = self._app()
+        f._hover_iid = "fantasma"
+        MinidmApp._retag_row(f, "fantasma")   # TclError do tk é engolido
 
 
 class TestApiDefault(unittest.TestCase):

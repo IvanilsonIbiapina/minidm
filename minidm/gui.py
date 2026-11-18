@@ -6,6 +6,7 @@ terminal), com clipboard e API local **ligada por padrão**.
 Recursos de interface:
 * tema claro/escuro (`theme.py`, botão na toolbar, persiste na config);
 * menu de contexto (botão direito), atalhos de teclado e busca na lista;
+* **hover na fila**: a linha sob o cursor ganha realce (seleção vence);
 * **arrastar e soltar** URLs na janela (tkinterdnd2, opcional) ou
   colar com Ctrl+V — mesmo parsing (`minidm.dnd`);
 * **fila por arrasto**: arrumar as linhas reordena quem é o próximo
@@ -50,12 +51,15 @@ except Exception:                                # pragma: no cover
 
 REFRESH_MS = 500
 
+# cores de estado no tema CLARO — só pintam entre `_build_table` e
+# `_apply_theme` (depois `state_colors(pal)` manda); vêm da paleta p/ o
+# primeiro paint nunca reprovar no contraste
 STATE_COLOR = {
     TaskState.QUEUED: "#666666",
-    TaskState.DOWNLOADING: "#0a7bd8",
-    TaskState.PAUSED: "#c07a00",
-    TaskState.DONE: "#1a8a3c",
-    TaskState.ERROR: "#c02020",
+    TaskState.DOWNLOADING: theme_mod.LIGHT.accent,
+    TaskState.PAUSED: theme_mod.LIGHT.warn,
+    TaskState.DONE: theme_mod.LIGHT.success,
+    TaskState.ERROR: theme_mod.LIGHT.error,
 }
 
 STATE_PT = {
@@ -72,6 +76,9 @@ STATE_TAG = {
     TaskState.DONE: "done",
     TaskState.ERROR: "error",
 }
+
+# tags de listra do Treeview (a linha em hover troca a listra pelo realce)
+STRIPE_TAGS = ("odd", "even", "hover-odd", "hover-even")
 
 
 def progress_bar(progress: float, width: int = 20) -> str:
@@ -153,6 +160,7 @@ class MinidmApp(_Root):
         self._speed_smooth: dict[str, float] = {}  # p/ ETA não dançar
         self._drag_iid: str | None = None   # linha pressionada (arrasto)
         self._drag_moved = False
+        self._hover_iid: str | None = None  # linha sob o cursor (hover)
         self._toasts: list[tk.Toplevel] = []
         self._timers: set[str] = set()      # `after` p/ cancelar ao fechar
         self._tray: TrayIcon | None = None  # bandeja (frente 2, Windows)
@@ -279,6 +287,12 @@ class MinidmApp(_Root):
                                     foreground=pal.text)
             self.tree.tag_configure("even", background=pal.row_even,
                                     foreground=pal.text)
+            # hover: só o fundo (o texto continua vindo da listra/estado,
+            # e a linha selecionada não recebe o realce — seleção vence)
+            self.tree.tag_configure("hover-odd",
+                                    background=pal.hover_odd)
+            self.tree.tag_configure("hover-even",
+                                    background=pal.hover_even)
             for st, tag in STATE_TAG.items():
                 self.tree.tag_configure(tag, foreground=colors[st])
         if hasattr(self, "_cat_list"):
@@ -411,8 +425,10 @@ class MinidmApp(_Root):
 
         self.tree.bind("<Double-1>", self._dlg_details)
         self.tree.bind("<Delete>", lambda e: self._do_remove())
-        self.tree.bind("<<TreeviewSelect>>", lambda e:
-                       self._update_toolbar_state())
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        # hover da linha: realce ao passar o mouse (seleção vence)
+        self.tree.bind("<Motion>", self._on_row_hover, add="+")
+        self.tree.bind("<Leave>", self._on_row_leave, add="+")
         self._bind_row_drag()     # arrastar linhas reordena a fila
 
     def _build_statusbar(self):
@@ -430,12 +446,13 @@ class MinidmApp(_Root):
         # tempo restante total (soma do que falta / soma das velocidades)
         self.var_eta_total = tk.StringVar(value="")
         self._lbl_eta = ttk.Label(bar, textvariable=self.var_eta_total,
-                                  style="Status.TLabel", foreground="#c07a00")
+                                  style="Status.TLabel",
+                                  foreground=self.pal.warn)
         self._lbl_eta.pack(side="right", padx=(0, 10))
         self.var_speed = tk.StringVar(value="")
         self._lbl_speed = ttk.Label(bar, textvariable=self.var_speed,
                                     style="Status.TLabel",
-                                    foreground="#0a7bd8")
+                                    foreground=self.pal.accent_dark)
         self._lbl_speed.pack(side="right")
 
     def _build_menu(self):
@@ -742,8 +759,14 @@ class MinidmApp(_Root):
                 if r["segments_total"] else "",
                 r.get("profile") or "",
             )
-            # listras zebradas + cor do estado (a linha "anda" visualmente)
-            tags = (("odd" if idx % 2 else "even"),)
+            # listras zebradas + cor do estado (a linha "anda" visualmente).
+            # hover: a linha sob o cursor troca a listra pelo realce da
+            # MESMA paridade — linha selecionada nunca ganha o realce
+            hovered = r["id"] == getattr(self, "_hover_iid", None) \
+                and r["id"] not in selected
+            stripe = ("hover-" if hovered else "") + \
+                ("odd" if idx % 2 else "even")
+            tags = (stripe,)
             st_tag = STATE_TAG.get(r["state"])
             if st_tag:
                 tags += (st_tag,)
@@ -1043,6 +1066,60 @@ class MinidmApp(_Root):
         self._refresh_now()
         self.tree.selection_set(src)
         self._status("Fila reordenada por arrasto.")
+
+    # -------------------------------------------------------- hover/linha
+    def _on_row_hover(self, event):
+        """<Motion>: realça a linha sob o cursor (padrão IDM/Explorer).
+
+        `identify_row(y)` devolve "" no cabeçalho/nos vãos -> limpa o
+        realce. Só repinta quando a linha REALMENTE muda (o Motion dispara
+        a dezenas de vezes por segundo; trocar de linha é ~1 por 20 px).
+        """
+        self._hover_set(self.tree.identify_row(event.y) or None)
+
+    def _on_row_leave(self, _event):
+        """<Leave>: mouse saiu da lista -> linha volta ao normal."""
+        self._hover_set(None)
+
+    def _on_tree_select(self, _event):
+        """Seleção mudou: a seleção vence o hover (e atualiza toolbar)."""
+        self._retag_row(getattr(self, "_hover_iid", None))
+        self._update_toolbar_state()
+
+    def _hover_set(self, iid: str | None):
+        """Move o realce p/ `iid` (sem ação se ainda é a mesma linha)."""
+        prev = getattr(self, "_hover_iid", None)
+        if iid == prev:
+            return
+        self._hover_iid = iid
+        if prev:
+            self._retag_row(prev)
+        if iid:
+            self._retag_row(iid)
+
+    def _retag_row(self, iid: str | None):
+        """Reescreve as tags de `iid`: listra (ou hover) + estado.
+
+        A listra par/ímpar vigente é reaproveitada (mesma paridade no
+        realce), os demais tags de estado ficam intactos e a linha
+        selecionada perde o hover — seleção sempre vence.
+        """
+        if not iid or not hasattr(self, "tree"):
+            return
+        try:
+            tags = list(self.tree.item(iid, "tags"))
+        except tk.TclError:                # linha sumiu no refresh
+            return
+        stripe = next((t for t in tags if t in STRIPE_TAGS), "even")
+        keep = tuple(t for t in tags if t not in STRIPE_TAGS)
+        # normaliza p/ a listra base e decide realce de novo a cada chamada
+        base = stripe.removeprefix("hover-")
+        if iid == getattr(self, "_hover_iid", None) \
+                and iid not in self.tree.selection():
+            stripe = "hover-" + base
+        else:
+            stripe = base
+        self.tree.item(iid, tags=(stripe, *keep))
 
     # ------------------------------------------------------------- toasts
     def _toast(self, msg: str, *, kind: str = "info", u: str = "",
