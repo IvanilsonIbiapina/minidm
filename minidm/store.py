@@ -237,7 +237,12 @@ class TaskStore:
                     # Progresso não muda a estrutura: quem baixa mantém
                     # o avanço mesmo com saves concorrentes de outros.
                     if _structural(t) != self._baseline.get(tid):
-                        t.updated_at = now
+                        # granularidade do relógio (Windows ~2 ms): dois
+                        # marks no mesmo tick empatariam e o merge
+                        # (`>` estrito) IGNORARIA a mudança nova (o PAUSED
+                        # de A nunca chegava em B) — o mark é sempre
+                        # estritamente crescente por tarefa
+                        t.updated_at = max(now, t.updated_at + 1e-6)
                 self._write_locked()
                 for tid, t in list(self.tasks.items()):
                     self._baseline[tid] = _structural(t)

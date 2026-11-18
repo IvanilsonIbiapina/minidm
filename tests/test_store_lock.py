@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from minidm.meta import Task, TaskState
 from minidm.store import TOMBSTONE_TTL, TaskStore
@@ -172,6 +173,23 @@ class TestMergePorVersao(StoreBase):
                          "estado novo de A não chegou em B")
         self.assertIs(b.get(t.id), obj_b, "objeto vivo foi substituído")
         self.assertGreater(obj_b.updated_at, before)
+
+    def test_relogio_congelado_nao_perde_a_mudanca(self):
+        """Regressão: com o relógio do Windows (~2 ms de granularidade)
+        dois saves no mesmo tick EMpatavam o updated_at e o merge
+        (`>` estrito) mantinha o estado antigo — o PAUSED de A nunca
+        chegava em B. Congela o relógio p/ reproduzir o empate sempre."""
+        a = self.make()
+        b = self.make()
+        t = self.task("x")
+        with mock.patch("minidm.store.time.time", return_value=1000.0):
+            a.add(t)
+            b.refresh()
+            a.tasks[t.id].state = TaskState.PAUSED
+            a.save()                       # mesmo tick: sem o fix, empate
+            b.refresh()
+        self.assertEqual(b.get(t.id).state, TaskState.PAUSED,
+                         "mudança nova perdida no empate de relógio")
 
     def test_progresso_nao_remarca_updated_at(self):
         """Progresso (received) não é mudança estrutural: não marca nada."""
