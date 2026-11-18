@@ -279,6 +279,23 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b".warn", css)
         self.assertIn(b"--warn: #9a6a00", css)         # contraste no claro
 
+    def test_sheets_animam_abrir_e_fechar(self):
+        """Item 7 do design: os .sheet-back (#pick/#props/#cfg) sobem
+        animados e descem antes de sumir (classe .closing + animationend
+        com fallback de timeout), reabertura cancela o pendente e quem
+        pediu menos movimento fecha na hora."""
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"function openSheet", js)
+        self.assertIn(b"function closeSheet", js)
+        self.assertIn(b'classList.add("closing")', js)
+        self.assertIn(b"animationend", js)
+        self.assertIn(b"prefers-reduced-motion", js)
+        self.assertIn(b'closeSheet($("#cfg"))', js)    # cfg roteado p/ helper
+        _, _, css = self._get("/webui/style.css")
+        self.assertIn(b"@keyframes sheet-up", css)
+        self.assertIn(b"@keyframes sheet-down", css)
+        self.assertIn(b".sheet-back.closing", css)
+
 
 if __name__ == "__main__":
     unittest.main()

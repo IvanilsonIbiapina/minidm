@@ -585,6 +585,19 @@ select {
 }
 .sheet-back[hidden] { display: none; }
 
+/* item 7 do design: sheets sobem/descem (o backdrop acompanha com
+   fade) — a saída roda com a classe .closing e some no animationend;
+   quem pediu menos movimento fecha na hora (js + bloco lá embaixo) */
+.sheet-back { animation: sheet-in .16s ease-out; }
+.sheet-back .sheet { animation: sheet-up .2s cubic-bezier(.2, .8, .3, 1); }
+.sheet-back.closing { animation: sheet-out .18s ease-in forwards; }
+.sheet-back.closing .sheet { animation: sheet-down .18s ease-in forwards; }
+
+@keyframes sheet-in { from { opacity: 0; } }
+@keyframes sheet-out { to { opacity: 0; } }
+@keyframes sheet-up { from { transform: translateY(24px); opacity: 0; } }
+@keyframes sheet-down { to { transform: translateY(24px); opacity: 0; } }
+
 .sheet {
   width: min(720px, 100%);
   max-height: 82vh;

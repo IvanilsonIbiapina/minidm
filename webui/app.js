@@ -346,6 +346,44 @@ document.querySelectorAll(".tab").forEach((b) => {
   });
 });
 
+/* ------------------------------------------- sheets (abrir/fechar) */
+/* os 3 painéis .sheet-back (#pick, #props, #cfg) sobem animados e
+   descem antes de sumir: `closing` roda a saída e o `animationend`
+   (com fallback de timeout) esconde de verdade; reabrir no meio
+   cancela o pendente (senão o timeout fecharia de volta). */
+const sheetTimers = new WeakMap();
+
+function openSheet(el) {
+  if (!el) return;
+  clearTimeout(sheetTimers.get(el));
+  sheetTimers.delete(el);
+  el.classList.remove("closing");
+  el.hidden = false;
+}
+
+function closeSheet(el) {
+  if (!el || el.hidden || el.classList.contains("closing")) return;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    el.hidden = true;                  // sem animação: some na hora
+    return;
+  }
+  el.classList.add("closing");
+  const sheet = el.querySelector(".sheet") || el;
+  const finish = () => {
+    el.removeEventListener("animationend", onEnd);
+    clearTimeout(sheetTimers.get(el));
+    sheetTimers.delete(el);
+    el.classList.remove("closing");
+    el.hidden = true;
+  };
+  const onEnd = (ev) => {
+    if (ev.target === sheet || ev.target === el) finish();
+  };
+  el.addEventListener("animationend", onEnd);
+  // fallback: se o evento não chegar (aba oculta não anima, WebView velho)
+  sheetTimers.set(el, setTimeout(finish, 400));
+}
+
 /* ------------------------------------------------------------- ações */
 /* escolher qualidade (diálogo pós-análise, estilo IDM) */
 let pickResolve = null;
@@ -354,7 +392,7 @@ function pickQuality(res) {
   return new Promise((resolve) => {
     pickResolve = (val) => {
       pickResolve = null;
-      $("#pick").hidden = true;
+      closeSheet($("#pick"));
       resolve(val);
     };
     $("#pick-title").textContent = res.page_title || "Escolher qualidade";
@@ -383,7 +421,7 @@ function pickQuality(res) {
       b.addEventListener("click", () => pickResolve && pickResolve(q));
       box.appendChild(b);
     }
-    $("#pick").hidden = false;
+    openSheet($("#pick"));
   });
 }
 $("#pick-close").addEventListener("click",
@@ -511,7 +549,7 @@ document.addEventListener("click", (ev) => {
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
   closeCtx();
-  $("#props").hidden = true;
+  closeSheet($("#props"));
   closeCfg();
   if (pickResolve) pickResolve(null);   // Esc cancela a escolha de qualidade
 });
@@ -632,12 +670,12 @@ async function showProps(id) {
   if (s.warn) rows.push(`<dt>Aviso</dt><dd class="warn">${esc(s.warn)}</dd>`);
   $("#props-list").innerHTML = rows.join("");
   $("#props-title").textContent = t.filename || "Propriedades";
-  $("#props").hidden = false;
+  openSheet($("#props"));
 }
 
-$("#props-close").addEventListener("click", () => { $("#props").hidden = true; });
+$("#props-close").addEventListener("click", () => closeSheet($("#props")));
 $("#props").addEventListener("click", (ev) => {
-  if (ev.target.id === "props") $("#props").hidden = true;   // clique fora
+  if (ev.target.id === "props") closeSheet($("#props"));   // clique fora
 });
 
 /* --------------------------------------------- arrastar p/ reordenar (DnD) */
@@ -868,10 +906,10 @@ async function openCfg() {
     else if (el.tagName === "SELECT") el.value = String(c[k]);
     else el.value = c[k];
   }
-  $("#cfg").hidden = false;
+  openSheet($("#cfg"));
 }
 
-function closeCfg() { $("#cfg").hidden = true; }
+function closeCfg() { closeSheet($("#cfg")); }
 
 $("#cfg-btn").addEventListener("click", openCfg);
 $("#cfg-close").addEventListener("click", closeCfg);
