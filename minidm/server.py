@@ -488,7 +488,10 @@ def make_handler(app: App):
                     # perfis pode errar em perfil custom/instalação
                     # portátil) — é o sinal que esconde o guia
                     "connected": ts > 0,
-                    "recent": 0 < time.time() - ts < 600,
+                    # `<=` no 0: o relógio do Windows tem granularidade
+                    # ~2 ms e o visto + a consulta podiam cair no MESMO
+                    # tick (delta exatamente 0) — "visto agora" é recente
+                    "recent": 0 <= time.time() - ts < 600,
                     "last_seen": ts,
                     "version": seen.get("version", ""),
                     "installed": {b["name"]: any(p.get("installed")

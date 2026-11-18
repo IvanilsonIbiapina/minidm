@@ -13,6 +13,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -1016,6 +1017,22 @@ class TestExtEndpoint(unittest.TestCase):
         with open(os.path.join(self.tmp, "ext_seen.json"),
                   encoding="utf-8") as f:
             self.assertEqual(json.load(f)["version"], "2.0")
+
+    @mock.patch("minidm.server._ext_status")
+    def test_recent_aceita_o_msmo_tick_do_relogio(self, st):
+        """Regressão: `recent` era `0 < delta < 600` e o relógio do
+        Windows tem granularidade ~2 ms — o visto e a consulta podiam
+        cair no MESMO tick (delta exatamente 0) e a resposta vinha
+        `connected=True` + `recent=False` (falhava só no Windows local;
+        no Linux da CI a granularidade é de ns e nunca batia)."""
+        st.return_value = dict(self.FAKE)
+        self.app.ext_ts = time.time()       # mesmo tick da consulta
+        self.app.ext_ver = "2.0"
+        with mock.patch("minidm.server.time.time",
+                        return_value=self.app.ext_ts):
+            d = self._get("/ext/status")
+        self.assertTrue(d["connected"])
+        self.assertTrue(d["recent"], "delta=0 é 'visto agora'")
 
     @mock.patch("minidm.server._ext_status")
     def test_visto_sobrevive_a_reinicio_da_api(self, st):
