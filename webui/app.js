@@ -350,21 +350,67 @@ document.querySelectorAll(".tab").forEach((b) => {
 /* os 3 painéis .sheet-back (#pick, #props, #cfg) sobem animados e
    descem antes de sumir: `closing` roda a saída e o `animationend`
    (com fallback de timeout) esconde de verdade; reabrir no meio
-   cancela o pendente (senão o timeout fecharia de volta). */
+   cancela o pendente (senão o timeout fecharia de volta).
+   Item 8 do design: o foco entra no sheet ao abrir (primeiro
+   focável visível), o Tab fica preso nele (wrap first↔last) e ao
+   fechar o foco volta para quem abriu. */
 const sheetTimers = new WeakMap();
+const sheetPrevFocus = new WeakMap();   // quem tinha foco na abertura
+const SHEET_IDS = ["pick", "props", "cfg"];   // ordem DOM: pick<props<cfg
+
+/** Focáveis visíveis dentro do sheet (escondido não conta: sem
+    getClientRects o elemento não pode receber foco). */
+function sheetFocusables(el) {
+  const sel = 'button, [href], input, select, textarea, [tabindex]';
+  return Array.from(el.querySelectorAll(sel))
+    .filter((n) => !n.disabled && n.getClientRects().length);
+}
+
+/** Sheet aberto de cima (último não-hidden na ordem DOM). */
+function topSheet() {
+  let top = null;
+  for (const id of SHEET_IDS) {
+    const s = document.getElementById(id);
+    if (s && !s.hidden) top = s;
+  }
+  return top;
+}
 
 function openSheet(el) {
   if (!el) return;
   clearTimeout(sheetTimers.get(el));
   sheetTimers.delete(el);
   el.classList.remove("closing");
+  // guarda o foco de quem abriu SÓ na abertura real: durante o
+  // fechamento (hidden ainda false) um reabrir não pode sobrescrever
+  if (el.hidden) sheetPrevFocus.set(el, document.activeElement);
   el.hidden = false;
+  const first = sheetFocusables(el)[0];
+  if (first) first.focus();
+  else {                              // sheet sem focável: foca o painel
+    const box = el.querySelector(".sheet") || el;
+    box.tabIndex = -1;
+    box.focus();
+  }
+}
+
+/** Devolve o foco a quem abriu — `hadFocus` capturado ANTES de
+    esconder (esconder derruba o activeElement para o body). Se o
+    usuário já foi para outro lugar, não rouba o foco de volta. */
+function restoreSheetFocus(el, hadFocus) {
+  const prev = sheetPrevFocus.get(el);
+  sheetPrevFocus.delete(el);
+  if (hadFocus && prev && prev.isConnected && !el.contains(prev)) {
+    prev.focus();
+  }
 }
 
 function closeSheet(el) {
   if (!el || el.hidden || el.classList.contains("closing")) return;
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const hadFocus = el.contains(document.activeElement);
     el.hidden = true;                  // sem animação: some na hora
+    restoreSheetFocus(el, hadFocus);
     return;
   }
   el.classList.add("closing");
@@ -373,8 +419,10 @@ function closeSheet(el) {
     el.removeEventListener("animationend", onEnd);
     clearTimeout(sheetTimers.get(el));
     sheetTimers.delete(el);
+    const hadFocus = el.contains(document.activeElement);
     el.classList.remove("closing");
     el.hidden = true;
+    restoreSheetFocus(el, hadFocus);
   };
   const onEnd = (ev) => {
     if (ev.target === sheet || ev.target === el) finish();
@@ -383,6 +431,27 @@ function closeSheet(el) {
   // fallback: se o evento não chegar (aba oculta não anima, WebView velho)
   sheetTimers.set(el, setTimeout(finish, 400));
 }
+
+/* Tab preso no sheet aberto (aria-modal): wrap first↔last; se o foco
+   caiu fora (ou no painel), puxa de volta para dentro. */
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Tab") return;
+  const top = topSheet();
+  if (!top) return;
+  const list = sheetFocusables(top);
+  const box = top.querySelector(".sheet") || top;
+  if (!list.length) { ev.preventDefault(); box.focus(); return; }
+  const cur = document.activeElement;
+  if (!top.contains(cur) || !list.includes(cur)) {
+    ev.preventDefault();
+    (ev.shiftKey ? list[list.length - 1] : list[0]).focus();
+    return;
+  }
+  const first = list[0];
+  const last = list[list.length - 1];
+  if (ev.shiftKey && cur === first) { ev.preventDefault(); last.focus(); }
+  else if (!ev.shiftKey && cur === last) { ev.preventDefault(); first.focus(); }
+});
 
 /* ------------------------------------------------------------- ações */
 /* escolher qualidade (diálogo pós-análise, estilo IDM) */
@@ -422,6 +491,9 @@ function pickQuality(res) {
       box.appendChild(b);
     }
     openSheet($("#pick"));
+    // Enter deve ESCOLHER, não cancelar: foca a 1ª qualidade, não o ✕
+    const opt = box.querySelector(".pick-opt");
+    if (opt) opt.focus();
   });
 }
 $("#pick-close").addEventListener("click",

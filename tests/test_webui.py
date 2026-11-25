@@ -296,6 +296,31 @@ class WebuiServeTest(unittest.TestCase):
         self.assertIn(b"@keyframes sheet-down", css)
         self.assertIn(b".sheet-back.closing", css)
 
+    def test_sheets_prendem_o_foco(self):
+        """Item 8 do design: ao abrir, o foco vai para o primeiro
+        focável visível do sheet; o Tab fica preso nele (armadilha com
+        wrap first↔last, o de cima = último não-hidden na ordem DOM);
+        ao fechar, o foco volta para quem abriu — a guarda só salva o
+        foco na abertura real (não sobrescreve durante o fechamento)."""
+        _, _, js = self._get("/webui/app.js")
+        self.assertIn(b"function sheetFocusables", js)
+        self.assertIn(b"getClientRects", js)         # só visível é focável
+        self.assertIn(b"function topSheet", js)
+        self.assertIn(b'ev.key !== "Tab"', js)       # armadilha do Tab
+        self.assertIn(b"sheetPrevFocus", js)         # foco de quem abriu
+        self.assertIn(b"if (el.hidden) sheetPrevFocus.set", js)
+        self.assertIn(b"restoreSheetFocus(el, hadFocus)", js)
+        self.assertIn(b"first.focus()", js)          # foco ao abrir
+        # o #pick prioriza a 1ª qualidade (Enter escolhe, não cancela)
+        self.assertIn(b'box.querySelector(".pick-opt")', js)
+        # os 3 sheets têm dialog acessível (index.html)
+        _, _, html = self._get("/")
+        for sid in (b"pick", b"props", b"cfg"):
+            self.assertRegex(
+                html,
+                rb'id="' + sid + rb'"[^>]*>\s*<div class="sheet" role="dialog"',
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
